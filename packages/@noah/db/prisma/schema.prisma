@@ -27,15 +27,6 @@ model Organization {
   collections  Collection[]
   tags         Tag[]
   shareLinks   ShareLink[]
-<<<<<<< HEAD
-  subscriptions Subscription[]
-  usages       Usage[]
-
-  subscriptionStatus String?   @db.VarChar(50)
-  currentPlanId      String?   @db.VarChar(255)
-  stripeCustomerId   String?   @db.VarChar(255)
-=======
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 
   @@map("organizations")
 }
@@ -66,10 +57,6 @@ model User {
   auditLogs           AuditLog[]
   analyticsEvents     AnalyticsEvent[]
   createdAssetVersions AssetVersion[]
-<<<<<<< HEAD
-  createdSubscriptions Subscription[] @relation("CreatedBy")
-=======
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 
   @@unique([orgId, email], name: "unique_email_per_org")
   // Sessions related to this user
@@ -313,50 +300,4 @@ model AnalyticsEvent {
   @@id([id, createdAt]) // TimescaleDB requires composite primary key on time column
   @@index([orgId, createdAt(sort: Desc)])
   @@map("analytics_events")
-<<<<<<< HEAD
-}
-
-model Subscription {
-  id                 String       @id @db.VarChar(255)
-  organizationId     String       @db.Uuid
-  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  planId             String       @db.VarChar(255)
-  plan               Plan         @relation(fields: [planId], references: [id])
-  status             String       @db.VarChar(50)
-  billingInterval    String       @db.VarChar(50)
-  currentPeriodStart DateTime     @db.Timestamptz(6)
-  currentPeriodEnd   DateTime     @db.Timestamptz(6)
-  cancelAtPeriodEnd  Boolean      @default(false)
-  createdById        String       @db.Uuid
-  createdBy          User         @relation("CreatedBy", fields: [createdById], references: [id])
-  canceledAt         DateTime?    @db.Timestamptz(6)
-  createdAt          DateTime     @default(now()) @db.Timestamptz(6)
-
-  @@index([organizationId])
-  @@map("subscriptions")
-}
-
-model Plan {
-  id             String         @id @db.VarChar(255)
-  monthlyPriceId String         @db.VarChar(255)
-  yearlyPriceId  String         @db.VarChar(255)
-  subscriptions  Subscription[]
-
-  @@map("plans")
-}
-
-model Usage {
-  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId     String       @db.Uuid
-  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  storageBytes       BigInt       @default(0)
-  bandwidthBytes     BigInt       @default(0)
-  compressionMinutes Int          @default(0)
-  apiRequests        Int          @default(0)
-  createdAt          DateTime     @default(now()) @db.Timestamptz(6)
-
-  @@index([organizationId])
-  @@map("usage_records")
-=======
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 }

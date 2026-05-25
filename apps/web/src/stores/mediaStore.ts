@@ -34,7 +34,7 @@ interface MediaStore {
   lastFetchTime: number;
   currentFolder: string | null;
   isSearchMode: boolean;
-  
+
   // Actions
   fetchAssets: (forceRefresh?: boolean, source?: 'local' | 'b2' | 'all') => Promise<void>;
   fetchFolderAssets: (folderPath: string | null, forceRefresh?: boolean) => Promise<void>;
@@ -68,7 +68,7 @@ const getApiUrl = () => {
 
   // In production, use the backend Railway URL directly
   if (window.location.hostname.includes('railway.app') ||
-      window.location.hostname.includes('vercel.app')) {
+    window.location.hostname.includes('vercel.app')) {
     return 'https://noah-production-e15c.up.railway.app/api';
   }
 
@@ -106,7 +106,7 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
       get().fetchFolderAssets(currentFolder, true);
     }
   },
-  
+
   setCurrentFolder: (folder) => {
     set({ currentFolder: folder, isSearchMode: false });
     // Fetch assets for the new folder
@@ -116,21 +116,21 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
   fetchAssets: async (forceRefresh = false, source) => {
     const now = Date.now();
     const lastFetch = get().lastFetchTime;
-    
+
     // Skip if fetched within last 5 seconds (unless force refresh)
     if (!forceRefresh && lastFetch && (now - lastFetch) < 5000) {
       console.log('Using cached assets (fetched less than 5 seconds ago)');
       return;
     }
-    
+
     set({ isLoading: true });
-    
+
     // Use the source from parameter or from store state
     const storageSource = source || get().storageSource;
-    
+
     try {
       console.log('Fetching assets from:', `${API_BASE_URL}/media`, `source: ${storageSource}`, forceRefresh ? '(force refresh)' : '');
-      
+
       // Add cache-busting query parameter to force fresh data
       const response = await axios.get(`${API_BASE_URL}/media`, {
         params: {
@@ -143,18 +143,13 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
         },
         withCredentials: false, // Don't send credentials for now
       });
-      
+
       console.log('API Response:', response.data);
-      
+
       // Handle the enhanced media server response format
-<<<<<<< HEAD
-      // const assets = response.data.assets || response.data.data || response. data; -> fix
-      const assets = response.data.assets || response.data;
-=======
       const assets = response.data.assets || response.data.data || response.data;
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
       const folders = response.data.folders || [];
-      
+
       // Transform the assets to match the expected format
       const transformedAssets = assets.map((asset: any) => ({
         ...asset,
@@ -163,10 +158,10 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
         metadata: asset.metadata || {},
         compressionStatus: asset.compressionStatus || 'completed'
       }));
-      
+
       console.log('Transformed assets:', transformedAssets);
       console.log('Folders:', folders);
-      set({ 
+      set({
         assets: transformedAssets,
         folders: folders,
         isLoading: false,
@@ -177,7 +172,7 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
       console.error('Failed to fetch assets:', error);
       console.error('Error details:', error.response?.data || error.message);
       set({ isLoading: false });
-      
+
       // Fallback to mock data for development
       const mockAssets: MediaAsset[] = [
         {
@@ -258,7 +253,7 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
   uploadFiles: async (files: File[], options: UploadOptions = {}) => {
     const uploadPromises = files.map(async (file) => {
       const fileId = Math.random().toString(36).substr(2, 9);
-      
+
       // Initialize progress tracking
       set(state => ({
         uploadProgress: { ...state.uploadProgress, [fileId]: 0 }
@@ -310,16 +305,16 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
 
       } catch (error) {
         console.error('Upload failed:', error);
-        
+
         // For development, simulate successful upload
         await new Promise(resolve => setTimeout(resolve, 2000));
-        
+
         const mockAsset: MediaAsset = {
           id: fileId,
           name: file.name,
           type: file.type.startsWith('video/') ? 'video' :
-                file.type.startsWith('image/') ? 'image' :
-                file.type.startsWith('audio/') ? 'audio' : 'document',
+            file.type.startsWith('image/') ? 'image' :
+              file.type.startsWith('audio/') ? 'audio' : 'document',
           size: file.size,
           uploadDate: new Date().toISOString(),
           thumbnail: '/api/placeholder/300/200',
@@ -357,14 +352,14 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
           return axios.delete(`${API_BASE_URL}/media/${filename}`);
         })
       );
-      
+
       set(state => ({
         assets: state.assets.filter(asset => !assetIds.includes(asset.id)),
         selectedAssets: state.selectedAssets.filter(id => !assetIds.includes(id))
       }));
     } catch (error) {
       console.error('Failed to delete assets:', error);
-      
+
       // Fallback for development
       set(state => ({
         assets: state.assets.filter(asset => !assetIds.includes(asset.id)),
@@ -376,18 +371,18 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
   updateAsset: async (assetId: string, updates: Partial<MediaAsset>) => {
     try {
       const response = await axios.patch(`${API_BASE_URL}/media/${assetId}`, updates);
-      
+
       set(state => ({
-        assets: state.assets.map(asset => 
+        assets: state.assets.map(asset =>
           asset.id === assetId ? { ...asset, ...response.data } : asset
         )
       }));
     } catch (error) {
       console.error('Failed to update asset:', error);
-      
+
       // Fallback for development
       set(state => ({
-        assets: state.assets.map(asset => 
+        assets: state.assets.map(asset =>
           asset.id === assetId ? { ...asset, ...updates } : asset
         )
       }));
@@ -397,20 +392,20 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
   fetchFolderAssets: async (folderPath: string | null, forceRefresh = false) => {
     const now = Date.now();
     const lastFetch = get().lastFetchTime;
-    
+
     // Skip if fetched within last 5 seconds (unless force refresh)
     if (!forceRefresh && lastFetch && (now - lastFetch) < 5000) {
       console.log('Using cached folder assets');
       return;
     }
-    
+
     set({ isLoading: true });
-    
+
     const storageSource = get().storageSource;
-    
+
     try {
       console.log('Fetching folder assets:', folderPath, `source: ${storageSource}`);
-      
+
       const response = await axios.get(`${API_BASE_URL}/media/folder`, {
         params: {
           path: folderPath || '',
@@ -423,12 +418,12 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
         },
         withCredentials: false,
       });
-      
+
       console.log('Folder API Response:', response.data);
-      
+
       const assets = response.data.assets || [];
       const folders = response.data.folders || [];
-      
+
       const transformedAssets = assets.map((asset: any) => ({
         ...asset,
         uploadDate: asset.createdAt || asset.uploadDate || new Date().toISOString(),
@@ -436,8 +431,8 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
         metadata: asset.metadata || {},
         compressionStatus: asset.compressionStatus || 'completed'
       }));
-      
-      set({ 
+
+      set({
         assets: transformedAssets,
         folders: folders,
         currentFolder: folderPath,
@@ -450,21 +445,21 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
       set({ isLoading: false });
     }
   },
-  
+
   searchAssets: async (query: string, source) => {
     if (!query.trim()) {
       // If query is empty, go back to current folder view
       get().fetchFolderAssets(get().currentFolder, true);
       return;
     }
-    
+
     set({ isLoading: true, searchQuery: query, isSearchMode: true });
-    
+
     const storageSource = source || get().storageSource;
-    
+
     try {
       console.log('Searching assets:', query, `source: ${storageSource}`);
-      
+
       const response = await axios.get(`${API_BASE_URL}/media/search`, {
         params: {
           q: query,
@@ -477,11 +472,11 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
         },
         withCredentials: false,
       });
-      
+
       console.log('Search API Response:', response.data);
-      
+
       const assets = response.data.assets || [];
-      
+
       const transformedAssets = assets.map((asset: any) => ({
         ...asset,
         uploadDate: asset.createdAt || asset.uploadDate || new Date().toISOString(),
@@ -489,8 +484,8 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
         metadata: asset.metadata || {},
         compressionStatus: asset.compressionStatus || 'completed'
       }));
-      
-      set({ 
+
+      set({
         assets: transformedAssets,
         folders: [], // Don't show folders in search results
         isLoading: false,
@@ -502,10 +497,10 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
       set({ isLoading: false });
     }
   },
-  
+
   setSearchQuery: (query: string) => {
     set({ searchQuery: query });
-    
+
     // Perform search if query is not empty
     if (query.trim()) {
       get().searchAssets(query);
@@ -526,7 +521,7 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
   getFilteredAssets: () => {
     const { assets, searchQuery } = get();
     if (!searchQuery) return assets;
-    
+
     const query = searchQuery.toLowerCase();
     return assets.filter(asset =>
       asset.name.toLowerCase().includes(query) ||

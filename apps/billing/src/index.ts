@@ -5,10 +5,6 @@ import rateLimit from '@fastify/rate-limit';
 import jwt from '@fastify/jwt';
 import Stripe from 'stripe';
 import { PrismaClient } from '@prisma/client';
-<<<<<<< HEAD
-import dotenv from 'dotenv';
-=======
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 import { createLogger } from './utils/logger.js';
 import { subscriptionRoutes } from './routes/subscriptions.js';
 import { billingRoutes } from './routes/billing.js';
@@ -16,11 +12,6 @@ import { webhookRoutes } from './routes/webhooks.js';
 import { usageRoutes } from './routes/usage.js';
 import { analyticsRoutes } from './routes/analytics.js';
 
-<<<<<<< HEAD
-dotenv.config({ path: '../../.env' });
-
-=======
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 const logger = createLogger('billing-service');
 const prisma = new PrismaClient();
 
@@ -76,17 +67,17 @@ fastify.decorate('prisma', prisma);
 fastify.get('/health', async (request, reply) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
-    return { 
-      status: 'healthy', 
+    return {
+      status: 'healthy',
       timestamp: new Date().toISOString(),
       service: 'noah-billing',
       version: '1.0.0'
     };
   } catch (error) {
     reply.code(503);
-    return { 
-      status: 'unhealthy', 
-      error: 'Database connection failed' 
+    return {
+      status: 'unhealthy',
+      error: 'Database connection failed'
     };
   }
 });
@@ -115,7 +106,7 @@ await fastify.register(analyticsRoutes, { prefix: '/api/analytics' });
 // Error handler
 fastify.setErrorHandler((error, request, reply) => {
   logger.error('Request error:', error);
-  
+
   if (error.validation) {
     reply.status(400).send({
       error: 'Validation Error',
@@ -142,7 +133,7 @@ fastify.setErrorHandler((error, request, reply) => {
 // Graceful shutdown
 const gracefulShutdown = async () => {
   logger.info('Shutting down billing service...');
-  
+
   try {
     await fastify.close();
     await prisma.$disconnect();
@@ -160,16 +151,12 @@ process.on('SIGINT', gracefulShutdown);
 // Start server
 const start = async () => {
   try {
-<<<<<<< HEAD
-    const port = parseInt(process.env.PORT || '3003');
-=======
     const port = parseInt(process.env.PORT || '3002');
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
     const host = process.env.HOST || '0.0.0.0';
-    
+
     await fastify.listen({ port, host });
     logger.info(`Noah Billing Service running on http://${host}:${port}`);
-    
+
   } catch (err) {
     logger.error('Error starting billing service:', err);
     process.exit(1);

@@ -73,31 +73,14 @@ async function main() {
     ];
 
     for (const userData of users) {
-<<<<<<< HEAD
-      const argon2Hashes: Record<string, string> = {
-        'VisitDetroit2025!': '$argon2id$v=19$m=65536,t=3,p=4$z6MlGBOL/vZudsNvN42TnA$z8J5KOBzVixFIc9WiXFqhEZCLrW6zVpSlDaZMd2yAbk',
-        'Detroit2025!': '$argon2id$v=19$m=65536,t=3,p=4$jG6WDLKjJoHruo/T71DsFg$blqj7fveFPokss6syRXO8b9+I/95wrIrKuidcEEl/6g'
-      };
-
-      const user = await prisma.user.upsert({
-        where: { email: userData.email },
-        update: {
-          passwordHash: argon2Hashes[userData.password]
-        },
-=======
       const user = await prisma.user.upsert({
         where: { email: userData.email },
         update: {},
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         create: {
           orgId: visitDetroit.id,
           email: userData.email,
           name: userData.name,
-<<<<<<< HEAD
-          passwordHash: argon2Hashes[userData.password],
-=======
           passwordHash: hash(userData.password),
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
           role: userData.role,
           preferences: {
             theme: 'light',

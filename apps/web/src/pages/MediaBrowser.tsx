@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Upload, X, Check, Users, Search, Filter, Grid3X3, List, 
-  MoreVertical, Download, Share2, Eye, FileVideo, FileImage, 
+import {
+  Upload, X, Check, Users, Search, Filter, Grid3X3, List,
+  MoreVertical, Download, Share2, Eye, FileVideo, FileImage,
   FileAudio, File, Loader2, Heart, Calendar, ArrowUp, ArrowDown, Trash, RefreshCw, Folder, ChevronLeft
 } from 'lucide-react';
 import InPageMediaViewer from '../components/InPageMediaViewer';
@@ -20,7 +20,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
   const [showFilters, setShowFilters] = useState(false);
   const [viewingAsset, setViewingAsset] = useState<any>(null);
   const [internalSelectedAsset, setInternalSelectedAsset] = useState<any>(null); // For InPageMediaViewer
-  
+
   // Use external state if provided, otherwise use internal
   const selectedAsset = externalSelectedAsset !== undefined ? externalSelectedAsset : internalSelectedAsset;
   const setSelectedAsset = externalOnSelectAsset || setInternalSelectedAsset;
@@ -37,14 +37,14 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     collections: [],
   });
 
-  const { 
-    assets, 
-    folders: storeFolders, 
-    isLoading, 
-    fetchAssets, 
+  const {
+    assets,
+    folders: storeFolders,
+    isLoading,
+    fetchAssets,
     fetchFolderAssets,
     searchAssets,
-    storageSource, 
+    storageSource,
     setStorageSource,
     currentFolder,
     setCurrentFolder,
@@ -54,7 +54,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
 
   // Don't use mock assets anymore - only use real assets from API
   const displayAssets = assets;
-  
+
   // Update folders when store updates
   useEffect(() => {
     setFolders(storeFolders || []);
@@ -65,7 +65,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     // fetchFolderAssets(null);
     fetchAssets(true);
   }, []);
-  
+
   // Refresh when folder changes
   useEffect(() => {
     console.log('Folder changed to:', currentFolder);
@@ -97,9 +97,9 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     console.log('Search query:', searchQuery);
     console.log('Total assets:', displayAssets.length);
     console.log('Sample asset folders:', displayAssets.slice(0, 5).map((a: any) => ({ name: a.name, folder: a.folder })));
-    
+
     let filtered = displayAssets;
-    
+
     // In search mode, assets are already filtered by the search API
     // Otherwise, they're already filtered by folder in fetchFolderAssets
     if (!isSearchMode && searchQuery && !searchQuery.trim()) {
@@ -107,11 +107,11 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
       const searchLower = searchQuery.toLowerCase();
       filtered = displayAssets.filter((asset: any) => {
         return asset.name.toLowerCase().includes(searchLower) ||
-               asset.type.toLowerCase().includes(searchLower) ||
-               asset.tags?.some((tag: string) => tag.toLowerCase().includes(searchLower));
+          asset.type.toLowerCase().includes(searchLower) ||
+          asset.tags?.some((tag: string) => tag.toLowerCase().includes(searchLower));
       });
     }
-    
+
     // Type filtering with proper mapping
     if (filters.type !== 'all') {
       filtered = filtered.filter((asset: any) => {
@@ -127,7 +127,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     // Sorting
     filtered.sort((a: any, b: any) => {
       let comparison = 0;
-      
+
       switch (sortBy) {
         case 'name':
           comparison = a.name.localeCompare(b.name);
@@ -145,13 +145,13 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
           comparison = dateA - dateB;
           break;
       }
-      
+
       return sortOrder === 'desc' ? -comparison : comparison;
     });
 
     console.log('Filtered assets count:', filtered.length);
     console.log('Filtered assets in folder:', filtered.slice(0, 3).map((a: any) => ({ name: a.name, folder: a.folder })));
-    
+
     return filtered;
   }, [displayAssets, searchQuery, filters, sortBy, sortOrder, currentFolder, isSearchMode]);
 
@@ -204,21 +204,17 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     const assetIds = Array.from(selectedAssets);
     try {
       await Promise.all(
-        assetIds.map(id => 
-<<<<<<< HEAD
-          fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/media/${id}/soft-delete`, { method: 'POST' })
-=======
+        assetIds.map(id =>
           fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/media/${id}`, { method: 'DELETE' })
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         )
       );
-      
+
       // Optimistically update the UI
       const newAssets = displayAssets.filter((asset: any) => !selectedAssets.has(asset.id));
       // This assumes you have a way to update the assets in your store
       // For now, let's just clear the selection
       setSelectedAssets(new Set());
-      
+
       // You would typically refetch the assets here
       // fetchAssets();
 
@@ -230,9 +226,9 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
   // If an asset is selected, show the in-page viewer
   if (selectedAsset) {
     return (
-      <InPageMediaViewer 
-        asset={selectedAsset} 
-        onClose={() => setSelectedAsset(null)} 
+      <InPageMediaViewer
+        asset={selectedAsset}
+        onClose={() => setSelectedAsset(null)}
       />
     );
   }
@@ -266,10 +262,10 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                     </button>
                   )}
                   <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-                    {isSearchMode 
-                      ? `Search Results: "${searchQuery}"` 
-                      : currentFolder 
-                        ? currentFolder.split('/').pop() 
+                    {isSearchMode
+                      ? `Search Results: "${searchQuery}"`
+                      : currentFolder
+                        ? currentFolder.split('/').pop()
                         : 'Media Library - Your Ark'
                     }
                   </h1>
@@ -280,7 +276,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                   {isSearchMode && ` • Searching across all folders`}
                 </p>
               </div>
-              
+
               {/* Real-time collaboration avatars */}
               <div className="flex items-center gap-4">
                 <div className="flex -space-x-2">
@@ -294,15 +290,15 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                       {id}
                     </motion.div>
                   ))}
-                  <motion.div 
+                  <motion.div
                     className="w-8 h-8 rounded-full bg-slate-200 border-2 border-white flex items-center justify-center"
                     whileHover={{ scale: 1.1 }}
                   >
                     <Users className="w-4 h-4 text-slate-600" />
                   </motion.div>
                 </div>
-                
-                <button 
+
+                <button
                   onClick={() => setShowUploadModal(true)}
                   className="px-4 py-2 bg-gradient-to-r from-purple-500 to-blue-500 text-white rounded-lg hover:from-purple-600 hover:to-blue-600 transition-all shadow-lg hover:shadow-xl flex items-center gap-2">
                   <Upload className="w-4 h-4" />
@@ -310,7 +306,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                 </button>
               </div>
             </div>
-            
+
             {/* Search and filters */}
             <div className="flex items-center gap-4">
               <div className="flex-1 relative">
@@ -344,7 +340,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                   </button>
                 )}
               </div>
-              
+
               <div className="flex items-center gap-2">
                 <select
                   value={sortBy}
@@ -356,7 +352,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                   <option value="size">Sort by Size</option>
                   <option value="type">Sort by Type</option>
                 </select>
-                
+
                 <button
                   onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
                   className="px-3 py-3 rounded-xl border border-slate-200 hover:border-slate-300 transition-all flex items-center"
@@ -380,11 +376,10 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                 <button
                   onClick={handleRefresh}
                   disabled={isRefreshing}
-                  className={`px-4 py-3 rounded-xl border transition-all flex items-center gap-2 ${
-                    isRefreshing 
-                      ? 'border-slate-100 bg-slate-50 text-slate-400 cursor-not-allowed' 
+                  className={`px-4 py-3 rounded-xl border transition-all flex items-center gap-2 ${isRefreshing
+                      ? 'border-slate-100 bg-slate-50 text-slate-400 cursor-not-allowed'
                       : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
-                  }`}
+                    }`}
                   title="Refresh media list"
                 >
                   <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
@@ -393,16 +388,15 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
 
                 <button
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`px-4 py-3 rounded-xl border transition-all flex items-center gap-2 ${
-                    showFilters 
-                      ? 'border-purple-500 bg-purple-50 text-purple-700' 
+                  className={`px-4 py-3 rounded-xl border transition-all flex items-center gap-2 ${showFilters
+                      ? 'border-purple-500 bg-purple-50 text-purple-700'
                       : 'border-slate-200 hover:border-slate-300'
-                  }`}
+                    }`}
                 >
                   <Filter className="w-4 h-4" />
                   Filters
                 </button>
-                
+
                 <button
                   onClick={toggleViewMode}
                   className="px-4 py-3 rounded-xl border border-slate-200 hover:border-slate-300 transition-all flex items-center gap-2"
@@ -432,7 +426,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                     Clear All
                   </button>
                 </div>
-                
+
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-2">Media Type</label>
@@ -448,7 +442,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                       <option value="document">Documents</option>
                     </select>
                   </div>
-                  
+
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-2">Date Range</label>
                     <select
@@ -462,7 +456,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                       <option value="month">This Month</option>
                     </select>
                   </div>
-                  
+
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-2">Tags</label>
                     <div className="flex flex-wrap gap-1">
@@ -476,7 +470,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                       ))}
                     </div>
                   </div>
-                  
+
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-2">AI Tags</label>
                     <div className="flex flex-wrap gap-1">
@@ -541,13 +535,13 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                     </div>
                   </motion.div>
                 ))}
-                
+
                 {/* Display assets */}
                 {filteredAssets.map((asset: any) => {
                   const IconComponent = getFileIcon(asset.type);
                   const iconColor = getFileIconColor(asset.type);
                   const isSelected = selectedAssets.has(asset.id);
-                  
+
                   return (
                     <motion.div
                       key={asset.id}
@@ -555,13 +549,12 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                       initial={{ opacity: 0, scale: 0.8 }}
                       animate={{ opacity: 1, scale: 1 }}
                       whileHover={{ scale: 1.02 }}
-                      className={`group relative bg-white rounded-2xl overflow-hidden shadow-lg border-2 transition-all duration-200 ${
-                        isSelected ? 'border-purple-500 ring-4 ring-purple-200' : 'border-transparent hover:border-purple-200'
-                      }`}
+                      className={`group relative bg-white rounded-2xl overflow-hidden shadow-lg border-2 transition-all duration-200 ${isSelected ? 'border-purple-500 ring-4 ring-purple-200' : 'border-transparent hover:border-purple-200'
+                        }`}
                     >
                       <div className="aspect-video bg-gradient-to-br from-slate-100 to-slate-200 relative overflow-hidden" onClick={() => setSelectedAsset(asset)}>
                         {(asset.type === 'image' || asset.type?.includes('image')) ? (
-                          <img 
+                          <img
                             src={asset.url}
                             alt={asset.name}
                             className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
@@ -571,7 +564,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                             }}
                           />
                         ) : (asset.type === 'video' || asset.type?.includes('video')) ? (
-                          <video 
+                          <video
                             src={asset.url}
                             className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
                             muted
@@ -643,7 +636,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                 className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white rounded-xl shadow-2xl p-4 flex items-center gap-6 z-50"
               >
                 <p className="font-medium">{selectedAssets.size} item{selectedAssets.size > 1 ? 's' : ''} selected</p>
-                <button 
+                <button
                   className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center gap-2"
                   onClick={handleDeleteSelected}
                 >
@@ -661,9 +654,9 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
           </AnimatePresence>
         </div>
       </div>
-      
+
       {/* Upload Modal */}
-      <UploadModal 
+      <UploadModal
         isOpen={showUploadModal}
         onClose={() => setShowUploadModal(false)}
         onUploadComplete={() => {
