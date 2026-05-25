@@ -197,6 +197,54 @@
  */
 
 module.exports = function (fastify, opts, done) {
+  const B2StorageService = require("../b2-storage.cjs");
+
+  const b2Storage = new B2StorageService({
+    keyId: process.env.B2_KEY_ID,
+    applicationKey: process.env.B2_APPLICATION_KEY,
+    bucketName: process.env.B2_BUCKET_NAME,
+    endpoint: process.env.B2_ENDPOINT,
+    region: process.env.B2_REGION,
+  });
+
+  function normalizeAssetType(mimeType = "") {
+    if (mimeType.startsWith("video/")) return "video";
+    if (mimeType.startsWith("image/")) return "image";
+    if (mimeType.startsWith("audio/")) return "audio";
+    return "document";
+  }
+
+  function inferMimeType(filename = "") {
+    const ext = filename.toLowerCase();
+    if (ext.endsWith(".mp4") || ext.endsWith(".mov") || ext.endsWith(".avi") || ext.endsWith(".webm")) return "video/mp4";
+    if (ext.endsWith(".png")) return "image/png";
+    if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
+    if (ext.endsWith(".gif")) return "image/gif";
+    if (ext.endsWith(".mp3") || ext.endsWith(".wav") || ext.endsWith(".m4a")) return "audio/mpeg";
+    if (ext.endsWith(".pdf")) return "application/pdf";
+    return "application/octet-stream";
+  }
+
+  function toFrontendAssetShape(asset) {
+    const mimeType = asset.mimeType || inferMimeType(asset.name || "");
+    const normalizedType = normalizeAssetType(mimeType);
+    const uploadDate = asset.uploadDate || asset.createdAt || new Date().toISOString();
+    const thumbnail = normalizedType === "image" ? asset.url : asset.thumbnail || null;
+
+    return {
+      id: asset.id,
+      name: asset.name,
+      type: normalizedType,
+      size: asset.size,
+      uploadDate,
+      url: asset.url,
+      thumbnail,
+      tags: asset.tags || [],
+      metadata: asset.metadata || {},
+      compressionStatus: asset.compressionStatus || "completed",
+    };
+  }
+
   // Get media assets - return real uploaded files
   fastify.get("/", async (request, reply) => {
     const {
@@ -206,87 +254,108 @@ module.exports = function (fastify, opts, done) {
       sortOrder,
       limit = 20,
       offset = 0,
+      source = "all",
     } = request.query;
 
     try {
       const fs = require("fs");
       const path = require("path");
 
-      // Get real uploaded files
+      // Get real uploaded files (local)
       const uploadsDir = path.join(__dirname, "../../uploads");
-      let realAssets = [];
+      let localAssets = [];
+      let b2Assets = [];
 
-      if (fs.existsSync(uploadsDir)) {
+      if ((source === "local" || source === "all") && fs.existsSync(uploadsDir)) {
         const files = fs.readdirSync(uploadsDir);
-        realAssets = files.map((filename) => {
+        localAssets = files.map((filename) => {
           const filepath = path.join(uploadsDir, filename);
           const stats = fs.statSync(filepath);
           const originalName = filename.replace(/^\d+-/, ""); // Remove timestamp prefix
+          const mimeType = inferMimeType(filename);
 
           return {
             id: filename,
             name: originalName,
-            type: path.extname(filename).toLowerCase().includes("mp4")
-              ? "video/mp4"
-              : path.extname(filename).toLowerCase().includes("png")
-              ? "image/png"
-              : path.extname(filename).toLowerCase().includes("jpg")
-              ? "image/jpeg"
-              : path.extname(filename).toLowerCase().includes("mp3")
-              ? "audio/mp3"
-              : "application/octet-stream",
+            mimeType,
             size: stats.size,
             uploadDate: stats.mtime.toISOString(),
             url: `/uploads/${filename}`,
-            thumbnail: path.extname(filename).toLowerCase().includes("mp4")
-              ? null
-              : `/uploads/${filename}`,
+            thumbnail: mimeType.startsWith("image/") ? `/uploads/${filename}` : null,
+            tags: [],
+            metadata: {},
+            compressionStatus: "completed",
+            storageLocation: "local",
           };
         });
       }
 
+      // Get B2 assets (same presigned URL behavior as express server path)
+      if ((source === "b2" || source === "all") && b2Storage.isEnabled()) {
+        try {
+          const b2Files = await b2Storage.listFiles("uploads/", 1000);
+          b2Assets = await b2Storage.transformToMediaAssets(b2Files);
+        } catch (b2Error) {
+          console.error("Error listing B2 files:", b2Error.message);
+        }
+      }
+
       // Add some mock data if no real files exist
       const mockAssets =
-        realAssets.length === 0
+        localAssets.length === 0 && b2Assets.length === 0
           ? [
               {
                 id: "1",
                 name: "Project Video.mp4",
-                type: "video/mp4",
+                mimeType: "video/mp4",
                 size: 125000000,
                 uploadDate: "2025-07-31T10:00:00Z",
                 url: "/uploads/project-video.mp4",
                 thumbnail: "/uploads/thumbnails/project-video.jpg",
+                tags: [],
+                metadata: {},
+                compressionStatus: "completed",
               },
               {
                 id: "2",
                 name: "Design Mockup.png",
-                type: "image/png",
+                mimeType: "image/png",
                 size: 2500000,
                 uploadDate: "2025-07-30T15:30:00Z",
                 url: "/uploads/design-mockup.png",
                 thumbnail: "/uploads/design-mockup.png",
+                tags: [],
+                metadata: {},
+                compressionStatus: "completed",
               },
               {
                 id: "3",
                 name: "Audio Track.mp3",
-                type: "audio/mp3",
+                mimeType: "audio/mpeg",
                 size: 8200000,
                 uploadDate: "2025-07-29T09:15:00Z",
                 url: "/uploads/audio-track.mp3",
+                thumbnail: null,
+                tags: [],
+                metadata: {},
+                compressionStatus: "completed",
               },
               {
                 id: "4",
                 name: "Report.pdf",
-                type: "application/pdf",
+                mimeType: "application/pdf",
                 size: 1800000,
                 uploadDate: "2025-07-28T14:20:00Z",
                 url: "/uploads/report.pdf",
+                thumbnail: null,
+                tags: [],
+                metadata: {},
+                compressionStatus: "completed",
               },
             ]
           : [];
 
-      let allAssets = [...realAssets, ...mockAssets];
+      let allAssets = [...localAssets, ...b2Assets, ...mockAssets];
 
       // Apply search filter
       if (query) {
@@ -298,15 +367,16 @@ module.exports = function (fastify, opts, done) {
       // Apply type filter
       if (type && type !== "All") {
         allAssets = allAssets.filter((asset) => {
+          const mimeType = asset.mimeType || inferMimeType(asset.name || "");
           switch (type) {
             case "Video":
-              return asset.type.startsWith("video/");
+              return mimeType.startsWith("video/");
             case "Images":
-              return asset.type.startsWith("image/");
+              return mimeType.startsWith("image/");
             case "Audio":
-              return asset.type.startsWith("audio/");
+              return mimeType.startsWith("audio/");
             case "Document":
-              return asset.type === "application/pdf";
+              return mimeType === "application/pdf";
             default:
               return true;
           }
@@ -338,19 +408,17 @@ module.exports = function (fastify, opts, done) {
       const start = parseInt(offset) || 0;
       const end = start + (parseInt(limit) || 20);
       const paginatedAssets = allAssets.slice(start, end);
+      const transformedAssets = paginatedAssets.map(toFrontendAssetShape);
 
       reply.send({
-        data: paginatedAssets,
-        meta: {
-          total: allAssets.length,
-          limit: parseInt(limit) || 20,
-          offset: parseInt(offset) || 0,
-          hasMore: end < allAssets.length,
-        },
+        success: true,
+        assets: transformedAssets,
+        folders: [],
       });
     } catch (error) {
       console.error("Error reading uploaded files:", error);
       reply.code(500).send({
+        success: false,
         error: "Failed to retrieve media assets",
         message: error.message,
       });
@@ -358,24 +426,140 @@ module.exports = function (fastify, opts, done) {
   });
 
   // Get single media asset
-  fastify.get("/:id", async (request, reply) => {
-    const mockAsset = {
-      id: request.params.id,
-      name: "Sample Video.mp4",
-      type: "video/mp4",
-      size: 125000000,
-      uploadDate: "2025-07-31T10:00:00Z",
-      url: "/uploads/sample-video.mp4",
-      thumbnail: "/uploads/thumbnails/sample-video.jpg",
-      metadata: {
-        duration: 120,
-        resolution: "1920x1080",
-        framerate: 30,
-        codec: "h264",
-      },
-    };
+  fastify.get("/search", async (request, reply) => {
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const { q: query = "", source = "all" } = request.query;
 
-    reply.send(mockAsset);
+      if (!query || !String(query).trim()) {
+        return reply.code(400).send({
+          success: false,
+          error: "Search query is required",
+          assets: [],
+        });
+      }
+
+      const searchLower = String(query).toLowerCase();
+      const uploadsDir = path.join(__dirname, "../../uploads");
+      let assets = [];
+
+      // Local search (current parity phase)
+      if ((source === "local" || source === "all") && fs.existsSync(uploadsDir)) {
+        const files = fs.readdirSync(uploadsDir);
+
+        assets = files
+          .map((filename) => {
+            const filepath = path.join(uploadsDir, filename);
+            const stats = fs.statSync(filepath);
+            const mimeType = inferMimeType(filename);
+            const originalName = filename.replace(/^\d+-/, "");
+
+            return toFrontendAssetShape({
+              id: filename,
+              name: originalName,
+              mimeType,
+              size: stats.size,
+              uploadDate: stats.mtime.toISOString(),
+              url: `/uploads/${filename}`,
+              thumbnail: mimeType.startsWith("image/")
+                ? `/uploads/${filename}`
+                : null,
+              tags: [],
+              metadata: {},
+              compressionStatus: "completed",
+            });
+          })
+          .filter((asset) => {
+            const typeMatch = String(asset.type || "")
+              .toLowerCase()
+              .includes(searchLower);
+            const nameMatch = String(asset.name || "")
+              .toLowerCase()
+              .includes(searchLower);
+            const tagMatch = Array.isArray(asset.tags)
+              ? asset.tags.some((tag) => String(tag).toLowerCase().includes(searchLower))
+              : false;
+
+            return nameMatch || typeMatch || tagMatch;
+          });
+      }
+
+      return reply.send({
+        success: true,
+        assets,
+        query: String(query),
+        count: assets.length,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: error.message,
+        assets: [],
+      });
+    }
+  });
+
+  // Get single media asset
+  fastify.get("/:id", async (request, reply) => {
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const { id } = request.params;
+      const uploadsDir = path.join(__dirname, "../../uploads");
+
+      if (!fs.existsSync(uploadsDir)) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found",
+        });
+      }
+
+      const files = fs.readdirSync(uploadsDir);
+
+      // Try exact filename match first, then original name match (timestamp stripped)
+      const matchedFile = files.find((filename) => {
+        if (filename === id) return true;
+        const originalName = filename.replace(/^\d+-/, "");
+        return originalName === id;
+      });
+
+      if (!matchedFile) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found",
+        });
+      }
+
+      const filepath = path.join(uploadsDir, matchedFile);
+      const stats = fs.statSync(filepath);
+      const mimeType = inferMimeType(matchedFile);
+
+      const asset = toFrontendAssetShape({
+        id: matchedFile,
+        name: matchedFile.replace(/^\d+-/, ""),
+        mimeType,
+        size: stats.size,
+        uploadDate: stats.mtime.toISOString(),
+        url: `/api/uploads/${matchedFile}`,
+        thumbnail: mimeType.startsWith("image/") ? `/api/uploads/${matchedFile}` : null,
+        tags: [],
+        metadata: {},
+        compressionStatus: "completed",
+      });
+
+      return reply.send({
+        success: true,
+        asset,
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to retrieve media asset",
+        message: error.message,
+      });
+    }
   });
 
   // Upload media asset
@@ -394,6 +578,9 @@ module.exports = function (fastify, opts, done) {
 
       const parts = request.parts();
       const uploadedFiles = [];
+      const uploadOptions = {
+        destination: "both",
+      };
 
       for await (const part of parts) {
         if (part.file) {
@@ -404,29 +591,73 @@ module.exports = function (fastify, opts, done) {
           await pipeline(part.file, fs.createWriteStream(filepath));
 
           const stats = fs.statSync(filepath);
-          const fileInfo = {
-            id: Date.now().toString(),
+          let b2Result = null;
+
+          if ((uploadOptions.destination === "b2" || uploadOptions.destination === "both") && b2Storage.isEnabled()) {
+            try {
+              const b2Key = `uploads/${filename}`;
+              b2Result = await b2Storage.uploadFile(filepath, b2Key, {
+                originalName: part.filename,
+              });
+            } catch (b2Error) {
+              console.error("B2 upload failed:", b2Error.message);
+              if (uploadOptions.destination === "b2") {
+                throw new Error(`B2 upload failed: ${b2Error.message}`);
+              }
+            }
+          }
+
+          const fileInfo = toFrontendAssetShape({
+            id: filename,
             name: part.filename,
-            type: part.mimetype,
+            mimeType: part.mimetype,
             size: stats.size,
             uploadDate: new Date().toISOString(),
-            url: `/uploads/${filename}`,
-            thumbnail: part.mimetype.startsWith("image/")
-              ? `/uploads/${filename}`
-              : null,
-          };
+            url: `/api/uploads/${filename}`,
+            thumbnail: part.mimetype.startsWith("image/") ? `/api/uploads/${filename}` : null,
+            tags: [],
+            metadata: {},
+            compressionStatus: "completed",
+          });
+
+          fileInfo.storageLocation = b2Result ? "both" : "local";
+          fileInfo.b2Url = b2Result?.url || null;
+          fileInfo.b2Key = b2Result?.key || null;
 
           uploadedFiles.push(fileInfo);
 
           // Log upload success
           console.log(`File uploaded: ${part.filename} (${stats.size} bytes)`);
+        } else {
+          if (part.fieldname === "destination" && part.value) {
+            const destination = String(part.value).toLowerCase();
+            if (["local", "b2", "both"].includes(destination)) {
+              uploadOptions.destination = destination;
+            }
+          }
         }
+      }
+
+      if (uploadedFiles.length === 0) {
+        return reply.code(400).send({
+          success: false,
+          message: "No files uploaded",
+        });
       }
 
       reply.send({
         success: true,
         message: "Files uploaded successfully",
+        asset: uploadedFiles[0],
         files: uploadedFiles,
+        uploadedTo: {
+          local:
+            uploadOptions.destination === "local" ||
+            uploadOptions.destination === "both",
+          b2:
+            uploadOptions.destination === "b2" ||
+            uploadOptions.destination === "both",
+        },
       });
     } catch (error) {
       console.error("Upload error:", error);
@@ -439,9 +670,33 @@ module.exports = function (fastify, opts, done) {
   });
 
   // Delete media asset
-  fastify.delete("/:id", async (request, reply) => {
-    // Simulate successful deletion
-    reply.code(204).send();
+  fastify.delete("/:filename", async (request, reply) => {
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const { filename } = request.params;
+      const uploadsDir = path.join(__dirname, "../../uploads");
+      const filePath = path.join(uploadsDir, filename);
+
+      if (!fs.existsSync(filePath)) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found",
+        });
+      }
+
+      fs.unlinkSync(filePath);
+
+      return reply.send({
+        success: true,
+        message: "File deleted successfully",
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: error.message,
+      });
+    }
   });
 
   done();

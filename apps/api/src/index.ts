@@ -3,11 +3,13 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
+import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
+import path from 'path';
 
 // Load environment variables
 dotenv.config();
@@ -240,6 +242,12 @@ async function setupServer() {
   });
 
   await fastify.register(websocket);
+
+  // Serve uploaded media files for preview/playback
+  await fastify.register(fastifyStatic, {
+    root: path.resolve(__dirname, '../uploads'),
+    prefix: '/uploads/',
+  });
 
   // Authentication decorator
   fastify.decorate('authenticate', async function(request: any, reply: any) {
