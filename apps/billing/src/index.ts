@@ -5,7 +5,10 @@ import rateLimit from '@fastify/rate-limit';
 import jwt from '@fastify/jwt';
 import Stripe from 'stripe';
 import { PrismaClient } from '@prisma/client';
+<<<<<<< HEAD
 import dotenv from 'dotenv';
+=======
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 import { createLogger } from './utils/logger.js';
 import { subscriptionRoutes } from './routes/subscriptions.js';
 import { billingRoutes } from './routes/billing.js';
@@ -13,8 +16,11 @@ import { webhookRoutes } from './routes/webhooks.js';
 import { usageRoutes } from './routes/usage.js';
 import { analyticsRoutes } from './routes/analytics.js';
 
+<<<<<<< HEAD
 dotenv.config({ path: '../../.env' });
 
+=======
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 const logger = createLogger('billing-service');
 const prisma = new PrismaClient();
 
@@ -154,7 +160,11 @@ process.on('SIGINT', gracefulShutdown);
 // Start server
 const start = async () => {
   try {
+<<<<<<< HEAD
     const port = parseInt(process.env.PORT || '3003');
+=======
+    const port = parseInt(process.env.PORT || '3002');
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
     const host = process.env.HOST || '0.0.0.0';
     
     await fastify.listen({ port, host });

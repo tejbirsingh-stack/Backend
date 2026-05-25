@@ -205,7 +205,11 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     try {
       await Promise.all(
         assetIds.map(id => 
+<<<<<<< HEAD
           fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/media/${id}/soft-delete`, { method: 'POST' })
+=======
+          fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/media/${id}`, { method: 'DELETE' })
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         )
       );
       

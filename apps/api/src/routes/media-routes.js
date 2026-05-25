@@ -84,7 +84,11 @@ async function mediaRoutes(fastify, options) {
 
         // Get the demo org for testing
         const demoOrg = await mediaAssetService.prisma.organization.findFirst({
+<<<<<<< HEAD
           where: { slug: "demo-org" },
+=======
+          where: { slug: "visit-detroit" },
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         });
 
         if (!demoOrg) {
@@ -197,10 +201,17 @@ async function mediaRoutes(fastify, options) {
 
         // Save asset to database
         const demoOrg = await mediaAssetService.prisma.organization.findFirst({
+<<<<<<< HEAD
           where: { slug: "demo-org" },
         });
         const demoUser = await mediaAssetService.prisma.user.findFirst({
           where: { email: "demo@example.com" },
+=======
+          where: { slug: "visit-detroit" },
+        });
+        const demoUser = await mediaAssetService.prisma.user.findFirst({
+          where: { email: "admin@visitdetroit.com" },
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         });
 
         if (!demoOrg || !demoUser) {
@@ -278,7 +289,11 @@ async function mediaRoutes(fastify, options) {
         const { id } = request.params;
 
         const demoOrg = await mediaAssetService.prisma.organization.findFirst({
+<<<<<<< HEAD
           where: { slug: "demo-org" },
+=======
+          where: { slug: "visit-detroit" },
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         });
 
         if (!demoOrg) {

@@ -27,12 +27,15 @@ model Organization {
   collections  Collection[]
   tags         Tag[]
   shareLinks   ShareLink[]
+<<<<<<< HEAD
   subscriptions Subscription[]
   usages       Usage[]
 
   subscriptionStatus String?   @db.VarChar(50)
   currentPlanId      String?   @db.VarChar(255)
   stripeCustomerId   String?   @db.VarChar(255)
+=======
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 
   @@map("organizations")
 }
@@ -63,7 +66,10 @@ model User {
   auditLogs           AuditLog[]
   analyticsEvents     AnalyticsEvent[]
   createdAssetVersions AssetVersion[]
+<<<<<<< HEAD
   createdSubscriptions Subscription[] @relation("CreatedBy")
+=======
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 
   @@unique([orgId, email], name: "unique_email_per_org")
   // Sessions related to this user
@@ -307,6 +313,7 @@ model AnalyticsEvent {
   @@id([id, createdAt]) // TimescaleDB requires composite primary key on time column
   @@index([orgId, createdAt(sort: Desc)])
   @@map("analytics_events")
+<<<<<<< HEAD
 }
 
 model Subscription {
@@ -350,4 +357,6 @@ model Usage {
 
   @@index([organizationId])
   @@map("usage_records")
+=======
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 }

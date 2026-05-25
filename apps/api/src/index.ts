@@ -3,9 +3,15 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
+<<<<<<< HEAD
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
 import staticPlugin from '@fastify/static';
+=======
+import fastifyStatic from '@fastify/static';
+import jwt from '@fastify/jwt';
+import websocket from '@fastify/websocket';
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
@@ -30,9 +36,12 @@ const authService = {
         role: 'admin'
       }
     };
+<<<<<<< HEAD
   },
   healthCheck: async () => {
     return true;
+=======
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   }
 };
 
@@ -95,8 +104,12 @@ class HealthChecker {
 // Configuration
 const config = {
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+<<<<<<< HEAD
   // Default 10 GiB (same order as apps/api/src/config/index.ts); override with MAX_FILE_SIZE in .env
   MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '10737418240', 10),
+=======
+  MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '104857600', 10),
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   DATABASE_URL: process.env.DATABASE_URL || 'postgresql://noah_user:noah_dev_password@localhost:5432/noah_dev',
   REDIS_SENTINEL_HOST: process.env.REDIS_SENTINEL_HOST || 'localhost',
   REDIS_SENTINEL_PORT: parseInt(process.env.REDIS_SENTINEL_PORT || '26379', 10),
@@ -201,6 +214,7 @@ async function setupServer() {
     origin: config.API_CORS_ORIGIN.split(','),
     credentials: config.CORS_CREDENTIALS,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+<<<<<<< HEAD
     allowedHeaders: [
       'Content-Type',
       'Authorization',
@@ -210,6 +224,9 @@ async function setupServer() {
       'Accept',
       'If-None-Match'
     ]
+=======
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   });
 
   await fastify.register(rateLimit, {
@@ -253,6 +270,7 @@ async function setupServer() {
     }
   });
 
+<<<<<<< HEAD
   // Serve uploaded files from apps/api/uploads at /uploads/*
   await fastify.register(staticPlugin, {
     root: path.join(__dirname, '..', 'uploads'),
@@ -261,6 +279,16 @@ async function setupServer() {
 
   await fastify.register(websocket);
 
+=======
+  await fastify.register(websocket);
+
+  // Serve uploaded media files for preview/playback
+  await fastify.register(fastifyStatic, {
+    root: path.resolve(__dirname, '../uploads'),
+    prefix: '/uploads/',
+  });
+
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   // Authentication decorator
   fastify.decorate('authenticate', async function(request: any, reply: any) {
     try {
@@ -432,4 +460,8 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Call the setup function
+<<<<<<< HEAD
 setupServer();
+=======
+setupServer();
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec

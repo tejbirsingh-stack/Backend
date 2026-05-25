@@ -112,7 +112,11 @@ async function seedAdmin() {
         passwordHash: hashedPassword,
         role: 'admin',
         status: 'active',
+<<<<<<< HEAD
         // emailVerified: true,
+=======
+        emailVerified: true,
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         failedLoginAttempts: 0
       }
     });

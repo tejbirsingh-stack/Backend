@@ -147,8 +147,12 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
       console.log('API Response:', response.data);
       
       // Handle the enhanced media server response format
+<<<<<<< HEAD
       // const assets = response.data.assets || response.data.data || response. data; -> fix
       const assets = response.data.assets || response.data;
+=======
+      const assets = response.data.assets || response.data.data || response.data;
+>>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
       const folders = response.data.folders || [];
       
       // Transform the assets to match the expected format
