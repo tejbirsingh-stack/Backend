@@ -3,15 +3,9 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
-<<<<<<< HEAD
-import jwt from '@fastify/jwt';
-import websocket from '@fastify/websocket';
-import staticPlugin from '@fastify/static';
-=======
 import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
@@ -36,12 +30,6 @@ const authService = {
         role: 'admin'
       }
     };
-<<<<<<< HEAD
-  },
-  healthCheck: async () => {
-    return true;
-=======
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   }
 };
 
@@ -53,23 +41,23 @@ class Logger {
   constructor(namespace) {
     this.namespace = namespace;
   }
-  
+
   info(message, meta) {
     console.log(`[INFO] [${this.namespace}] ${message}`, meta || '');
   }
-  
+
   warn(message, meta) {
     console.warn(`[WARN] [${this.namespace}] ${message}`, meta || '');
   }
-  
+
   error(message, meta) {
     console.error(`[ERROR] [${this.namespace}] ${message}`, meta || '');
   }
 }
 
 class MetricsCollector {
-  recordHttpRequest() {}
-  recordError() {}
+  recordHttpRequest() { }
+  recordError() { }
   getMetrics() { return "# Metrics placeholder"; }
 }
 
@@ -77,7 +65,7 @@ class HealthChecker {
   async check(services: any = {}) {
     // Check services passed as parameters
     const serviceStatus: Record<string, string> = {};
-    
+
     // Add auth service status if provided
     if (services.authService) {
       try {
@@ -87,12 +75,12 @@ class HealthChecker {
         serviceStatus.auth = 'error';
       }
     }
-    
+
     // Overall status is healthy if no services are in error state
     const hasErrors = Object.values(serviceStatus).some(status => status === 'error');
-    
-    return { 
-      status: hasErrors ? 'unhealthy' : 'healthy', 
+
+    return {
+      status: hasErrors ? 'unhealthy' : 'healthy',
       timestamp: new Date().toISOString(),
       services: serviceStatus,
       version: process.env.VERSION || '1.0.0',
@@ -104,12 +92,7 @@ class HealthChecker {
 // Configuration
 const config = {
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
-<<<<<<< HEAD
-  // Default 10 GiB (same order as apps/api/src/config/index.ts); override with MAX_FILE_SIZE in .env
-  MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '10737418240', 10),
-=======
   MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '104857600', 10),
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   DATABASE_URL: process.env.DATABASE_URL || 'postgresql://noah_user:noah_dev_password@localhost:5432/noah_dev',
   REDIS_SENTINEL_HOST: process.env.REDIS_SENTINEL_HOST || 'localhost',
   REDIS_SENTINEL_PORT: parseInt(process.env.REDIS_SENTINEL_PORT || '26379', 10),
@@ -214,19 +197,7 @@ async function setupServer() {
     origin: config.API_CORS_ORIGIN.split(','),
     credentials: config.CORS_CREDENTIALS,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-<<<<<<< HEAD
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-Requested-With',
-      'Cache-Control',
-      'Pragma',
-      'Accept',
-      'If-None-Match'
-    ]
-=======
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   });
 
   await fastify.register(rateLimit, {
@@ -270,16 +241,6 @@ async function setupServer() {
     }
   });
 
-<<<<<<< HEAD
-  // Serve uploaded files from apps/api/uploads at /uploads/*
-  await fastify.register(staticPlugin, {
-    root: path.join(__dirname, '..', 'uploads'),
-    prefix: '/uploads/',
-  });
-
-  await fastify.register(websocket);
-
-=======
   await fastify.register(websocket);
 
   // Serve uploaded media files for preview/playback
@@ -288,9 +249,8 @@ async function setupServer() {
     prefix: '/uploads/',
   });
 
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
   // Authentication decorator
-  fastify.decorate('authenticate', async function(request: any, reply: any) {
+  fastify.decorate('authenticate', async function (request: any, reply: any) {
     try {
       const token = request.headers.authorization?.replace('Bearer ', '');
       if (!token) {
@@ -299,7 +259,7 @@ async function setupServer() {
 
       const decoded = await request.jwtVerify();
       const session = await fastify.authService.validateSession(token);
-      
+
       if (!session) {
         throw new Error('Invalid or expired session');
       }
@@ -307,9 +267,9 @@ async function setupServer() {
       request.user = session.user;
       request.session = session;
     } catch (err: any) {
-      reply.code(401).send({ 
-        error: 'Unauthorized', 
-        message: err.message 
+      reply.code(401).send({
+        error: 'Unauthorized',
+        message: err.message
       });
     }
   });
@@ -319,7 +279,7 @@ async function setupServer() {
     const requestId = request.headers['x-request-id'] || `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     request.id = requestId;
     reply.header('x-request-id', requestId);
-    
+
     // Start request timer for metrics
     request.startTime = Date.now();
   });
@@ -327,7 +287,7 @@ async function setupServer() {
   // Response time and metrics collection
   fastify.addHook('onResponse', async (request: any, reply: any) => {
     const responseTime = Date.now() - request.startTime;
-    
+
     // Collect metrics
     metrics.recordHttpRequest(
       request.method,
@@ -335,7 +295,7 @@ async function setupServer() {
       reply.statusCode,
       responseTime
     );
-    
+
     // Log request completion
     logger.info('Request completed', {
       requestId: request.id,
@@ -350,7 +310,7 @@ async function setupServer() {
   // Error handler
   fastify.setErrorHandler(async (error: any, request: any, reply: any) => {
     const requestId = request.id;
-    
+
     logger.error('Request error', {
       requestId,
       error: error.message,
@@ -358,10 +318,10 @@ async function setupServer() {
       url: request.url,
       method: request.method
     });
-    
+
     // Increment error metrics
     metrics.recordError(error.name || 'UnknownError');
-    
+
     // Determine status code
     let statusCode = 500;
     if (error.statusCode) {
@@ -371,7 +331,7 @@ async function setupServer() {
     } else if (error.code === 'FST_ERR_VALIDATION') {
       statusCode = 400;
     }
-    
+
     // Send error response
     reply.code(statusCode).send({
       error: statusCode >= 500 ? 'Internal Server Error' : error.message,
@@ -387,7 +347,7 @@ async function setupServer() {
       redis: redis,
       authService: fastify.authService
     });
-    
+
     const statusCode = health.status === 'healthy' ? 200 : 503;
     reply.code(statusCode).send(health);
   });
@@ -408,7 +368,7 @@ async function setupServer() {
     fastify.register(require('./routes/organizations'), { prefix: '/api/organizations' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
     fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
-    
+
     // WebSocket routes for real-time features
     fastify.register(require('./routes/realtime'), { prefix: '/ws' });
   } catch (err: any) {
@@ -417,11 +377,11 @@ async function setupServer() {
 
   // Start server
   try {
-    await fastify.listen({ 
-      port: config.API_PORT, 
-      host: config.API_HOST 
+    await fastify.listen({
+      port: config.API_PORT,
+      host: config.API_HOST
     });
-    
+
     logger.info(`Noah API Server started successfully`, {
       port: config.API_PORT,
       host: config.API_HOST,
@@ -437,17 +397,17 @@ async function setupServer() {
 // Graceful shutdown
 const gracefulShutdown = async (signal: string) => {
   logger.info(`Received ${signal}, shutting down gracefully...`);
-  
+
   try {
     // Stop accepting new connections
     await fastify.close();
-    
+
     // Close database connections
     await prisma.$disconnect();
-    
+
     // Close Redis connection
     await redis.disconnect();
-    
+
     logger.info('Shutdown completed successfully');
     process.exit(0);
   } catch (error: any) {
@@ -460,8 +420,4 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Call the setup function
-<<<<<<< HEAD
 setupServer();
-=======
-setupServer();
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec

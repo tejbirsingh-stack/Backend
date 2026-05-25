@@ -11,10 +11,7 @@ async function routes(fastify, options) {
       // Validate input
       if (!email || !password) {
         return reply.status(400).send({
-<<<<<<< HEAD
-=======
           success: false,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
           error: "Bad Request",
           message: "Email and password are required",
         });
@@ -29,10 +26,7 @@ async function routes(fastify, options) {
         !(await authService.verifyPassword(user.passwordHash, password))
       ) {
         return reply.status(401).send({
-<<<<<<< HEAD
-=======
           success: false,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
           error: "Unauthorized",
           message: "Invalid email or password",
         });
@@ -41,10 +35,7 @@ async function routes(fastify, options) {
       // Check user status
       if (user.status !== "active") {
         return reply.status(403).send({
-<<<<<<< HEAD
-=======
           success: false,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
           error: "Forbidden",
           message: "Account is not active",
         });
@@ -54,10 +45,7 @@ async function routes(fastify, options) {
       if (user.mfaEnabled) {
         if (!mfaCode) {
           return reply.status(400).send({
-<<<<<<< HEAD
-=======
             success: false,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
             error: "MFA Required",
             message: "Multi-factor authentication code is required",
             requiresMfa: true,
@@ -66,10 +54,7 @@ async function routes(fastify, options) {
 
         if (!authService.verifyTotp(mfaCode, user.mfaSecret)) {
           return reply.status(401).send({
-<<<<<<< HEAD
-=======
             success: false,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
             error: "Unauthorized",
             message: "Invalid authentication code",
             requiresMfa: true,
@@ -85,8 +70,6 @@ async function routes(fastify, options) {
       );
 
       // Return user info and session token
-<<<<<<< HEAD
-=======
       // return {
       //   user: {
       //     id: user.id,
@@ -98,7 +81,6 @@ async function routes(fastify, options) {
       //   token: session.token,
       //   expiresAt: session.expiresAt,
       // };
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
       return {
         success: true,
         user: {
@@ -116,10 +98,7 @@ async function routes(fastify, options) {
     } catch (error) {
       console.error("Login error:", error);
       return reply.status(500).send({
-<<<<<<< HEAD
-=======
         success: false,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
         error: "Internal Server Error",
         message: "Failed to process login",
       });
@@ -216,12 +195,6 @@ async function routes(fastify, options) {
         // Revoke the session
         await authService.revokeSession(token);
 
-<<<<<<< HEAD
-        return { message: "Logged out successfully" };
-      } catch (error) {
-        console.error("Logout error:", error);
-        return reply.status(500).send({
-=======
         return {
           success: true,
           message: "Logged out successfully",
@@ -230,7 +203,6 @@ async function routes(fastify, options) {
         console.error("Logout error:", error);
         return reply.status(500).send({
           success: false,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
           error: "Internal Server Error",
           message: "Failed to process logout",
         });
@@ -359,10 +331,7 @@ async function routes(fastify, options) {
   // Get current user info (requires authentication)
   fastify.get("/me", { preHandler: authenticate }, async (request, reply) => {
     return {
-<<<<<<< HEAD
-=======
       success: true,
->>>>>>> 03aac1217714e2d9dcedb1e77e7d4d45f954e7ec
       user: request.user,
     };
   });
