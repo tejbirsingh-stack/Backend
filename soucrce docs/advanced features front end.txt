@@ -1,0 +1,554 @@
+// Collaborative Editor with Yjs and CRDTs
+import * as Y from 'yjs';
+import { WebrtcProvider } from 'y-webrtc';
+import { IndexeddbPersistence } from 'y-indexeddb';
+import { useY } from '@y-presence/react';
+import { useSyncedStore } from '@syncedstore/react';
+import { syncedStore, getYjsDoc } from '@syncedstore/core';
+
+// Collaborative state store
+export const collaborativeStore = syncedStore({
+  assets: [] as Asset[],
+  cursors: {} as Record<string, CursorPosition>,
+  selections: {} as Record<string, string[]>,
+  annotations: [] as Annotation[]
+});
+
+interface CursorPosition {
+  x: number;
+  y: number;
+  userId: string;
+  userName: string;
+  color: string;
+  timestamp: number;
+}
+
+interface Annotation {
+  id: string;
+  assetId: string;
+  userId: string;
+  x: number;
+  y: number;
+  text: string;
+  timestamp: number;
+}
+
+export const CollaborativeEditor: FC = () => {
+  const ydoc = getYjsDoc(collaborativeStore);
+  const provider = useMemo(
+    () => new WebrtcProvider('media-collab-room', ydoc, {
+      signaling: ['wss://signaling.example.com'],
+      password: 'optional-password',
+      awareness: {
+        setLocalStateField: (field: string, value: any) => {
+          // Custom awareness state
+        }
+      }
+    }),
+    [ydoc]
+  );
+  
+  // IndexedDB persistence for offline support
+  const persistence = useMemo(
+    () => new IndexeddbPersistence('media-collab', ydoc),
+    [ydoc]
+  );
+  
+  const awareness = provider.awareness;
+  const state = useSyncedStore(collaborativeStore);
+  
+  // Track cursor movements
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      awareness.setLocalStateField('cursor', {
+        x: e.clientX,
+        y: e.clientY,
+        userId: currentUser.id,
+        userName: currentUser.name,
+        color: currentUser.color,
+        timestamp: Date.now()
+      });
+    };
+    
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => window.removeEventListener('mousemove', handleMouseMove);
+  }, [awareness]);
+  
+  // Listen for remote cursor updates
+  useEffect(() => {
+    const handleAwarenessChange = () => {
+      const states = awareness.getStates();
+      const cursors: Record<string, CursorPosition> = {};
+      
+      states.forEach((state, clientId) => {
+        if (state.cursor && clientId !== awareness.clientID) {
+          cursors[clientId] = state.cursor;
+        }
+      });
+      
+      collaborativeStore.cursors = cursors;
+    };
+    
+    awareness.on('change', handleAwarenessChange);
+    return () => awareness.off('change', handleAwarenessChange);
+  }, [awareness]);
+  
+  return (
+    <div className="relative">
+      <CollaborativeCursors cursors={state.cursors} />
+      <SelectionIndicators selections={state.selections} />
+      <AnnotationLayer annotations={state.annotations} />
+    </div>
+  );
+};
+
+// Advanced Upload System with TUS Protocol
+import * as tus from 'tus-js-client';
+
+interface UploadOptions {
+  endpoint: string;
+  chunkSize?: number;
+  parallelUploads?: number;
+  retryDelays?: number[];
+  metadata?: Record<string, string>;
+  onProgress?: (progress: number) => void;
+  onSuccess?: (upload: tus.Upload) => void;
+  onError?: (error: Error) => void;
+}
+
+export class AdvancedUploadManager {
+  private uploads: Map<string, tus.Upload> = new Map();
+  private queue: UploadQueueItem[] = [];
+  private activeUploads = 0;
+  private maxParallelUploads = 3;
+  
+  constructor(private options: UploadOptions) {
+    this.maxParallelUploads = options.parallelUploads || 3;
+  }
+  
+  async uploadFile(file: File, metadata?: Record<string, string>): Promise<string> {
+    const uploadId = crypto.randomUUID();
+    
+    const upload = new tus.Upload(file, {
+      endpoint: this.options.endpoint,
+      retryDelays: this.options.retryDelays || [0, 3000, 5000, 10000, 20000],
+      metadata: {
+        filename: file.name,
+        filetype: file.type,
+        ...metadata,
+        ...this.options.metadata
+      },
+      chunkSize: this.options.chunkSize || 5 * 1024 * 1024, // 5MB chunks
+      
+      onError: (error) => {
+        console.error('Upload failed:', error);
+        this.handleError(uploadId, error);
+        this.options.onError?.(error);
+      },
+      
+      onProgress: (bytesUploaded, bytesTotal) => {
+        const percentage = (bytesUploaded / bytesTotal) * 100;
+        this.updateProgress(uploadId, percentage);
+        this.options.onProgress?.(percentage);
+      },
+      
+      onSuccess: () => {
+        console.log('Upload finished:', upload.url);
+        this.completeUpload(uploadId);
+        this.options.onSuccess?.(upload);
+        this.processNextInQueue();
+      },
+      
+      onBeforeRequest: (req) => {
+        // Add custom headers
+        const xhr = req.getUnderlyingObject();
+        xhr.setRequestHeader('X-Upload-ID', uploadId);
+      }
+    });
+    
+    this.uploads.set(uploadId, upload);
+    
+    // Add to queue if max parallel uploads reached
+    if (this.activeUploads >= this.maxParallelUploads) {
+      this.queue.push({ uploadId, upload });
+    } else {
+      this.startUpload(uploadId);
+    }
+    
+    return uploadId;
+  }
+  
+  private startUpload(uploadId: string) {
+    const upload = this.uploads.get(uploadId);
+    if (!upload) return;
+    
+    this.activeUploads++;
+    
+    // Find previous uploads to resume
+    upload.findPreviousUploads().then((previousUploads) => {
+      if (previousUploads.length) {
+        upload.resumeFromPreviousUpload(previousUploads[0]);
+      }
+      
+      upload.start();
+    });
+  }
+  
+  pauseUpload(uploadId: string) {
+    const upload = this.uploads.get(uploadId);
+    if (upload) {
+      upload.abort();
+    }
+  }
+  
+  resumeUpload(uploadId: string) {
+    const upload = this.uploads.get(uploadId);
+    if (upload) {
+      upload.start();
+    }
+  }
+  
+  cancelUpload(uploadId: string) {
+    const upload = this.uploads.get(uploadId);
+    if (upload) {
+      upload.abort(true); // true = shouldTerminate
+      this.uploads.delete(uploadId);
+      this.activeUploads--;
+      this.processNextInQueue();
+    }
+  }
+  
+  private processNextInQueue() {
+    if (this.queue.length > 0 && this.activeUploads < this.maxParallelUploads) {
+      const next = this.queue.shift();
+      if (next) {
+        this.startUpload(next.uploadId);
+      }
+    }
+  }
+  
+  // Bandwidth throttling
+  throttleBandwidth(bytesPerSecond: number) {
+    this.uploads.forEach(upload => {
+      // Custom implementation for bandwidth throttling
+      const originalOnProgress = upload.options.onProgress;
+      let lastUpdate = Date.now();
+      let bytesUploaded = 0;
+      
+      upload.options.onProgress = (uploaded, total) => {
+        const now = Date.now();
+        const elapsed = (now - lastUpdate) / 1000;
+        const currentBytesUploaded = uploaded - bytesUploaded;
+        const currentSpeed = currentBytesUploaded / elapsed;
+        
+        if (currentSpeed > bytesPerSecond) {
+          // Delay next chunk
+          const delay = (currentBytesUploaded / bytesPerSecond - elapsed) * 1000;
+          setTimeout(() => {
+            originalOnProgress?.(uploaded, total);
+          }, delay);
+        } else {
+          originalOnProgress?.(uploaded, total);
+        }
+        
+        lastUpdate = now;
+        bytesUploaded = uploaded;
+      };
+    });
+  }
+}
+
+// React Query Configuration with Optimistic Updates
+import { QueryClient, QueryClientProvider, useQuery, useMutation } from '@tanstack/react-query';
+import { proxy, subscribe } from 'valtio';
+import { subscribeKey } from 'valtio/utils';
+
+// Create a proxy state that syncs with React Query
+export const queryState = proxy({
+  assets: [] as Asset[],
+  filters: {
+    search: '',
+    tags: [] as string[],
+    dateRange: null as DateRange | null
+  },
+  optimisticUpdates: new Map<string, any>()
+});
+
+// Configure React Query
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5 minutes
+      cacheTime: 10 * 60 * 1000, // 10 minutes
+      refetchOnWindowFocus: false,
+      retry: 3,
+      retryDelay: attemptIndex => Math.min(1000 * 2 ** attemptIndex, 30000)
+    },
+    mutations: {
+      retry: 3,
+      retryDelay: attemptIndex => Math.min(1000 * 2 ** attemptIndex, 30000)
+    }
+  }
+});
+
+// Custom hooks with optimistic updates
+export const useAssets = (filters?: AssetFilters) => {
+  return useQuery({
+    queryKey: ['assets', filters],
+    queryFn: async () => {
+      const response = await fetch('/api/assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(filters)
+      });
+      return response.json();
+    },
+    select: (data) => {
+      // Apply optimistic updates
+      const optimisticData = [...data];
+      queryState.optimisticUpdates.forEach((update, id) => {
+        const index = optimisticData.findIndex(item => item.id === id);
+        if (index !== -1) {
+          optimisticData[index] = { ...optimisticData[index], ...update };
+        }
+      });
+      return optimisticData;
+    }
+  });
+};
+
+export const useUpdateAsset = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async (update: { id: string; data: Partial<Asset> }) => {
+      const response = await fetch(`/api/assets/${update.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(update.data)
+      });
+      return response.json();
+    },
+    
+    onMutate: async (update) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['assets'] });
+      
+      // Snapshot previous value
+      const previousAssets = queryClient.getQueryData(['assets']);
+      
+      // Optimistically update
+      queryState.optimisticUpdates.set(update.id, update.data);
+      queryClient.setQueryData(['assets'], (old: Asset[]) => {
+        return old.map(asset => 
+          asset.id === update.id 
+            ? { ...asset, ...update.data }
+            : asset
+        );
+      });
+      
+      return { previousAssets };
+    },
+    
+    onError: (err, update, context) => {
+      // Revert optimistic update
+      queryState.optimisticUpdates.delete(update.id);
+      if (context?.previousAssets) {
+        queryClient.setQueryData(['assets'], context.previousAssets);
+      }
+    },
+    
+    onSettled: (data, error, update) => {
+      // Clear optimistic update
+      queryState.optimisticUpdates.delete(update.id);
+      // Refetch to ensure consistency
+      queryClient.invalidateQueries({ queryKey: ['assets'] });
+    }
+  });
+};
+
+// Performance Monitoring and Optimization
+import { Profiler, ProfilerOnRenderCallback } from 'react';
+
+interface PerformanceMetrics {
+  renderTime: number[];
+  componentName: string;
+  interactions: Set<any>;
+}
+
+export class PerformanceMonitor {
+  private metrics: Map<string, PerformanceMetrics> = new Map();
+  private observer: PerformanceObserver;
+  
+  constructor() {
+    // Monitor long tasks
+    this.observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.duration > 50) {
+          console.warn('Long task detected:', {
+            duration: entry.duration,
+            name: entry.name,
+            startTime: entry.startTime
+          });
+        }
+      }
+    });
+    
+    this.observer.observe({ entryTypes: ['longtask', 'measure'] });
+  }
+  
+  onRender: ProfilerOnRenderCallback = (
+    id,
+    phase,
+    actualDuration,
+    baseDuration,
+    startTime,
+    commitTime,
+    interactions
+  ) => {
+    if (!this.metrics.has(id)) {
+      this.metrics.set(id, {
+        componentName: id,
+        renderTime: [],
+        interactions: new Set()
+      });
+    }
+    
+    const metric = this.metrics.get(id)!;
+    metric.renderTime.push(actualDuration);
+    interactions.forEach(interaction => metric.interactions.add(interaction));
+    
+    // Alert on slow renders
+    if (actualDuration > 16.67) { // 60fps threshold
+      console.warn(`Slow render detected in ${id}:`, {
+        actualDuration,
+        phase,
+        interactions: Array.from(interactions)
+      });
+    }
+  };
+  
+  getMetrics() {
+    const results: any[] = [];
+    
+    this.metrics.forEach((metric, componentName) => {
+      const avgRenderTime = metric.renderTime.reduce((a, b) => a + b, 0) / metric.renderTime.length;
+      const maxRenderTime = Math.max(...metric.renderTime);
+      
+      results.push({
+        componentName,
+        avgRenderTime,
+        maxRenderTime,
+        renderCount: metric.renderTime.length,
+        interactions: metric.interactions.size
+      });
+    });
+    
+    return results.sort((a, b) => b.avgRenderTime - a.avgRenderTime);
+  }
+  
+  // Memory monitoring
+  monitorMemory() {
+    if ('memory' in performance) {
+      setInterval(() => {
+        const memory = (performance as any).memory;
+        const usedMB = memory.usedJSHeapSize / 1048576;
+        const totalMB = memory.totalJSHeapSize / 1048576;
+        
+        if (usedMB / totalMB > 0.9) {
+          console.warn('High memory usage detected:', {
+            used: `${usedMB.toFixed(2)}MB`,
+            total: `${totalMB.toFixed(2)}MB`,
+            percentage: `${((usedMB / totalMB) * 100).toFixed(2)}%`
+          });
+        }
+      }, 5000);
+    }
+  }
+}
+
+// Accessibility Testing Utilities
+export const a11yTests = {
+  checkKeyboardNavigation: (component: HTMLElement) => {
+    const focusableElements = component.querySelectorAll(
+      'a, button, input, textarea, select, [tabindex]:not([tabindex="-1"])'
+    );
+    
+    const issues: string[] = [];
+    
+    focusableElements.forEach(element => {
+      // Check for visible focus indicator
+      const styles = window.getComputedStyle(element);
+      if (styles.outlineStyle === 'none' && !element.classList.contains('focus-visible')) {
+        issues.push(`Element missing focus indicator: ${element.tagName}`);
+      }
+      
+      // Check for keyboard traps
+      const tabIndex = element.getAttribute('tabindex');
+      if (tabIndex && parseInt(tabIndex) > 0) {
+        issues.push(`Positive tabindex found: ${element.tagName}`);
+      }
+    });
+    
+    return issues;
+  },
+  
+  checkColorContrast: (foreground: string, background: string): boolean => {
+    // WCAG 2.1 color contrast calculation
+    const getLuminance = (color: string) => {
+      const rgb = color.match(/\d+/g)!.map(Number);
+      const [r, g, b] = rgb.map(c => {
+        c = c / 255;
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    
+    const l1 = getLuminance(foreground);
+    const l2 = getLuminance(background);
+    const contrast = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    
+    return contrast >= 4.5; // WCAG AA standard
+  },
+  
+  checkAriaLabels: (component: HTMLElement) => {
+    const issues: string[] = [];
+    
+    // Check images for alt text
+    component.querySelectorAll('img').forEach(img => {
+      if (!img.alt && !img.getAttribute('aria-label')) {
+        issues.push('Image missing alt text');
+      }
+    });
+    
+    // Check buttons for accessible names
+    component.querySelectorAll('button').forEach(button => {
+      if (!button.textContent?.trim() && !button.getAttribute('aria-label')) {
+        issues.push('Button missing accessible name');
+      }
+    });
+    
+    // Check form inputs for labels
+    component.querySelectorAll('input, select, textarea').forEach(input => {
+      const id = input.id;
+      const label = component.querySelector(`label[for="${id}"]`);
+      if (!label && !input.getAttribute('aria-label')) {
+        issues.push(`Form input missing label: ${input.tagName}`);
+      }
+    });
+    
+    return issues;
+  }
+};
+
+// Export all components and utilities
+export {
+  CollaborativeEditor,
+  AdvancedUploadManager,
+  queryClient,
+  queryState,
+  useAssets,
+  useUpdateAsset,
+  PerformanceMonitor,
+  a11yTests
+};

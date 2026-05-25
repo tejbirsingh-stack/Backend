@@ -1,0 +1,64 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["**/.env.*local"],
+  "globalEnv": [
+    "NODE_ENV",
+    "CI",
+    "VERCEL_ENV",
+    "ANALYZE",
+    "SENTRY_DSN",
+    "DD_API_KEY"
+  ],
+  "pipeline": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**", ".next/**", "build/**"],
+      "cache": true,
+      "env": ["NODE_ENV", "NEXT_PUBLIC_*", "VITE_*", "EXPO_PUBLIC_*"]
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "cache": true,
+      "inputs": ["src/**", "test/**", "tests/**", "package.json"],
+      "env": ["CI", "NODE_ENV"],
+      "outputs": ["coverage/**"]
+    },
+    "test:e2e": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "env": ["CI", "E2E_*"]
+    },
+    "lint": {
+      "outputs": [],
+      "cache": true,
+      "inputs": [
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.js",
+        "**/*.jsx",
+        ".eslintrc*",
+        "eslint.config.*"
+      ]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": [],
+      "cache": true,
+      "inputs": ["**/*.ts", "**/*.tsx", "tsconfig.json"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "clean": {
+      "cache": false
+    },
+    "security:scan": {
+      "cache": false,
+      "outputs": ["security-report.json"]
+    }
+  },
+  "remoteCache": {
+    "signature": true
+  }
+}

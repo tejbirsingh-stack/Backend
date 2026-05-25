@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Noah Demo Test Suite</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1a202c;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }
+        .test-section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f7fafc;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        .test-item {
+            margin: 15px 0;
+            padding: 15px;
+            background: white;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        button:hover {
+            background: #5a67d8;
+            transform: translateY(-2px);
+        }
+        .status {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status.success {
+            background: #48bb78;
+            color: white;
+        }
+        .status.error {
+            background: #f56565;
+            color: white;
+        }
+        .status.pending {
+            background: #ed8936;
+            color: white;
+        }
+        .upload-area {
+            border: 2px dashed #cbd5e0;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            transition: all 0.3s;
+        }
+        .upload-area.dragover {
+            border-color: #667eea;
+            background: #f7fafc;
+        }
+        .results {
+            margin-top: 10px;
+            padding: 10px;
+            background: #edf2f7;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .media-item {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: transform 0.3s;
+        }
+        .media-item:hover {
+            transform: scale(1.05);
+        }
+        .media-item img,
+        .media-item video {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+        }
+        .media-item .info {
+            padding: 10px;
+            background: white;
+        }
+        .media-item .name {
+            font-weight: bold;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        .media-item .type {
+            font-size: 11px;
+            color: #718096;
+        }
+        iframe {
+            width: 100%;
+            height: 600px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Noah Platform - Demo Test Suite</h1>
+        <p>Complete test suite for validating all features before the demo.</p>
+
+        <div class="test-section">
+            <h2>1. Service Health Check</h2>
+            <div class="test-item">
+                <span>API Server (Port 3000)</span>
+                <button onclick="testAPI()">Test API</button>
+                <span id="api-status" class="status pending">Pending</span>
+            </div>
+            <div class="test-item">
+                <span>Web Application (Port 3002)</span>
+                <button onclick="testWebApp()">Test Web App</button>
+                <span id="web-status" class="status pending">Pending</span>
+            </div>
+            <div id="health-results" class="results" style="display:none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>2. Authentication Test</h2>
+            <div class="test-item">
+                <span>Register New User</span>
+                <button onclick="testRegister()">Test Register</button>
+                <span id="register-status" class="status pending">Pending</span>
+            </div>
+            <div class="test-item">
+                <span>Login User</span>
+                <button onclick="testLogin()">Test Login</button>
+                <span id="login-status" class="status pending">Pending</span>
+            </div>
+            <div id="auth-results" class="results" style="display:none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>3. Media Operations</h2>
+            <div class="test-item">
+                <span>Fetch Media Assets</span>
+                <button onclick="fetchMedia()">Fetch Media</button>
+                <span id="fetch-status" class="status pending">Pending</span>
+            </div>
+            <div id="media-grid" class="media-grid"></div>
+            
+            <div class="upload-area" id="upload-area">
+                <p>Drag & drop files here or click to select</p>
+                <input type="file" id="file-input" multiple style="display:none;">
+                <button onclick="document.getElementById('file-input').click()">Select Files</button>
+            </div>
+            <div id="upload-results" class="results" style="display:none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>4. Live Application Test</h2>
+            <p>The application should load below. Test all features directly:</p>
+            <iframe src="http://localhost:3002" id="app-frame"></iframe>
+        </div>
+
+        <div class="test-section">
+            <h2>5. Quick Actions</h2>
+            <button onclick="window.open('http://localhost:3002', '_blank')">Open App in New Tab</button>
+            <button onclick="testAll()">Run All Tests</button>
+            <button onclick="location.reload()">Reset Tests</button>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000';
+        const WEB_URL = 'http://localhost:3002';
+        let authToken = null;
+
+        // Service health checks
+        async function testAPI() {
+            const statusEl = document.getElementById('api-status');
+            const resultsEl = document.getElementById('health-results');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/health`);
+                const data = await response.json();
+                
+                statusEl.className = 'status success';
+                statusEl.textContent = 'Connected';
+                resultsEl.style.display = 'block';
+                resultsEl.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Failed';
+                resultsEl.style.display = 'block';
+                resultsEl.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        async function testWebApp() {
+            const statusEl = document.getElementById('web-status');
+            
+            try {
+                const response = await fetch(WEB_URL);
+                if (response.ok) {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = 'Running';
+                } else {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = 'Error';
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Not Running';
+            }
+        }
+
+        // Authentication tests
+        async function testRegister() {
+            const statusEl = document.getElementById('register-status');
+            const resultsEl = document.getElementById('auth-results');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: `demo${Date.now()}@test.com`,
+                        password: 'Demo123!',
+                        name: 'Demo User'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = 'Success';
+                    authToken = data.token;
+                    resultsEl.style.display = 'block';
+                    resultsEl.textContent = `Registered: ${data.user.email}`;
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Failed';
+                resultsEl.style.display = 'block';
+                resultsEl.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        async function testLogin() {
+            const statusEl = document.getElementById('login-status');
+            const resultsEl = document.getElementById('auth-results');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: 'demo@test.com',
+                        password: 'Demo123!'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = 'Success';
+                    authToken = data.token;
+                    resultsEl.style.display = 'block';
+                    resultsEl.textContent = `Logged in: ${data.user.email}`;
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Failed';
+                resultsEl.style.display = 'block';
+                resultsEl.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        // Media operations
+        async function fetchMedia() {
+            const statusEl = document.getElementById('fetch-status');
+            const gridEl = document.getElementById('media-grid');
+            
+            try {
+                const response = await fetch(`${API_URL}/api/media`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = `${data.count} assets`;
+                    
+                    gridEl.innerHTML = data.assets.map(asset => `
+                        <div class="media-item" onclick="window.open('${asset.url}', '_blank')">
+                            ${asset.type === 'video' ? 
+                                `<video src="${asset.url}" poster="${asset.thumbnail}"></video>` :
+                                asset.type === 'image' ?
+                                `<img src="${asset.url}" alt="${asset.name}">` :
+                                `<div style="height:150px;display:flex;align-items:center;justify-content:center;background:#f0f0f0;">
+                                    <span style="font-size:48px;">📄</span>
+                                </div>`
+                            }
+                            <div class="info">
+                                <div class="name">${asset.name}</div>
+                                <div class="type">${asset.type} • ${formatSize(asset.size)}</div>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = 'Failed';
+                console.error('Error fetching media:', error);
+            }
+        }
+
+        // File upload
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const uploadResults = document.getElementById('upload-results');
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            
+            const files = Array.from(e.dataTransfer.files);
+            await uploadFiles(files);
+        });
+
+        fileInput.addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files);
+            await uploadFiles(files);
+        });
+
+        async function uploadFiles(files) {
+            if (files.length === 0) return;
+            
+            const formData = new FormData();
+            files.forEach(file => {
+                formData.append('files', file);
+            });
+            
+            uploadResults.style.display = 'block';
+            uploadResults.textContent = 'Uploading...';
+            
+            try {
+                const response = await fetch(`${API_URL}/api/media/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    uploadResults.textContent = `Success! Uploaded ${data.assets.length} file(s)`;
+                    setTimeout(() => fetchMedia(), 1000);
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                uploadResults.textContent = `Upload failed: ${error.message}`;
+            }
+        }
+
+        // Utility functions
+        function formatSize(bytes) {
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            if (bytes === 0) return '0 B';
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        async function testAll() {
+            await testAPI();
+            await new Promise(r => setTimeout(r, 500));
+            await testWebApp();
+            await new Promise(r => setTimeout(r, 500));
+            await testRegister();
+            await new Promise(r => setTimeout(r, 500));
+            await fetchMedia();
+        }
+
+        // Auto-run basic tests on load
+        window.addEventListener('load', () => {
+            testAPI();
+            testWebApp();
+            fetchMedia();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,798 @@
+# noah-production-namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: noah-production
+  labels:
+    name: noah-production
+    istio-injection: enabled
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Resource Quotas
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: noah-compute-quota
+  namespace: noah-production
+spec:
+  hard:
+    requests.cpu: "1000"
+    requests.memory: 2Ti
+    limits.cpu: "2000"
+    limits.memory: 4Ti
+    persistentvolumeclaims: "100"
+    services.loadbalancers: "10"
+    services.nodeports: "0"
+    count/deployments.apps: "50"
+    count/statefulsets.apps: "10"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: noah-object-quota
+  namespace: noah-production
+spec:
+  hard:
+    configmaps: "100"
+    secrets: "100"
+    services: "50"
+---
+# Network Policies
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: noah-api-network-policy
+  namespace: noah-production
+spec:
+  podSelector:
+    matchLabels:
+      app: noah-api
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    - podSelector:
+        matchLabels:
+          app: noah-worker
+    ports:
+    - port: 3000
+      protocol: TCP
+    - port: 9090
+      protocol: TCP
+  egress:
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - port: 5432  # PostgreSQL
+      protocol: TCP
+    - port: 6379  # Redis
+      protocol: TCP
+    - port: 443   # HTTPS
+      protocol: TCP
+    - port: 53    # DNS
+      protocol: UDP
+---
+# Service Account with IRSA
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: noah-api
+  namespace: noah-production
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/noah-api-role
+---
+# Main API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noah-api
+  namespace: noah-production
+  labels:
+    app: noah-api
+    version: v1
+spec:
+  replicas: 10
+  revisionHistoryLimit: 10
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  selector:
+    matchLabels:
+      app: noah-api
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: noah-api
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+        kubectl.kubernetes.io/default-container: "api"
+    spec:
+      serviceAccountName: noah-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: noah-api
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - noah-api
+            topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                - m6i.2xlarge
+                - m6i.4xlarge
+      initContainers:
+      - name: db-migration
+        image: noah/migrator:${VERSION}
+        command: ["/app/migrate"]
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: noah-db-secret
+              key: url
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+      containers:
+      - name: api
+        image: noah/api:${VERSION}
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: production
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=6144"
+        - name: PORT
+          value: "3000"
+        - name: METRICS_PORT
+          value: "9090"
+        - name: LOG_LEVEL
+          value: info
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: noah-db-secret
+              key: url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: noah-redis-secret
+              key: url
+        - name: B2_APPLICATION_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: noah-b2-secret
+              key: application_key_id
+        - name: B2_APPLICATION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: noah-b2-secret
+              key: application_key
+        - name: DD_AGENT_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: DD_TRACE_AGENT_PORT
+          value: "8126"
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+            ephemeral-storage: "10Gi"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+            ephemeral-storage: "20Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+            httpHeaders:
+            - name: User-Agent
+              value: Kubernetes-Liveness-Probe
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+            httpHeaders:
+            - name: User-Agent
+              value: Kubernetes-Readiness-Probe
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 2
+        startupProbe:
+          httpGet:
+            path: /startup
+            port: http
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /app/.cache
+      - name: sidecar-logger
+        image: fluentbit/fluent-bit:2.2
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+        volumeMounts:
+        - name: logs
+          mountPath: /var/log
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: noah-api-hpa
+  namespace: noah-production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: noah-api
+  minReplicas: 10
+  maxReplicas: 100
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "1000"
+  - type: Object
+    object:
+      metric:
+        name: nginx_ingress_controller_requests_rate
+      describedObject:
+        apiVersion: v1
+        kind: Service
+        name: noah-api
+      target:
+        type: Value
+        value: "10000"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 5
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 10
+        periodSeconds: 30
+      selectPolicy: Max
+---
+# Vertical Pod Autoscaler
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: noah-api-vpa
+  namespace: noah-production
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: noah-api
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: api
+      minAllowed:
+        cpu: 1
+        memory: "2Gi"
+      maxAllowed:
+        cpu: 8
+        memory: "16Gi"
+      controlledResources: ["cpu", "memory"]
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: noah-api
+  namespace: noah-production
+  labels:
+    app: noah-api
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: noah-api
+  ports:
+  - name: http
+    port: 80
+    targetPort: http
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 600
+---
+# Ingress with Istio
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: noah-api-ingress
+  namespace: noah-production
+  annotations:
+    kubernetes.io/ingress.class: istio
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/rate-limit-burst: "2000"
+    nginx.ingress.kubernetes.io/limit-connections: "100"
+spec:
+  tls:
+  - hosts:
+    - api.noah.app
+    secretName: noah-api-tls
+  rules:
+  - host: api.noah.app
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: noah-api
+            port:
+              number: 80
+---
+# Istio Virtual Service
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: noah-api-vs
+  namespace: noah-production
+spec:
+  hosts:
+  - api.noah.app
+  gateways:
+  - noah-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/health"
+    - uri:
+        prefix: "/ready"
+    route:
+    - destination:
+        host: noah-api
+        port:
+          number: 80
+    timeout: 5s
+  - match:
+    - uri:
+        prefix: "/"
+    route:
+    - destination:
+        host: noah-api
+        port:
+          number: 80
+      weight: 100
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+    fault:
+      abort:
+        percentage:
+          value: 0.1
+        httpStatus: 503
+---
+# Istio Destination Rule
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: noah-api-dr
+  namespace: noah-production
+spec:
+  host: noah-api
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 1000
+      http:
+        http1MaxPendingRequests: 1000
+        http2MaxRequests: 1000
+        maxRequestsPerConnection: 2
+        h2UpgradePolicy: UPGRADE
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: "noah-session"
+          ttl: 3600s
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+      splitExternalLocalOriginErrors: true
+---
+# PodDisruptionBudget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: noah-api-pdb
+  namespace: noah-production
+spec:
+  maxUnavailable: 25%
+  selector:
+    matchLabels:
+      app: noah-api
+  unhealthyPodEvictionPolicy: IfHealthyBudget
+---
+# Worker Deployment for Background Jobs
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: noah-worker
+  namespace: noah-production
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: noah-worker
+  template:
+    metadata:
+      labels:
+        app: noah-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9091"
+    spec:
+      serviceAccountName: noah-api
+      containers:
+      - name: worker
+        image: noah/worker:${VERSION}
+        env:
+        - name: NODE_ENV
+          value: production
+        - name: WORKER_TYPE
+          value: compression
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: noah-redis-secret
+              key: url
+        - name: B2_APPLICATION_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: noah-b2-secret
+              key: application_key_id
+        - name: B2_APPLICATION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: noah-b2-secret
+              key: application_key
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9091
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+---
+# Compression Worker StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: noah-compression-worker
+  namespace: noah-production
+spec:
+  serviceName: noah-compression-worker
+  replicas: 3
+  selector:
+    matchLabels:
+      app: noah-compression-worker
+  template:
+    metadata:
+      labels:
+        app: noah-compression-worker
+    spec:
+      containers:
+      - name: compression-worker
+        image: noah/compression-worker:${VERSION}
+        env:
+        - name: WORKER_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: noah-redis-secret
+              key: url
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"  # GPU for video encoding
+          limits:
+            memory: "16Gi"
+            cpu: "8"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: scratch
+          mountPath: /scratch
+  volumeClaimTemplates:
+  - metadata:
+      name: scratch
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 100Gi
+---
+# CronJob for Cleanup
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: noah-cleanup
+  namespace: noah-production
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: cleanup
+            image: noah/cleanup:${VERSION}
+            command: ["/app/cleanup"]
+            env:
+            - name: CLEANUP_TYPE
+              value: "orphaned_files"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: noah-db-secret
+                  key: url
+            resources:
+              requests:
+                memory: "1Gi"
+                cpu: "500m"
+              limits:
+                memory: "2Gi"
+                cpu: "1"
+---
+# Priority Classes
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: noah-critical
+value: 1000
+globalDefault: false
+description: "Critical Noah services"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: noah-high
+value: 500
+globalDefault: false
+description: "High priority Noah services"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: noah-medium
+value: 100
+globalDefault: true
+description: "Medium priority Noah services"
+---
+# ServiceMonitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: noah-api-monitor
+  namespace: noah-production
+spec:
+  selector:
+    matchLabels:
+      app: noah-api
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    scheme: http
+    tlsConfig:
+      insecureSkipVerify: true
+---
+# PrometheusRule for Alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: noah-api-alerts
+  namespace: noah-production
+spec:
+  groups:
+  - name: noah-api
+    interval: 30s
+    rules:
+    - alert: NoahAPIHighErrorRate
+      expr: |
+        (
+          sum(rate(noah_http_requests_total{status=~"5.."}[5m])) by (job)
+          /
+          sum(rate(noah_http_requests_total[5m])) by (job)
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        service: noah-api
+      annotations:
+        summary: "High error rate on Noah API"
+        description: "Error rate is {{ $value | humanizePercentage }} for job {{ $labels.job }}"
+        runbook_url: "https://runbooks.noah.app/api-high-error-rate"
+    
+    - alert: NoahAPIHighLatency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(noah_http_request_duration_seconds_bucket[5m])) by (le, job)
+        ) > 1
+      for: 5m
+      labels:
+        severity: warning
+        service: noah-api
+      annotations:
+        summary: "High latency on Noah API"
+        description: "95th percentile latency is {{ $value }}s for job {{ $labels.job }}"
+        runbook_url: "https://runbooks.noah.app/api-high-latency"
+    
+    - alert: NoahAPIPodCrashLooping
+      expr: |
+        rate(kube_pod_container_status_restarts_total{namespace="noah-production",pod=~"noah-api-.*"}[5m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        service: noah-api
+      annotations:
+        summary: "Noah API pod is crash looping"
+        description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last 5 minutes"
+        runbook_url: "https://runbooks.noah.app/pod-crash-looping"
+    
+    - alert: NoahCompressionQueueBacklog
+      expr: |
+        noah_compression_queue_size > 1000
+      for: 15m
+      labels:
+        severity: warning
+        service: noah-worker
+      annotations:
+        summary: "Compression queue backlog detected"
+        description: "Compression queue has {{ $value }} items pending"
+        runbook_url: "https://runbooks.noah.app/compression-queue-backlog"
+    
+    - alert: NoahStorageUsageHigh
+      expr: |
+        (noah_storage_bytes_used / noah_storage_bytes_quota) > 0.9
+      for: 30m
+      labels:
+        severity: warning
+        service: noah-storage
+      annotations:
+        summary: "Storage usage is high"
+        description: "Storage usage is at {{ $value | humanizePercentage }} of quota"
+        runbook_url: "https://runbooks.noah.app/storage-usage-high"

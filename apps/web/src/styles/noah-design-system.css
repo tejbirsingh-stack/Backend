@@ -1,0 +1,154 @@
+/* Noah Design System - Global Styles */
+
+:root {
+  /* Primary Colors */
+  --noah-primary: #4facfe;
+  --noah-primary-dark: #3b8bfe;
+  --noah-secondary: #667eea;
+  --noah-accent: #764ba2;
+  
+  /* Gradients */
+  --noah-gradient-primary: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+  --noah-gradient-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --noah-gradient-card: rgba(255, 255, 255, 0.1);
+  
+  /* Neutrals */
+  --noah-dark: #1a1a1f;
+  --noah-dark-secondary: #2a2a2e;
+  --noah-gray: #3a3a3e;
+  --noah-light-gray: #a9a9b4;
+  --noah-white: #ffffff;
+  
+  /* Spacing */
+  --noah-space-xs: 4px;
+  --noah-space-sm: 8px;
+  --noah-space-md: 16px;
+  --noah-space-lg: 24px;
+  --noah-space-xl: 32px;
+  --noah-space-2xl: 48px;
+  
+  /* Border Radius */
+  --noah-radius-sm: 8px;
+  --noah-radius-md: 12px;
+  --noah-radius-lg: 16px;
+  --noah-radius-xl: 24px;
+  
+  /* Shadows */
+  --noah-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --noah-shadow-md: 0 4px 20px rgba(0, 0, 0, 0.12);
+  --noah-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+  --noah-shadow-glow: 0 4px 20px rgba(79, 172, 254, 0.3);
+  
+  /* Typography */
+  --noah-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --noah-font-weight-normal: 400;
+  --noah-font-weight-medium: 500;
+  --noah-font-weight-semibold: 600;
+  --noah-font-weight-bold: 700;
+}
+
+/* Base Styles */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--noah-font-family);
+  margin: 0;
+  padding: 0;
+  background-color: var(--noah-dark);
+  color: var(--noah-light-gray);
+}
+
+/* Glass Effect Utility */
+.noah-glass {
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Button Styles */
+.noah-btn {
+  padding: var(--noah-space-md) var(--noah-space-lg);
+  border-radius: var(--noah-radius-md);
+  border: none;
+  font-weight: var(--noah-font-weight-semibold);
+  cursor: pointer;
+  transition: all 0.3s ease;
+  font-family: var(--noah-font-family);
+}
+
+.noah-btn-primary {
+  background: var(--noah-gradient-primary);
+  color: white;
+  box-shadow: var(--noah-shadow-glow);
+}
+
+.noah-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(79, 172, 254, 0.4);
+}
+
+/* Input Styles */
+.noah-input {
+  padding: var(--noah-space-md) var(--noah-space-lg);
+  border-radius: var(--noah-radius-md);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 16px;
+  transition: all 0.3s ease;
+  outline: none;
+  font-family: var(--noah-font-family);
+}
+
+.noah-input:focus {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.15);
+  transform: translateY(-1px);
+  box-shadow: var(--noah-shadow-sm);
+}
+
+.noah-input::placeholder {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Card Styles */
+.noah-card {
+  background: var(--noah-gradient-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: var(--noah-radius-xl);
+  box-shadow: var(--noah-shadow-lg);
+}
+
+/* Animation Classes */
+.noah-fade-in {
+  animation: fadeIn 0.6s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.noah-slide-up {
+  animation: slideUp 0.4s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}

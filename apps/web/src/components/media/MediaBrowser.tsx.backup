@@ -1,0 +1,300 @@
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import MediaPreviewModal from './MediaPreviewModal';
+
+interface MediaBrowserProps {
+  className?: string;
+}
+
+interface Asset {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  uploadDate: string;
+  url: string; // Required for MediaPreviewModal
+  thumbnail?: string;
+  duration?: number;
+  dimensions?: { width: number; height: number };
+  metadata?: Record<string, any>;
+}
+
+export default function MediaBrowser({ className = "" }: MediaBrowserProps) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [sortBy, setSortBy] = useState<'name' | 'date' | 'size'>('date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [uploadingFiles, setUploadingFiles] = useState<File[]>([]);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch assets from API
+  const fetchAssets = useCallback(async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('http://localhost:3000/api/media');
+      const result = await response.json();
+      
+      if (result.success) {
+        // Transform API data to match our Asset interface
+        const transformedAssets = result.data.map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          type: item.mimetype || item.type,
+          size: parseInt(item.size.replace(/[^0-9]/g, '')) || 0,
+          uploadDate: item.date === 'Just now' ? new Date().toISOString() : new Date().toISOString(),
+          url: item.url,
+          thumbnail: item.type === 'Images' ? item.url : undefined,
+          duration: item.duration ? parseInt(item.duration.split(':')[0]) * 60 + parseInt(item.duration.split(':')[1]) : undefined,
+          metadata: {
+            resolution: item.resolution,
+            mimetype: item.mimetype,
+            uploadedBy: item.uploadedBy,
+            tags: item.tags
+          }
+        }));
+        setAssets(transformedAssets);
+      }
+    } catch (error) {
+      console.error('Failed to fetch assets:', error);
+      // Fall back to sample data if API is not available
+      setAssets([
+    { 
+      id: '1', 
+      name: 'Project Demo Video.mp4', 
+      type: 'video/mp4', 
+      size: 125000000, 
+      uploadDate: '2025-07-31', 
+      url: 'http://localhost:3002/uploads/sample-video.mp4',
+      duration: 180,
+      dimensions: { width: 1920, height: 1080 }
+    },
+    { 
+      id: '2', 
+      name: 'Hero Banner Design.png', 
+      type: 'image/png', 
+      size: 2500000, 
+      uploadDate: '2025-07-30',
+      url: 'http://localhost:3002/uploads/hero-banner.png',
+      dimensions: { width: 2560, height: 1440 }
+    },
+    { 
+      id: '3', 
+      name: 'Background Music.mp3', 
+      type: 'audio/mp3', 
+      size: 8200000, 
+      uploadDate: '2025-07-29',
+      url: 'http://localhost:3002/uploads/background-music.mp3',
+      duration: 240
+    },
+    { 
+      id: '4', 
+      name: 'Project Report.pdf', 
+      type: 'application/pdf', 
+      size: 1800000, 
+      uploadDate: '2025-07-28',
+      url: 'http://localhost:3002/uploads/project-report.pdf'
+    },
+    { 
+      id: '5', 
+      name: 'Motion Graphics.mp4', 
+      type: 'video/mp4', 
+      size: 95000000, 
+      uploadDate: '2025-07-27',
+      url: 'http://localhost:3002/uploads/motion-graphics.mp4',
+      duration: 120,
+      dimensions: { width: 1920, height: 1080 }
+    },
+    { 
+      id: '6', 
+      name: 'UI Mockups.figma', 
+      type: 'application/figma', 
+      size: 5200000, 
+      uploadDate: '2025-07-26',
+      url: 'http://localhost:3002/uploads/ui-mockups.figma'
+    },
+    { 
+      id: '7', 
+      name: 'Product Photos.zip', 
+      type: 'application/zip', 
+      size: 45000000, 
+      uploadDate: '2025-07-25',
+      url: 'http://localhost:3002/uploads/product-photos.zip'
+    },
+    { 
+      id: '8', 
+      name: 'Interview Audio.wav', 
+      type: 'audio/wav', 
+      size: 25000000, 
+      uploadDate: '2025-07-24',
+      url: 'http://localhost:3002/uploads/interview-audio.wav',
+      duration: 1800
+    }
+  ];
+
+  const filteredAndSortedAssets = useMemo(() => {
+    return assets
+      .filter(asset => 
+        asset.name.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+      .sort((a, b) => {
+        const order = sortOrder === 'asc' ? 1 : -1;
+        switch (sortBy) {
+          case 'name':
+            return order * a.name.localeCompare(b.name);
+          case 'size':
+            return order * (a.size - b.size);
+          default: // date
+            return order * (new Date(b.uploadDate).getTime() - new Date(a.uploadDate).getTime());
+        }
+      });
+  }, [assets, searchQuery, sortBy, sortOrder]);
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const getFileIcon = (type: string) => {
+    if (type.startsWith('video/')) return '🎥';
+    if (type.startsWith('image/')) return '🖼️';
+    if (type.startsWith('audio/')) return '🎵';
+    return '📄';
+  };
+
+  const cancelUpload = useCallback((file: File) => {
+    setUploadingFiles(prev => prev.filter(f => f !== file));
+  }, []);
+
+  return (
+    <div className={`flex flex-col gap-4 ${className}`}>
+      {/* Header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-semibold text-white mb-2">Media Browser</h1>
+        <p className="text-gray-400">Your media files and folders</p>
+      </div>
+
+      {/* Actions Bar */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center space-x-4">
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">🔍</span>
+            <input
+              type="text"
+              placeholder="Search files..."
+              className="w-64 bg-gray-700 text-gray-300 rounded-lg px-4 py-2 pl-10 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-4">
+          {/* Sort Options */}
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as 'name' | 'date' | 'size')}
+            className="bg-gray-700 text-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="date">Sort by Date</option>
+            <option value="name">Sort by Name</option>
+            <option value="size">Sort by Size</option>
+          </select>
+
+          {/* View Mode Toggle */}
+          <div className="flex rounded-lg overflow-hidden">
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`px-3 py-2 ${viewMode === 'grid' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
+            >
+              Grid
+            </button>
+            <button
+              onClick={() => setViewMode('list')}
+              className={`px-3 py-2 ${viewMode === 'list' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300'}`}
+            >
+              List
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Media Grid/List */}
+      <div className={viewMode === 'grid' 
+        ? 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4'
+        : 'space-y-2'
+      }>
+        {filteredAndSortedAssets.map((asset) => (
+          <div
+            key={asset.id}
+            onClick={() => setSelectedAsset(asset)}
+            className={`
+              cursor-pointer transition-all duration-200 hover:scale-105
+              ${viewMode === 'grid' 
+                ? 'bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-blue-500'
+                : 'bg-gray-800 rounded-lg p-4 flex items-center space-x-4 border border-gray-700 hover:border-blue-500'
+              }
+            `}
+          >
+            {viewMode === 'grid' ? (
+              <>
+                <div className="aspect-video bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center text-4xl">
+                  {getFileIcon(asset.type)}
+                </div>
+                <div className="p-4">
+                  <h3 className="text-white font-medium truncate">{asset.name}</h3>
+                  <div className="flex justify-between text-sm text-gray-400 mt-1">
+                    <span>{formatFileSize(asset.size)}</span>
+                    <span>{asset.uploadDate}</span>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-2xl">{getFileIcon(asset.type)}</div>
+                <div className="flex-1">
+                  <h3 className="text-white font-medium">{asset.name}</h3>
+                  <p className="text-sm text-gray-400">{formatFileSize(asset.size)} • {asset.uploadDate}</p>
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* No Results */}
+      {filteredAndSortedAssets.length === 0 && (
+        <div className="text-center py-12">
+          <div className="text-6xl mb-4">📁</div>
+          <h3 className="text-xl font-medium text-white mb-2">No files found</h3>
+          <p className="text-gray-400">
+            {searchQuery ? 'Try adjusting your search terms' : 'Upload some files to get started'}
+          </p>
+        </div>
+      )}
+
+      {/* Enhanced Professional Media Preview Modal */}
+      {selectedAsset && (
+        <MediaPreviewModal
+          asset={selectedAsset}
+          onClose={() => setSelectedAsset(null)}
+          allItems={filteredAndSortedAssets}
+          currentIndex={filteredAndSortedAssets.findIndex(asset => asset.id === selectedAsset.id)}
+          onNext={() => {
+            const currentIndex = filteredAndSortedAssets.findIndex(asset => asset.id === selectedAsset.id);
+            const nextIndex = (currentIndex + 1) % filteredAndSortedAssets.length;
+            setSelectedAsset(filteredAndSortedAssets[nextIndex]);
+          }}
+          onPrevious={() => {
+            const currentIndex = filteredAndSortedAssets.findIndex(asset => asset.id === selectedAsset.id);
+            const prevIndex = currentIndex === 0 ? filteredAndSortedAssets.length - 1 : currentIndex - 1;
+            setSelectedAsset(filteredAndSortedAssets[prevIndex]);
+          }}
+        />
+      )}
+    </div>
+  );
+}

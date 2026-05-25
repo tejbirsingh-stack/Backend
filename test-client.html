@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noah Media Asset Management</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #f5f5f5;
+      color: #333;
+    }
+    header {
+      background-color: #2c3e50;
+      color: white;
+      padding: 1rem;
+      text-align: center;
+    }
+    main {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+    .dashboard {
+      display: grid;
+      grid-template-columns: 1fr 3fr;
+      gap: 1rem;
+    }
+    .sidebar {
+      background-color: white;
+      border-radius: 4px;
+      padding: 1rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .content {
+      background-color: white;
+      border-radius: 4px;
+      padding: 1rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .card {
+      border: 1px solid #eee;
+      border-radius: 4px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    button {
+      background-color: #3498db;
+      color: white;
+      border: none;
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #2980b9;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid #ddd;
+    }
+    th {
+      background-color: #f2f2f2;
+    }
+    .loading {
+      text-align: center;
+      padding: 2rem;
+      font-style: italic;
+      color: #666;
+    }
+    .error {
+      color: #e74c3c;
+      background-color: #fadbd8;
+      padding: 1rem;
+      border-radius: 4px;
+      margin-bottom: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Noah Media Asset Management</h1>
+  </header>
+  
+  <main>
+    <div class="dashboard">
+      <div class="sidebar">
+        <h2>Navigation</h2>
+        <ul>
+          <li><button id="btn-organizations">Organizations</button></li>
+          <li><button id="btn-users">Users</button></li>
+          <li><button id="btn-media">Media Assets</button></li>
+          <li><button id="btn-health">Health Check</button></li>
+        </ul>
+      </div>
+      
+      <div class="content">
+        <h2 id="content-title">Dashboard</h2>
+        <div id="content-area">
+          <p>Welcome to Noah Media Asset Management Platform. Click on the navigation items to explore data.</p>
+        </div>
+      </div>
+    </div>
+  </main>
+  
+  <script>
+    const API_URL = 'http://localhost:3000';
+    
+    document.getElementById('btn-organizations').addEventListener('click', loadOrganizations);
+    document.getElementById('btn-users').addEventListener('click', loadUsers);
+    document.getElementById('btn-media').addEventListener('click', loadMedia);
+    document.getElementById('btn-health').addEventListener('click', checkHealth);
+    
+    function setLoading() {
+      document.getElementById('content-area').innerHTML = '<div class="loading">Loading data...</div>';
+    }
+    
+    function setError(message) {
+      document.getElementById('content-area').innerHTML = `<div class="error">${message}</div>`;
+    }
+    
+    async function loadOrganizations() {
+      document.getElementById('content-title').textContent = 'Organizations';
+      setLoading();
+      
+      try {
+        const response = await fetch(`${API_URL}/api/organizations`);
+        const organizations = await response.json();
+        
+        let html = '<table><thead><tr><th>Name</th><th>Slug</th><th>Plan</th><th>Users</th></tr></thead><tbody>';
+        
+        organizations.forEach(org => {
+          html += `<tr>
+            <td>${org.name}</td>
+            <td>${org.slug}</td>
+            <td>${org.planType}</td>
+            <td>${org.users ? org.users.length : 0}</td>
+          </tr>`;
+        });
+        
+        html += '</tbody></table>';
+        document.getElementById('content-area').innerHTML = html;
+      } catch (err) {
+        setError(`Failed to load organizations: ${err.message}`);
+      }
+    }
+    
+    async function loadUsers() {
+      document.getElementById('content-title').textContent = 'Users';
+      setLoading();
+      
+      try {
+        const response = await fetch(`${API_URL}/api/users`);
+        const users = await response.json();
+        
+        let html = '<table><thead><tr><th>Name</th><th>Email</th><th>Role</th></tr></thead><tbody>';
+        
+        users.forEach(user => {
+          html += `<tr>
+            <td>${user.name}</td>
+            <td>${user.email}</td>
+            <td>${user.role}</td>
+          </tr>`;
+        });
+        
+        html += '</tbody></table>';
+        document.getElementById('content-area').innerHTML = html;
+      } catch (err) {
+        setError(`Failed to load users: ${err.message}`);
+      }
+    }
+    
+    async function loadMedia() {
+      document.getElementById('content-title').textContent = 'Media Assets';
+      setLoading();
+      
+      try {
+        const response = await fetch(`${API_URL}/api/media`);
+        const media = await response.json();
+        
+        let html = '<table><thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Status</th></tr></thead><tbody>';
+        
+        media.forEach(asset => {
+          const sizeInMB = (parseInt(asset.fileSize) / (1024 * 1024)).toFixed(2);
+          html += `<tr>
+            <td>${asset.fileName}</td>
+            <td>${asset.mimeType}</td>
+            <td>${sizeInMB} MB</td>
+            <td>${asset.status}</td>
+          </tr>`;
+        });
+        
+        html += '</tbody></table>';
+        document.getElementById('content-area').innerHTML = html;
+      } catch (err) {
+        setError(`Failed to load media assets: ${err.message}`);
+      }
+    }
+    
+    async function checkHealth() {
+      document.getElementById('content-title').textContent = 'System Health';
+      setLoading();
+      
+      try {
+        const response = await fetch(`${API_URL}/health`);
+        const health = await response.json();
+        
+        let html = '<div class="card">';
+        html += `<h3>Status: <span style="color: ${health.status === 'healthy' ? 'green' : 'red'}">${health.status}</span></h3>`;
+        html += `<p>Timestamp: ${health.timestamp}</p>`;
+        html += `<p>Database: ${health.database || 'Unknown'}</p>`;
+        html += '</div>';
+        
+        document.getElementById('content-area').innerHTML = html;
+      } catch (err) {
+        setError(`Failed to check health: ${err.message}`);
+      }
+    }
+  </script>
+</body>
+</html>

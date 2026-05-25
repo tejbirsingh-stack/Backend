@@ -1,0 +1,785 @@
+import React, { useState, useEffect, useRef } from 'react';
+import ReactPlayer from 'react-player';
+import ImageGallery from 'react-image-gallery';
+import { useHotkeys } from 'react-hotkeys-hook';
+import { 
+  Play, 
+  Pause, 
+  Volume2, 
+  VolumeX, 
+  Maximize, 
+  RotateCcw, 
+  Download, 
+  Share2, 
+  Edit, 
+  X, 
+  ZoomIn, 
+  ZoomOut,
+  SkipBack,
+  SkipForward,
+  Settings,
+  MessageCircle,
+  Palette
+} from 'lucide-react';
+import '../../styles/image-gallery.css';
+
+interface MediaItem {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  uploadDate: string;
+  url: string;
+  thumbnail?: string;
+  duration?: number;
+  dimensions?: { width: number; height: number };
+  metadata?: Record<string, any>;
+}
+
+interface MediaPreviewModalProps {
+  asset: MediaItem;
+  onClose: () => void;
+  onNext?: () => void;
+  onPrevious?: () => void;
+  allItems?: MediaItem[];
+  currentIndex?: number;
+}
+
+export default function MediaPreviewModal({ 
+  asset: item, 
+  onClose, 
+  onNext, 
+  onPrevious, 
+  allItems = [], 
+  currentIndex = 0 
+}: MediaPreviewModalProps) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [volume, setVolume] = useState(0.8);
+  const [isMuted, setIsMuted] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showControls, setShowControls] = useState(true);
+  const [showAnnotations, setShowAnnotations] = useState(false);
+  const [annotations, setAnnotations] = useState<any[]>([]);
+  const [newComment, setNewComment] = useState('');
+  const [selectedDrawColor, setSelectedDrawColor] = useState('#FF5252');
+  const [imageZoom, setImageZoom] = useState(1);
+  const [showMetadata, setShowMetadata] = useState(false);
+  const [isAnnotationMode, setIsAnnotationMode] = useState(false);
+  const [annotationPosition, setAnnotationPosition] = useState<{x: number, y: number} | null>(null);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [showTimeline, setShowTimeline] = useState(true);
+  const [timelineAnnotations, setTimelineAnnotations] = useState<any[]>([]);
+
+  const modalRef = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<ReactPlayer>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
+
+  // Keyboard shortcuts
+  useHotkeys('space', (e) => {
+    e.preventDefault();
+    if (item.type.startsWith('video/') || item.type.startsWith('audio/')) {
+      setIsPlaying(!isPlaying);
+    }
+  });
+
+  useHotkeys('escape', onClose);
+  useHotkeys('arrowleft', () => onPrevious?.());
+  useHotkeys('arrowright', () => onNext?.());
+  useHotkeys('f', () => setIsFullscreen(!isFullscreen));
+  useHotkeys('m', () => setIsMuted(!isMuted));
+
+  useEffect(() => {
+    if (isFullscreen && modalRef.current) {
+      modalRef.current.requestFullscreen?.();
+    } else if (!isFullscreen && document.fullscreenElement) {
+      document.exitFullscreen?.();
+    }
+  }, [isFullscreen]);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatFileSize = (bytes: number) => {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = bytes;
+    let unitIndex = 0;
+    
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+    
+    return `${size.toFixed(1)} ${units[unitIndex]}`;
+  };
+
+  const addComment = () => {
+    if (!newComment.trim()) return;
+    
+    const comment = {
+      id: Date.now(),
+      text: newComment,
+      timestamp: currentTime,
+      user: 'Current User', // TODO: Get from auth context
+      createdAt: new Date().toISOString(),
+      color: selectedDrawColor,
+      position: annotationPosition // Add position for video annotations
+    };
+    
+    setAnnotations([...annotations, comment]);
+    setTimelineAnnotations([...timelineAnnotations, comment]);
+    setNewComment('');
+    setAnnotationPosition(null);
+    setIsAnnotationMode(false);
+  };
+
+  const handleVideoClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isAnnotationMode) return;
+    
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    
+    setAnnotationPosition({ x, y });
+  };
+
+  const jumpToAnnotation = (timestamp: number) => {
+    setCurrentTime(timestamp);
+    playerRef.current?.seekTo(timestamp, 'seconds');
+  };
+
+  const downloadFile = () => {
+    const link = document.createElement('a');
+    link.href = item.url;
+    link.download = item.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const shareFile = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: item.name,
+          text: `Check out this ${item.type.split('/')[0]}`,
+          url: item.url
+        });
+      } catch (err) {
+        console.log('Error sharing:', err);
+      }
+    } else {
+      // Fallback: copy to clipboard
+      navigator.clipboard.writeText(item.url);
+      // TODO: Show toast notification
+    }
+  };
+
+  const renderVideoPlayer = () => (
+    <div 
+      ref={videoContainerRef}
+      className="relative bg-black rounded-lg overflow-hidden cursor-pointer" 
+      style={{ aspectRatio: '16/9' }}
+      onClick={handleVideoClick}
+    >
+      <ReactPlayer
+        ref={playerRef}
+        url={item.url}
+        playing={isPlaying}
+        volume={isMuted ? 0 : volume}
+        playbackRate={playbackRate}
+        onProgress={({ playedSeconds }) => setCurrentTime(playedSeconds)}
+        onDuration={setDuration}
+        onEnded={() => setIsPlaying(false)}
+        width="100%"
+        height="100%"
+        controls={false}
+      />
+      
+      {/* Video Annotations Overlay */}
+      {annotations.filter(ann => Math.abs(ann.timestamp - currentTime) < 2).map(annotation => (
+        annotation.position && (
+          <div
+            key={annotation.id}
+            className="absolute bg-black/80 text-white px-2 py-1 rounded text-xs max-w-xs pointer-events-none"
+            style={{
+              left: `${annotation.position.x}%`,
+              top: `${annotation.position.y}%`,
+              transform: 'translate(-50%, -100%)',
+              border: `2px solid ${annotation.color}`,
+              animation: 'fadeIn 0.3s ease-in'
+            }}
+          >
+            <div className="font-semibold text-xs mb-1">{annotation.user}</div>
+            <div>{annotation.text}</div>
+            <div className="text-xs opacity-70 mt-1">{formatTime(annotation.timestamp)}</div>
+          </div>
+        )
+      ))}
+
+      {/* Annotation Mode Indicator */}
+      {isAnnotationMode && (
+        <div className="absolute top-4 left-4 bg-red-500 text-white px-3 py-1 rounded text-sm font-medium">
+          Click to add annotation
+        </div>
+      )}
+
+      {/* Custom Video Controls */}
+      <div className={`absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/60 via-transparent to-transparent transition-opacity ${showControls ? 'opacity-100' : 'opacity-0'}`}>
+        
+        {/* Timeline with Annotations */}
+        {showTimeline && (
+          <div className="px-4 pb-2 relative">
+            {/* Timeline Annotations Markers */}
+            <div className="relative h-6 mb-2">
+              {timelineAnnotations.map(annotation => (
+                <div
+                  key={annotation.id}
+                  className="absolute w-2 h-6 cursor-pointer hover:scale-125 transition-transform"
+                  style={{
+                    left: `${(annotation.timestamp / duration) * 100}%`,
+                    backgroundColor: annotation.color,
+                    borderRadius: '2px',
+                    transform: 'translateX(-50%)'
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    jumpToAnnotation(annotation.timestamp);
+                  }}
+                  title={`${annotation.text} - ${formatTime(annotation.timestamp)}`}
+                />
+              ))}
+            </div>
+            
+            {/* Progress Bar */}
+            <input
+              type="range"
+              min={0}
+              max={duration}
+              value={currentTime}
+              onChange={(e) => {
+                const time = parseFloat(e.target.value);
+                setCurrentTime(time);
+                playerRef.current?.seekTo(time, 'seconds');
+              }}
+              className="w-full h-2 bg-white/30 rounded-lg appearance-none cursor-pointer slider"
+              style={{
+                background: `linear-gradient(to right, #5D8DE1 0%, #5D8DE1 ${(currentTime / duration) * 100}%, rgba(255,255,255,0.3) ${(currentTime / duration) * 100}%, rgba(255,255,255,0.3) 100%)`
+              }}
+            />
+            <div className="flex justify-between text-white text-sm mt-1">
+              <span>{formatTime(currentTime)}</span>
+              <span>{formatTime(duration)}</span>
+            </div>
+          </div>
+        )}
+        
+        {/* Control Buttons */}
+        <div className="flex items-center justify-between px-4 pb-4"
+             onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center space-x-3">
+            {/* Skip Back */}
+            <button
+              onClick={() => {
+                const newTime = Math.max(0, currentTime - 10);
+                setCurrentTime(newTime);
+                playerRef.current?.seekTo(newTime, 'seconds');
+              }}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              <SkipBack size={16} />
+            </button>
+            
+            {/* Play/Pause */}
+            <button
+              onClick={() => setIsPlaying(!isPlaying)}
+              className="bg-white/20 hover:bg-white/30 text-white p-3 rounded-full transition-colors"
+            >
+              {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+            </button>
+            
+            {/* Skip Forward */}
+            <button
+              onClick={() => {
+                const newTime = Math.min(duration, currentTime + 10);
+                setCurrentTime(newTime);
+                playerRef.current?.seekTo(newTime, 'seconds');
+              }}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              <SkipForward size={16} />
+            </button>
+
+            {/* Playback Speed */}
+            <select
+              value={playbackRate}
+              onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+              className="bg-white/20 text-white text-sm rounded px-2 py-1 border-none outline-none"
+            >
+              <option value={0.5}>0.5x</option>
+              <option value={0.75}>0.75x</option>
+              <option value={1}>1x</option>
+              <option value={1.25}>1.25x</option>
+              <option value={1.5}>1.5x</option>
+              <option value={2}>2x</option>
+            </select>
+          </div>
+
+          <div className="flex items-center space-x-3">
+            {/* Volume Control */}
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setIsMuted(!isMuted)}
+                className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+              >
+                {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.1}
+                value={isMuted ? 0 : volume}
+                onChange={(e) => {
+                  const newVolume = parseFloat(e.target.value);
+                  setVolume(newVolume);
+                  setIsMuted(newVolume === 0);
+                }}
+                className="w-20 h-1 bg-white/30 rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+
+            {/* Annotation Toggle */}
+            <button
+              onClick={() => setIsAnnotationMode(!isAnnotationMode)}
+              className={`${isAnnotationMode ? 'bg-red-500' : 'bg-white/20'} hover:bg-red-600 text-white p-2 rounded-full transition-colors`}
+              title="Add Annotation"
+            >
+              <MessageCircle size={16} />
+            </button>
+
+            {/* Fullscreen */}
+            <button
+              onClick={() => setIsFullscreen(!isFullscreen)}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              <Maximize size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+        {/* Progress Bar */}
+        <div className="px-4 pb-2">
+          <input
+            type="range"
+            min={0}
+            max={duration}
+            value={currentTime}
+            onChange={(e) => {
+              const time = parseFloat(e.target.value);
+              setCurrentTime(time);
+              playerRef.current?.seekTo(time, 'seconds');
+            }}
+            className="w-full h-1 bg-white/30 rounded-lg appearance-none cursor-pointer slider"
+          />
+          <div className="flex justify-between text-white text-sm mt-1">
+            <span>{formatTime(currentTime)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+        </div>
+        
+        {/* Control Buttons */}
+        <div className="flex items-center justify-between px-4 pb-4">
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={() => setIsPlaying(!isPlaying)}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+            </button>
+            
+            <button
+              onClick={() => playerRef.current?.seekTo(currentTime - 10, 'seconds')}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              <SkipBack size={18} />
+            </button>
+            
+            <button
+              onClick={() => playerRef.current?.seekTo(currentTime + 10, 'seconds')}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              <SkipForward size={18} />
+            </button>
+            
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setIsMuted(!isMuted)}
+                className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+              >
+                {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.1}
+                value={isMuted ? 0 : volume}
+                onChange={(e) => setVolume(parseFloat(e.target.value))}
+                className="w-20 h-1 bg-white/30 rounded-lg appearance-none cursor-pointer"
+              />
+            </div>
+          </div>
+          
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => setShowAnnotations(!showAnnotations)}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              <MessageCircle size={18} />
+            </button>
+            <button
+              onClick={() => setIsFullscreen(!isFullscreen)}
+              className="bg-white/20 hover:bg-white/30 text-white p-2 rounded-full transition-colors"
+            >
+              <Maximize size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+  
+  const renderImageViewer = () => {
+    const images = allItems
+      .filter(item => item.type.startsWith('image/'))
+      .map(img => ({
+        original: img.url,
+        thumbnail: img.thumbnail || img.url,
+        description: img.name
+      }));
+
+    const currentImageIndex = images.findIndex(img => img.original === item.url);
+
+    return (
+      <div className="relative bg-black rounded-lg overflow-hidden">
+        <ImageGallery
+          items={images}
+          startIndex={currentImageIndex}
+          showPlayButton={false}
+          showFullscreenButton={true}
+          showNav={images.length > 1}
+          showThumbnails={images.length > 1}
+          thumbnailPosition="bottom"
+          useBrowserFullscreen={false}
+          additionalClass="noah-image-gallery"
+        />
+        
+        {/* Image Controls */}
+        <div className="absolute top-4 right-4 flex space-x-2">
+          <button
+            onClick={() => setImageZoom(Math.min(imageZoom + 0.25, 3))}
+            className="bg-black/50 hover:bg-black/70 text-white p-2 rounded-full transition-colors"
+          >
+            <ZoomIn size={18} />
+          </button>
+          <button
+            onClick={() => setImageZoom(Math.max(imageZoom - 0.25, 0.25))}
+            className="bg-black/50 hover:bg-black/70 text-white p-2 rounded-full transition-colors"
+          >
+            <ZoomOut size={18} />
+          </button>
+          <button
+            onClick={() => setImageZoom(1)}
+            className="bg-black/50 hover:bg-black/70 text-white p-2 rounded-full transition-colors"
+          >
+            <RotateCcw size={18} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderAudioPlayer = () => (
+    <div className="bg-gradient-to-br from-purple-900 to-blue-900 rounded-lg p-8 text-white">
+      <div className="text-center mb-8">
+        <div className="w-32 h-32 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-4">
+          <Volume2 size={48} />
+        </div>
+        <h3 className="text-xl font-semibold">{item.name}</h3>
+        <p className="text-white/70">Audio File</p>
+      </div>
+      
+      <ReactPlayer
+        ref={playerRef}
+        url={item.url}
+        playing={isPlaying}
+        volume={isMuted ? 0 : volume}
+        onProgress={({ playedSeconds }) => setCurrentTime(playedSeconds)}
+        onDuration={setDuration}
+        onEnded={() => setIsPlaying(false)}
+        width="100%"
+        height="60px"
+        controls={false}
+      />
+      
+      {/* Audio Controls */}
+      <div className="mt-6">
+        <div className="flex justify-between text-sm mb-2">
+          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(duration)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={duration}
+          value={currentTime}
+          onChange={(e) => {
+            const time = parseFloat(e.target.value);
+            setCurrentTime(time);
+            playerRef.current?.seekTo(time, 'seconds');
+          }}
+          className="w-full h-2 bg-white/30 rounded-lg appearance-none cursor-pointer mb-4"
+        />
+        
+        <div className="flex items-center justify-center space-x-4">
+          <button
+            onClick={() => playerRef.current?.seekTo(currentTime - 10, 'seconds')}
+            className="bg-white/20 hover:bg-white/30 p-3 rounded-full transition-colors"
+          >
+            <SkipBack size={20} />
+          </button>
+          <button
+            onClick={() => setIsPlaying(!isPlaying)}
+            className="bg-white/20 hover:bg-white/30 p-4 rounded-full transition-colors"
+          >
+            {isPlaying ? <Pause size={24} /> : <Play size={24} />}
+          </button>
+          <button
+            onClick={() => playerRef.current?.seekTo(currentTime + 10, 'seconds')}
+            className="bg-white/20 hover:bg-white/30 p-3 rounded-full transition-colors"
+          >
+            <SkipForward size={20} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderDocumentViewer = () => (
+    <div className="bg-gray-100 rounded-lg p-8 min-h-[500px]">
+      <div className="text-center">
+        <div className="w-24 h-24 bg-red-500 rounded-lg flex items-center justify-center mx-auto mb-4">
+          <span className="text-white text-2xl font-bold">PDF</span>
+        </div>
+        <h3 className="text-xl font-semibold text-gray-800 mb-2">{item.name}</h3>
+        <p className="text-gray-600 mb-6">Document Preview</p>
+        
+        {item.type === 'application/pdf' ? (
+          <iframe
+            src={item.url}
+            className="w-full h-96 border rounded-lg"
+            title="PDF Preview"
+          />
+        ) : (
+          <div className="bg-white border-2 border-dashed border-gray-300 rounded-lg p-8">
+            <p className="text-gray-500">Preview not available for this document type</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderMainContent = () => {
+    if (item.type.startsWith('video/')) return renderVideoPlayer();
+    if (item.type.startsWith('image/')) return renderImageViewer();
+    if (item.type.startsWith('audio/')) return renderAudioPlayer();
+    if (item.type === 'application/pdf' || item.type.startsWith('text/')) return renderDocumentViewer();
+    
+    return (
+      <div className="bg-gray-700 rounded-lg p-12 text-center text-white">
+        <div className="text-6xl mb-4">📄</div>
+        <h3 className="text-xl font-semibold mb-2">{item.name}</h3>
+        <p className="text-gray-300">File type: {item.type}</p>
+      </div>
+    );
+  };
+
+  return (
+    <div
+      ref={modalRef}
+      className="fixed inset-0 bg-black/95 backdrop-blur-sm flex items-center justify-center z-50 p-6"
+      onClick={onClose}
+      onMouseEnter={() => setShowControls(true)}
+      onMouseLeave={() => setShowControls(false)}
+    >
+      <div
+        className="bg-[#2A2A2E] rounded-xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col">
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 border-b border-[#3A3A3E]">
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-white truncate">{item.name}</h2>
+              <div className="flex items-center space-x-3 text-[#A9A9B4] text-sm mt-1">
+                <span>{formatFileSize(item.size)}</span>
+                <span>•</span>
+                <span>{new Date(item.uploadDate).toLocaleDateString()}</span>
+                {item.dimensions && (
+                  <>
+                    <span>•</span>
+                    <span>{item.dimensions.width} × {item.dimensions.height}</span>
+                  </>
+                )}
+                {item.duration && (
+                  <>
+                    <span>•</span>
+                    <span>{formatTime(item.duration)}</span>
+                  </>
+                )}
+              </div>
+            </div>
+            
+            {/* Action Buttons */}
+            <div className="flex items-center space-x-2 ml-4">
+              <button
+                onClick={downloadFile}
+                className="bg-[#5D8DE1] hover:bg-[#4A7BC8] text-white px-3 py-2 rounded-lg flex items-center space-x-2 transition-colors text-sm"
+              >
+                <Download size={14} />
+                <span>Download</span>
+              </button>
+              <button
+                onClick={shareFile}
+                className="bg-[#3A3A3E] hover:bg-[#4A4A4E] text-white px-3 py-2 rounded-lg flex items-center space-x-2 transition-colors text-sm"
+              >
+                <Share2 size={14} />
+                <span>Share</span>
+              </button>
+              <button
+                onClick={() => setShowMetadata(!showMetadata)}
+                className="bg-[#3A3A3E] hover:bg-[#4A4A4E] text-white p-2 rounded-lg transition-colors"
+              >
+                <Settings size={14} />
+              </button>
+              <button
+                onClick={onClose}
+                className="bg-[#3A3A3E] hover:bg-[#4A4A4E] text-white p-2 rounded-lg transition-colors"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+          
+          {/* Media Content */}
+          <div className="flex-1 p-4">
+            {renderMainContent()}
+          </div>
+        </div>
+        
+        {/* Annotations Sidebar */}
+        {showAnnotations && (
+          <div className="w-72 bg-[#1A1A1E] border-l border-[#3A3A3E] flex flex-col">
+            <div className="p-3 border-b border-[#3A3A3E]">
+              <h3 className="text-white font-semibold text-sm">Annotations</h3>
+            </div>
+            
+            <div className="flex-1 p-3 overflow-y-auto">
+              {/* Comments List */}
+              <div className="space-y-2 mb-3">
+                {annotations.map(annotation => (
+                  <div key={annotation.id} className="bg-[#2A2A2E] rounded-lg p-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[#A9A9B4] text-xs font-medium">{annotation.user}</span>
+                      <span className="text-[#A9A9B4] text-xs">{formatTime(annotation.timestamp)}</span>
+                    </div>
+                    <p className="text-white text-xs">{annotation.text}</p>
+                  </div>
+                ))}
+              </div>
+              
+              {/* Add Comment */}
+              <div className="space-y-2">
+                <div className="flex space-x-1">
+                  {['#FF5252', '#2196F3', '#4CAF50', '#FF9800', '#9C27B0'].map(color => (
+                    <button
+                      key={color}
+                      onClick={() => setSelectedDrawColor(color)}
+                      className={`w-5 h-5 rounded-full border-2 ${selectedDrawColor === color ? 'border-white' : 'border-transparent'}`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+                
+                <textarea
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  placeholder="Add a comment..."
+                  className="w-full bg-[#3A3A3E] text-white rounded-lg p-2 text-xs resize-none focus:outline-none focus:ring-2 focus:ring-[#5D8DE1]"
+                  rows={2}
+                />
+                
+                <button
+                  onClick={addComment}
+                  disabled={!newComment.trim()}
+                  className="w-full bg-[#5D8DE1] hover:bg-[#4A7BC8] disabled:bg-[#3A3A3E] disabled:text-[#A9A9B4] text-white py-1.5 rounded-lg transition-colors text-xs"
+                >
+                  Add Comment
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Metadata Sidebar */}
+        {showMetadata && (
+          <div className="w-72 bg-[#1A1A1E] border-l border-[#3A3A3E] flex flex-col">
+            <div className="p-3 border-b border-[#3A3A3E]">
+              <h3 className="text-white font-semibold text-sm">Metadata</h3>
+            </div>
+            
+            <div className="flex-1 p-3 overflow-y-auto">
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[#A9A9B4] text-xs">File Name</label>
+                  <p className="text-white text-sm">{item.name}</p>
+                </div>
+                <div>
+                  <label className="text-[#A9A9B4] text-xs">File Type</label>
+                  <p className="text-white text-sm">{item.type}</p>
+                </div>
+                <div>
+                  <label className="text-[#A9A9B4] text-xs">File Size</label>
+                  <p className="text-white text-sm">{formatFileSize(item.size)}</p>
+                </div>
+                <div>
+                  <label className="text-[#A9A9B4] text-xs">Upload Date</label>
+                  <p className="text-white text-sm">{new Date(item.uploadDate).toLocaleString()}</p>
+                </div>
+                {item.dimensions && (
+                  <div>
+                    <label className="text-[#A9A9B4] text-xs">Dimensions</label>
+                    <p className="text-white text-sm">{item.dimensions.width} × {item.dimensions.height}</p>
+                  </div>
+                )}
+                {item.duration && (
+                  <div>
+                    <label className="text-[#A9A9B4] text-xs">Duration</label>
+                    <p className="text-white text-sm">{formatTime(item.duration)}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

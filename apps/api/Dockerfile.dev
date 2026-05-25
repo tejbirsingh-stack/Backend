@@ -1,0 +1,26 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Install essential build tools
+RUN apk add --no-cache python3 make g++ git
+
+# Copy package.json files
+COPY package.json ./
+COPY turbo.json ./
+COPY apps/api/package.json ./apps/api/
+COPY packages/**/package.json ./packages/
+
+# Install dependencies
+RUN npm install
+
+# Copy application source
+COPY . .
+
+# Set working directory to API app
+WORKDIR /app/apps/api
+
+# Start the API server in development mode
+CMD ["npm", "run", "dev"]
+
+EXPOSE 3001

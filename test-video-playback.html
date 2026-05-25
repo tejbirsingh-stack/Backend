@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Playback Debug Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: white;
+        }
+        .test-section {
+            background: #2a2a3e;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #5a67d8;
+        }
+        pre {
+            background: #16213e;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        .video-item {
+            background: #3a3a4e;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        video {
+            max-width: 100%;
+            border-radius: 5px;
+        }
+        .success { color: #4ade80; }
+        .error { color: #f87171; }
+        .warning { color: #fbbf24; }
+    </style>
+</head>
+<body>
+    <h1>🎬 Video Playback Debug Test</h1>
+    
+    <div class="test-section">
+        <h2>1. API Response Test</h2>
+        <button onclick="testAPI()">Test API Response</button>
+        <div id="apiResponse"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>2. Video Files Detection</h2>
+        <button onclick="testVideoFiles()">Check Video Files</button>
+        <div id="videoFiles"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>3. Direct Video Playback Test</h2>
+        <button onclick="testDirectPlayback()">Test Video Playback</button>
+        <div id="playbackTest"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000';
+
+        async function testAPI() {
+            const responseDiv = document.getElementById('apiResponse');
+            responseDiv.innerHTML = '<p>Testing API...</p>';
+            
+            try {
+                const response = await fetch(`${API_URL}/api/media`);
+                const data = await response.json();
+                
+                responseDiv.innerHTML = `
+                    <p class="success">✅ API Response Received</p>
+                    <p>Total assets: ${data.count || 0}</p>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+                
+                // Store for other tests
+                window.apiData = data;
+            } catch (error) {
+                responseDiv.innerHTML = `<p class="error">❌ API Error: ${error.message}</p>`;
+            }
+        }
+
+        async function testVideoFiles() {
+            const videoDiv = document.getElementById('videoFiles');
+            
+            if (!window.apiData) {
+                videoDiv.innerHTML = '<p class="warning">⚠️ Run API test first</p>';
+                return;
+            }
+            
+            const assets = window.apiData.assets || [];
+            const videos = assets.filter(asset => {
+                const type = asset.type?.toLowerCase() || '';
+                console.log(`Asset: ${asset.name}, Type: "${asset.type}", Is Video: ${type === 'video' || type.includes('video')}`);
+                return type === 'video' || type.includes('video') || type.includes('mp4');
+            });
+            
+            videoDiv.innerHTML = `
+                <p>Found ${videos.length} video files:</p>
+                ${videos.map(video => `
+                    <div class="video-item">
+                        <p><strong>${video.name}</strong></p>
+                        <p>Type: "${video.type}"</p>
+                        <p>URL: ${video.url}</p>
+                        <p>Size: ${(video.size / 1024 / 1024).toFixed(2)} MB</p>
+                        <button onclick="playVideo('${video.url}', '${video.name}')">Play This Video</button>
+                    </div>
+                `).join('')}
+                ${videos.length === 0 ? '<p class="warning">No videos detected. Check type field values.</p>' : ''}
+            `;
+        }
+
+        async function testDirectPlayback() {
+            const playbackDiv = document.getElementById('playbackTest');
+            
+            if (!window.apiData || !window.apiData.assets) {
+                playbackDiv.innerHTML = '<p class="warning">⚠️ Run API test first</p>';
+                return;
+            }
+            
+            const firstVideo = window.apiData.assets.find(a => 
+                a.type === 'video' || a.type?.includes('video') || a.name?.includes('.mp4')
+            );
+            
+            if (firstVideo) {
+                playbackDiv.innerHTML = `
+                    <p>Testing playback of: ${firstVideo.name}</p>
+                    <p>URL: ${firstVideo.url}</p>
+                    <video controls width="600">
+                        <source src="${firstVideo.url}" type="video/mp4">
+                        Your browser does not support the video tag.
+                    </video>
+                `;
+            } else {
+                playbackDiv.innerHTML = '<p class="warning">No video files found to test</p>';
+            }
+        }
+
+        function playVideo(url, name) {
+            const playbackDiv = document.getElementById('playbackTest');
+            playbackDiv.innerHTML = `
+                <p>Playing: ${name}</p>
+                <video controls width="600" autoplay>
+                    <source src="${url}" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            `;
+        }
+
+        // Auto-run tests on load
+        window.onload = () => {
+            setTimeout(testAPI, 500);
+        };
+    </script>
+</body>
+</html>

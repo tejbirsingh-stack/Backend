@@ -1,0 +1,14 @@
+[phases.setup]
+nixPkgs = ['nodejs_20']
+
+[phases.install]
+cmds = ['npm install --omit=dev']
+
+[phases.build]
+cmds = [
+    'npm run build:packages',
+    'npx prisma generate --schema=packages/@noah/db/prisma/schema.prisma'
+]
+
+[start]
+cmd = 'npx prisma migrate deploy --schema=packages/@noah/db/prisma/schema.prisma && npm run start:production'

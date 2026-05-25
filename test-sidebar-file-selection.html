@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Noah - Sidebar File Selection Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2rem;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1rem;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .feature-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .feature-card:hover {
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.1);
+        }
+        .feature-card h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.2rem;
+        }
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        .status-complete {
+            background: #10b981;
+            color: white;
+        }
+        .status-new {
+            background: #8b5cf6;
+            color: white;
+        }
+        .test-steps {
+            list-style: none;
+            counter-reset: step;
+        }
+        .test-steps li {
+            counter-increment: step;
+            position: relative;
+            padding-left: 35px;
+            margin-bottom: 12px;
+            line-height: 1.5;
+            color: #555;
+        }
+        .test-steps li::before {
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 25px;
+            height: 25px;
+            background: #667eea;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+        .implementation-details {
+            background: #fff;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid #e5e7eb;
+        }
+        .implementation-details h2 {
+            color: #333;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .code-block {
+            background: #1a1a1a;
+            color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9rem;
+            margin: 10px 0;
+            overflow-x: auto;
+        }
+        .code-comment {
+            color: #6a9955;
+        }
+        .iframe-container {
+            width: 100%;
+            height: 700px;
+            border: 3px solid #667eea;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-top: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+        .highlight {
+            background: #fef3c7;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📁 Sidebar File Selection Integration</h1>
+        <p class="subtitle">Click files in the sidebar to open them in the media viewer</p>
+        
+        <div class="feature-grid">
+            <div class="feature-card">
+                <h3>
+                    ✨ What's New
+                    <span class="status-badge status-complete">Complete</span>
+                </h3>
+                <ol class="test-steps">
+                    <li>Sidebar now loads actual files from the server</li>
+                    <li>Files are organized in "All Files" and "By Type" folders</li>
+                    <li>Clicking any file opens it in the media viewer</li>
+                    <li>State is shared between sidebar and media browser</li>
+                    <li>No need to navigate back to browser to select files</li>
+                </ol>
+            </div>
+            
+            <div class="feature-card">
+                <h3>
+                    🧪 How to Test
+                    <span class="status-badge status-new">Try It</span>
+                </h3>
+                <ol class="test-steps">
+                    <li>Open the application and log in</li>
+                    <li>Look at the sidebar on the left</li>
+                    <li>Expand "All Files" or "By Type" folders</li>
+                    <li>Click on any file (video, image, or audio)</li>
+                    <li>File opens directly in the media viewer</li>
+                    <li>Try clicking different files to switch between them</li>
+                </ol>
+            </div>
+        </div>
+        
+        <div class="implementation-details">
+            <h2>🔧 Implementation Details</h2>
+            
+            <h3>Architecture Changes:</h3>
+            <div class="code-block">
+<span class="code-comment">// App.tsx - Lifted state management</span>
+const [selectedAsset, setSelectedAsset] = useState(null);
+
+&lt;EnhancedSidebar 
+  selectedAsset={selectedAsset}
+  onFileSelect={setSelectedAsset}
+/&gt;
+
+&lt;MediaBrowser 
+  selectedAsset={selectedAsset}
+  onSelectAsset={setSelectedAsset}
+/&gt;
+            </div>
+            
+            <h3>Key Features:</h3>
+            <ul style="margin-left: 20px; color: #555; line-height: 1.8;">
+                <li><span class="highlight">Shared State</span> - selectedAsset is managed in App.tsx and shared between components</li>
+                <li><span class="highlight">Real Files</span> - Sidebar fetches actual files from /api/media endpoint</li>
+                <li><span class="highlight">File Organization</span> - Files are automatically organized by type (Videos, Images, Audio)</li>
+                <li><span class="highlight">Click Handler</span> - Each file has a click handler that calls onFileSelect</li>
+                <li><span class="highlight">Asset Mapping</span> - Files are mapped to the correct asset format for the viewer</li>
+            </ul>
+            
+            <h3>Data Flow:</h3>
+            <div class="code-block">
+<span class="code-comment">// EnhancedSidebar.tsx - File click handler</span>
+const handleFileClick = async (item) => {
+  // Fetch full file data from API
+  const response = await axios.get('/api/media');
+  const fileData = files.find(f => f.name === item.name);
+  
+  // Create asset object
+  const asset = {
+    id: fileData.id,
+    name: fileData.name,
+    type: fileData.type,
+    url: fileData.url,
+    // ... other properties
+  };
+  
+  // Call parent's onFileSelect
+  onFileSelect(asset);
+};
+            </div>
+        </div>
+        
+        <div class="implementation-details">
+            <h2>📂 Sidebar Structure</h2>
+            <ul style="margin-left: 20px; color: #555; line-height: 1.8;">
+                <li>📁 <strong>All Files</strong> - Shows all uploaded files in one place</li>
+                <li>📁 <strong>By Type</strong>
+                    <ul style="margin-left: 20px; margin-top: 5px;">
+                        <li>📁 Videos - All video files</li>
+                        <li>📁 Images - All image files</li>
+                        <li>📁 Audio - All audio files</li>
+                    </ul>
+                </li>
+                <li>📁 <strong>Projects</strong> - Custom project folders (customizable)</li>
+                <li>📁 <strong>Personal</strong> - Personal folders (customizable)</li>
+            </ul>
+            
+            <h3 style="margin-top: 20px;">Quick Actions:</h3>
+            <ul style="margin-left: 20px; color: #555; line-height: 1.8;">
+                <li>🕐 <strong>Recent</strong> - Shows recently accessed files</li>
+                <li>⭐ <strong>Favorites</strong> - Your starred files</li>
+                <li>🔗 <strong>Shared</strong> - Files shared with you</li>
+                <li>🗑️ <strong>Trash</strong> - Recently deleted files</li>
+                <li>⬆️ <strong>Upload</strong> - Opens upload modal</li>
+            </ul>
+        </div>
+        
+        <div class="implementation-details">
+            <h2>✅ Benefits</h2>
+            <ul style="margin-left: 20px; color: #555; line-height: 1.8;">
+                <li>✓ <strong>Faster Navigation</strong> - Access any file directly from the sidebar</li>
+                <li>✓ <strong>Better Organization</strong> - Files are automatically organized by type</li>
+                <li>✓ <strong>Seamless Experience</strong> - No need to close viewer to select another file</li>
+                <li>✓ <strong>Real-time Updates</strong> - Sidebar refreshes when new files are uploaded</li>
+                <li>✓ <strong>Consistent State</strong> - Selected file is synchronized across components</li>
+            </ul>
+        </div>
+        
+        <div style="text-align: center; margin: 30px 0;">
+            <h2 style="color: #333; margin-bottom: 10px;">🚀 Live Application</h2>
+            <p style="color: #666;">Test the sidebar file selection below</p>
+        </div>
+        
+        <div class="iframe-container">
+            <iframe src="http://localhost:3002" title="Noah Media Platform"></iframe>
+        </div>
+        
+        <script>
+            console.log('📁 Sidebar File Selection Test Loaded');
+            console.log('✅ Integration Complete:');
+            console.log('- Sidebar loads real files from server');
+            console.log('- Files organized by type');
+            console.log('- Click to open in viewer');
+            console.log('- Shared state management');
+            console.log('- Seamless navigation');
+        </script>
+    </div>
+</body>
+</html>

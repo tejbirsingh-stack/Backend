@@ -1,0 +1,11 @@
+This is a test file for Noah media platform upload functionality.
+
+Content: Test document for media asset management
+Date: July 31, 2025
+Platform: Noah Media Asset Management
+
+This file will be used to test:
+- File upload functionality
+- Media browser integration
+- Backend API connectivity
+- Real file storage and retrieval

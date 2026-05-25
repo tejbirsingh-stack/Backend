@@ -1,0 +1,704 @@
+import { B2 } from '@backblaze/b2';
+import { CircuitBreaker } from 'opossum';
+import { Logger } from 'pino';
+import { Histogram, Counter, Gauge, register } from 'prom-client';
+import { Redis } from 'ioredis';
+import { EventEmitter } from 'events';
+import pLimit from 'p-limit';
+import crypto from 'crypto';
+import { Readable, Transform } from 'stream';
+
+// Constants for performance optimization
+const CHUNK_SIZE = 100 * 1024 * 1024; // 100MB chunks
+const PARALLEL_UPLOADS = 10; // Max concurrent uploads
+const MIN_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB min
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000;
+
+// Storage tiers
+enum StorageTier {
+  HOT = 'hot',
+  WARM = 'warm',
+  COLD = 'cold',
+  ARCHIVE = 'archive'
+}
+
+interface UploadResult {
+  fileId: string;
+  fileName: string;
+  uploadTimestamp: number;
+  size: number;
+  cost: number;
+  tier: StorageTier;
+}
+
+interface AccessPattern {
+  assetId: string;
+  lastAccessed: Date;
+  accessCount: number;
+  totalBandwidthUsed: number;
+  tier: StorageTier;
+}
+
+interface CostMetrics {
+  storage: number;
+  bandwidth: number;
+  transactions: number;
+  total: number;
+}
+
+// Main B2 Service with enterprise features
+export class B2Service extends EventEmitter {
+  private breaker: CircuitBreaker;
+  private uploadHistogram: Histogram<string>;
+  private uploadCounter: Counter<string>;
+  private costGauge: Gauge<string>;
+  private concurrentUploadsGauge: Gauge<string>;
+  private uploadLimit: pLimit.Limit;
+  
+  constructor(
+    private b2: B2,
+    private logger: Logger,
+    private redis: Redis
+  ) {
+    super();
+    
+    // Initialize circuit breaker with advanced options
+    this.breaker = new CircuitBreaker(this.uploadFileInternal.bind(this), {
+      timeout: 30000,
+      errorThresholdPercentage: 50,
+      resetTimeout: 30000,
+      volumeThreshold: 10,
+      halfOpenLimit: 5
+    });
+    
+    // Circuit breaker event handlers
+    this.breaker.on('open', () => {
+      this.logger.error('Circuit breaker opened - B2 API experiencing issues');
+      this.emit('breaker:open');
+    });
+    
+    this.breaker.on('halfOpen', () => {
+      this.logger.info('Circuit breaker half-open - testing B2 API');
+    });
+    
+    // Initialize metrics
+    this.uploadHistogram = new Histogram({
+      name: 'b2_upload_duration_seconds',
+      help: 'B2 upload duration',
+      labelNames: ['file_type', 'size_category', 'tier'],
+      buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300]
+    });
+    
+    this.uploadCounter = new Counter({
+      name: 'b2_uploads_total',
+      help: 'Total B2 uploads',
+      labelNames: ['status', 'file_type']
+    });
+    
+    this.costGauge = new Gauge({
+      name: 'b2_cost_dollars',
+      help: 'B2 cost in dollars',
+      labelNames: ['type']
+    });
+    
+    this.concurrentUploadsGauge = new Gauge({
+      name: 'b2_concurrent_uploads',
+      help: 'Current concurrent uploads'
+    });
+    
+    // Limit concurrent uploads for throughput optimization
+    this.uploadLimit = pLimit(PARALLEL_UPLOADS);
+    
+    // Start cost tracking
+    this.startCostTracking();
+  }
+  
+  // Main upload method with automatic chunking for large files
+  async uploadFile(
+    file: Buffer | Readable,
+    fileName: string,
+    metadata: Record<string, string> = {}
+  ): Promise<UploadResult> {
+    const startTime = Date.now();
+    const fileSize = Buffer.isBuffer(file) ? file.length : parseInt(metadata.size || '0');
+    
+    try {
+      let result: UploadResult;
+      
+      // Determine if we need multi-part upload
+      if (fileSize > CHUNK_SIZE) {
+        result = await this.uploadLargeFile(file, fileName, metadata);
+      } else {
+        result = await this.breaker.fire(file, fileName, metadata);
+      }
+      
+      // Track metrics
+      const duration = (Date.now() - startTime) / 1000;
+      this.uploadHistogram.observe(
+        {
+          file_type: metadata.mimeType || 'unknown',
+          size_category: this.getSizeCategory(fileSize),
+          tier: result.tier
+        },
+        duration
+      );
+      
+      this.uploadCounter.inc({
+        status: 'success',
+        file_type: metadata.mimeType || 'unknown'
+      });
+      
+      // Emit upload event for monitoring
+      this.emit('upload:complete', result);
+      
+      return result;
+    } catch (error) {
+      this.uploadCounter.inc({
+        status: 'failure',
+        file_type: metadata.mimeType || 'unknown'
+      });
+      
+      this.logger.error({ error, fileName }, 'Upload failed');
+      throw error;
+    }
+  }
+  
+  // Large file upload with parallel chunk processing
+  async uploadLargeFile(
+    file: Buffer | Readable,
+    fileName: string,
+    metadata: Record<string, string>
+  ): Promise<UploadResult> {
+    this.logger.info({ fileName, metadata }, 'Starting large file upload');
+    
+    // Start large file upload
+    const { fileId } = await this.b2.startLargeFile({
+      bucketId: process.env.B2_BUCKET_ID!,
+      fileName,
+      contentType: metadata.mimeType || 'application/octet-stream',
+      fileInfo: metadata
+    });
+    
+    try {
+      const chunks = Buffer.isBuffer(file) 
+        ? this.chunkBuffer(file)
+        : await this.chunkStream(file as Readable);
+      
+      const totalChunks = chunks.length;
+      let uploadedChunks = 0;
+      
+      // Upload chunks in parallel with progress tracking
+      const uploadPromises = chunks.map((chunk, index) => 
+        this.uploadLimit(async () => {
+          this.concurrentUploadsGauge.inc();
+          try {
+            const result = await this.uploadChunkWithRetry(fileId, chunk, index + 1);
+            uploadedChunks++;
+            
+            // Emit progress event
+            this.emit('upload:progress', {
+              fileName,
+              fileId,
+              progress: (uploadedChunks / totalChunks) * 100,
+              uploadedChunks,
+              totalChunks
+            });
+            
+            return result;
+          } finally {
+            this.concurrentUploadsGauge.dec();
+          }
+        })
+      );
+      
+      const partSha1Array = await Promise.all(uploadPromises);
+      
+      // Finish large file upload
+      await this.b2.finishLargeFile({
+        fileId,
+        partSha1Array
+      });
+      
+      const fileSize = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const cost = this.calculateUploadCost(fileSize, StorageTier.HOT);
+      
+      return {
+        fileId,
+        fileName,
+        uploadTimestamp: Date.now(),
+        size: fileSize,
+        cost,
+        tier: StorageTier.HOT
+      };
+    } catch (error) {
+      // Cancel large file upload on error
+      await this.b2.cancelLargeFile({ fileId });
+      throw error;
+    }
+  }
+  
+  // Upload chunk with retry logic
+  private async uploadChunkWithRetry(
+    fileId: string,
+    chunk: Buffer,
+    partNumber: number,
+    retries = 0
+  ): Promise<string> {
+    try {
+      const uploadUrl = await this.getUploadUrl();
+      const sha1 = crypto.createHash('sha1').update(chunk).digest('hex');
+      
+      const response = await this.b2.uploadPart({
+        uploadUrl: uploadUrl.uploadUrl,
+        uploadAuthToken: uploadUrl.authorizationToken,
+        partNumber,
+        data: chunk,
+        hash: sha1
+      });
+      
+      return sha1;
+    } catch (error) {
+      if (retries < MAX_RETRIES) {
+        this.logger.warn(
+          { error, partNumber, retries },
+          'Chunk upload failed, retrying'
+        );
+        
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retries + 1)));
+        return this.uploadChunkWithRetry(fileId, chunk, partNumber, retries + 1);
+      }
+      
+      throw error;
+    }
+  }
+  
+  // Internal upload method for circuit breaker
+  private async uploadFileInternal(
+    file: Buffer,
+    fileName: string,
+    metadata: Record<string, string>
+  ): Promise<UploadResult> {
+    const uploadUrl = await this.getUploadUrl();
+    const sha1 = crypto.createHash('sha1').update(file).digest('hex');
+    
+    const response = await this.b2.uploadFile({
+      uploadUrl: uploadUrl.uploadUrl,
+      uploadAuthToken: uploadUrl.authorizationToken,
+      fileName,
+      data: file,
+      hash: sha1,
+      info: metadata
+    });
+    
+    const cost = this.calculateUploadCost(file.length, StorageTier.HOT);
+    
+    return {
+      fileId: response.fileId,
+      fileName: response.fileName,
+      uploadTimestamp: Date.now(),
+      size: file.length,
+      cost,
+      tier: StorageTier.HOT
+    };
+  }
+  
+  // Get upload URL with caching
+  private async getUploadUrl() {
+    const cached = await this.redis.get('b2:uploadUrl');
+    if (cached) {
+      return JSON.parse(cached);
+    }
+    
+    const uploadUrl = await this.b2.getUploadUrl({
+      bucketId: process.env.B2_BUCKET_ID!
+    });
+    
+    // Cache for 23 hours (B2 URLs valid for 24h)
+    await this.redis.setex('b2:uploadUrl', 23 * 60 * 60, JSON.stringify(uploadUrl));
+    
+    return uploadUrl;
+  }
+  
+  // Chunk buffer into optimal sizes
+  private chunkBuffer(buffer: Buffer): Buffer[] {
+    const chunks: Buffer[] = [];
+    const chunkSize = this.calculateOptimalChunkSize(buffer.length);
+    
+    for (let i = 0; i < buffer.length; i += chunkSize) {
+      chunks.push(buffer.slice(i, i + chunkSize));
+    }
+    
+    return chunks;
+  }
+  
+  // Chunk stream for memory efficiency
+  private async chunkStream(stream: Readable): Promise<Buffer[]> {
+    const chunks: Buffer[] = [];
+    const chunkSize = CHUNK_SIZE;
+    let currentChunk = Buffer.alloc(0);
+    
+    return new Promise((resolve, reject) => {
+      stream.on('data', (data: Buffer) => {
+        currentChunk = Buffer.concat([currentChunk, data]);
+        
+        while (currentChunk.length >= chunkSize) {
+          chunks.push(currentChunk.slice(0, chunkSize));
+          currentChunk = currentChunk.slice(chunkSize);
+        }
+      });
+      
+      stream.on('end', () => {
+        if (currentChunk.length > 0) {
+          chunks.push(currentChunk);
+        }
+        resolve(chunks);
+      });
+      
+      stream.on('error', reject);
+    });
+  }
+  
+  // Calculate optimal chunk size based on file size
+  private calculateOptimalChunkSize(fileSize: number): number {
+    // B2 requires minimum 5MB chunks except for the last one
+    if (fileSize <= CHUNK_SIZE) {
+      return fileSize;
+    }
+    
+    // Calculate chunks to stay under 10,000 parts limit
+    const maxChunks = 10000;
+    const minChunkSize = Math.max(MIN_CHUNK_SIZE, Math.ceil(fileSize / maxChunks));
+    
+    return Math.min(CHUNK_SIZE, Math.max(minChunkSize, MIN_CHUNK_SIZE));
+  }
+  
+  // Get size category for metrics
+  private getSizeCategory(size: number): string {
+    if (size < 1024 * 1024) return 'small';
+    if (size < 100 * 1024 * 1024) return 'medium';
+    if (size < 1024 * 1024 * 1024) return 'large';
+    return 'xlarge';
+  }
+  
+  // Calculate upload cost
+  private calculateUploadCost(size: number, tier: StorageTier): number {
+    const costs = {
+      [StorageTier.HOT]: 0.005,
+      [StorageTier.WARM]: 0.004,
+      [StorageTier.COLD]: 0.002,
+      [StorageTier.ARCHIVE]: 0.001
+    };
+    
+    return (size / (1024 * 1024 * 1024)) * costs[tier];
+  }
+  
+  // Start background cost tracking
+  private startCostTracking() {
+    setInterval(async () => {
+      try {
+        const metrics = await this.getCostMetrics();
+        
+        this.costGauge.set({ type: 'storage' }, metrics.storage);
+        this.costGauge.set({ type: 'bandwidth' }, metrics.bandwidth);
+        this.costGauge.set({ type: 'transactions' }, metrics.transactions);
+        this.costGauge.set({ type: 'total' }, metrics.total);
+      } catch (error) {
+        this.logger.error({ error }, 'Failed to update cost metrics');
+      }
+    }, 60000); // Update every minute
+  }
+  
+  // Get current cost metrics
+  async getCostMetrics(): Promise<CostMetrics> {
+    // Implementation would fetch from B2 API and cache
+    const cached = await this.redis.get('b2:costMetrics');
+    if (cached) {
+      return JSON.parse(cached);
+    }
+    
+    // Placeholder - actual implementation would call B2 API
+    const metrics = {
+      storage: 0,
+      bandwidth: 0,
+      transactions: 0,
+      total: 0
+    };
+    
+    await this.redis.setex('b2:costMetrics', 300, JSON.stringify(metrics));
+    return metrics;
+  }
+}
+
+// Storage Tier Manager for intelligent data lifecycle
+export class StorageTierManager {
+  private readonly WARM_THRESHOLD_DAYS = 30;
+  private readonly COLD_THRESHOLD_DAYS = 90;
+  private readonly ARCHIVE_THRESHOLD_DAYS = 365;
+  private readonly MIN_ACCESS_COUNT = 5;
+  
+  constructor(
+    private b2: B2,
+    private redis: Redis,
+    private logger: Logger
+  ) {}
+  
+  // Evaluate and move asset based on access patterns
+  async evaluateAndMoveAsset(assetId: string): Promise<void> {
+    try {
+      const accessPattern = await this.getAccessPattern(assetId);
+      const daysSinceAccess = this.daysSince(accessPattern.lastAccessed);
+      
+      let targetTier: StorageTier | null = null;
+      
+      // Determine target tier based on access patterns
+      if (daysSinceAccess < this.WARM_THRESHOLD_DAYS) {
+        if (accessPattern.tier !== StorageTier.HOT) {
+          targetTier = StorageTier.HOT;
+        }
+      } else if (daysSinceAccess < this.COLD_THRESHOLD_DAYS) {
+        if (accessPattern.accessCount < this.MIN_ACCESS_COUNT && 
+            accessPattern.tier !== StorageTier.WARM) {
+          targetTier = StorageTier.WARM;
+        }
+      } else if (daysSinceAccess < this.ARCHIVE_THRESHOLD_DAYS) {
+        if (accessPattern.tier !== StorageTier.COLD) {
+          targetTier = StorageTier.COLD;
+        }
+      } else {
+        if (accessPattern.tier !== StorageTier.ARCHIVE) {
+          targetTier = StorageTier.ARCHIVE;
+        }
+      }
+      
+      // Move to target tier if needed
+      if (targetTier) {
+        await this.moveToTier(assetId, targetTier);
+        
+        this.logger.info({
+          assetId,
+          fromTier: accessPattern.tier,
+          toTier: targetTier,
+          daysSinceAccess,
+          accessCount: accessPattern.accessCount
+        }, 'Asset tier migration completed');
+      }
+    } catch (error) {
+      this.logger.error({ error, assetId }, 'Failed to evaluate asset tier');
+      throw error;
+    }
+  }
+  
+  // Get access pattern for an asset
+  async getAccessPattern(assetId: string): Promise<AccessPattern> {
+    const key = `access:${assetId}`;
+    const data = await this.redis.hgetall(key);
+    
+    return {
+      assetId,
+      lastAccessed: new Date(parseInt(data.lastAccessed || '0')),
+      accessCount: parseInt(data.accessCount || '0'),
+      totalBandwidthUsed: parseInt(data.totalBandwidthUsed || '0'),
+      tier: (data.tier as StorageTier) || StorageTier.HOT
+    };
+  }
+  
+  // Record asset access
+  async recordAccess(assetId: string, bytesTransferred: number): Promise<void> {
+    const key = `access:${assetId}`;
+    const pipeline = this.redis.pipeline();
+    
+    pipeline.hset(key, 'lastAccessed', Date.now());
+    pipeline.hincrby(key, 'accessCount', 1);
+    pipeline.hincrby(key, 'totalBandwidthUsed', bytesTransferred);
+    pipeline.expire(key, 365 * 24 * 60 * 60); // 1 year TTL
+    
+    await pipeline.exec();
+  }
+  
+  // Move asset to specific tier
+  private async moveToTier(assetId: string, tier: StorageTier): Promise<void> {
+    // In B2, this would involve copying to a different bucket with lifecycle rules
+    // For this example, we'll update metadata and track in Redis
+    
+    const key = `access:${assetId}`;
+    await this.redis.hset(key, 'tier', tier);
+    
+    // Update B2 file info with tier metadata
+    await this.b2.updateFileInfo({
+      fileId: assetId,
+      fileInfo: {
+        tier,
+        tierMigrationDate: new Date().toISOString()
+      }
+    });
+  }
+  
+  // Calculate days since date
+  private daysSince(date: Date): number {
+    return Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24));
+  }
+  
+  // Batch process assets for tier evaluation
+  async batchEvaluateAssets(limit = 1000): Promise<void> {
+    const cursor = '0';
+    const pattern = 'access:*';
+    
+    // Scan Redis for access patterns
+    const [nextCursor, keys] = await this.redis.scan(
+      cursor,
+      'MATCH',
+      pattern,
+      'COUNT',
+      limit
+    );
+    
+    // Process each asset
+    const evaluationPromises = keys.map(key => {
+      const assetId = key.replace('access:', '');
+      return this.evaluateAndMoveAsset(assetId);
+    });
+    
+    await Promise.allSettled(evaluationPromises);
+    
+    // Continue scanning if more keys exist
+    if (nextCursor !== '0') {
+      setImmediate(() => this.batchEvaluateAssets(limit));
+    }
+  }
+}
+
+// Cost Optimizer for predictive modeling and alerts
+export class CostOptimizer {
+  private readonly ALERT_THRESHOLD_PERCENTAGE = 80;
+  
+  constructor(
+    private redis: Redis,
+    private logger: Logger
+  ) {}
+  
+  // Analyze usage patterns and predict costs
+  async predictMonthlyCost(): Promise<number> {
+    const history = await this.getUsageHistory(30);
+    
+    // Simple linear regression for prediction
+    const trend = this.calculateTrend(history);
+    const currentMonthUsage = this.getCurrentMonthUsage(history);
+    const daysInMonth = new Date(
+      new Date().getFullYear(),
+      new Date().getMonth() + 1,
+      0
+    ).getDate();
+    const daysElapsed = new Date().getDate();
+    
+    return (currentMonthUsage / daysElapsed) * daysInMonth * (1 + trend);
+  }
+  
+  // Check budget and send alerts
+  async checkBudgetAlerts(monthlyBudget: number): Promise<void> {
+    const predictedCost = await this.predictMonthlyCost();
+    const percentage = (predictedCost / monthlyBudget) * 100;
+    
+    if (percentage >= this.ALERT_THRESHOLD_PERCENTAGE) {
+      this.logger.warn({
+        predictedCost,
+        monthlyBudget,
+        percentage
+      }, 'Monthly budget alert triggered');
+      
+      // Emit alert event
+      // This would typically trigger notifications
+      await this.redis.publish('budget:alert', JSON.stringify({
+        type: 'threshold_exceeded',
+        predictedCost,
+        monthlyBudget,
+        percentage,
+        timestamp: Date.now()
+      }));
+    }
+  }
+  
+  // Get cost optimization recommendations
+  async getOptimizationRecommendations(): Promise<string[]> {
+    const recommendations: string[] = [];
+    const patterns = await this.analyzeAccessPatterns();
+    
+    // Check for cold data in hot storage
+    if (patterns.coldDataInHotStorage > 100 * 1024 * 1024 * 1024) {
+      recommendations.push(
+        `Move ${(patterns.coldDataInHotStorage / (1024 ** 3)).toFixed(2)}GB of cold data to archive tier for ~${patterns.potentialSavings.toFixed(2)}$/month savings`
+      );
+    }
+    
+    // Check for underutilized bandwidth
+    if (patterns.averageBandwidthUtilization < 0.3) {
+      recommendations.push(
+        'Consider implementing CDN caching to reduce B2 bandwidth costs'
+      );
+    }
+    
+    // Check for duplicate files
+    if (patterns.duplicateFiles > 10) {
+      recommendations.push(
+        `Found ${patterns.duplicateFiles} duplicate files. Implement deduplication to save storage costs`
+      );
+    }
+    
+    return recommendations;
+  }
+  
+  // Analyze access patterns for optimization
+  private async analyzeAccessPatterns() {
+    // Placeholder implementation
+    return {
+      coldDataInHotStorage: 500 * 1024 * 1024 * 1024,
+      potentialSavings: 250,
+      averageBandwidthUtilization: 0.25,
+      duplicateFiles: 15
+    };
+  }
+  
+  // Get usage history
+  private async getUsageHistory(days: number): Promise<number[]> {
+    const history: number[] = [];
+    const now = Date.now();
+    
+    for (let i = 0; i < days; i++) {
+      const date = new Date(now - i * 24 * 60 * 60 * 1000);
+      const key = `usage:${date.toISOString().split('T')[0]}`;
+      const usage = await this.redis.get(key);
+      history.push(parseFloat(usage || '0'));
+    }
+    
+    return history.reverse();
+  }
+  
+  // Calculate trend from historical data
+  private calculateTrend(history: number[]): number {
+    if (history.length < 2) return 0;
+    
+    const n = history.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    
+    for (let i = 0; i < n; i++) {
+      sumX += i;
+      sumY += history[i];
+      sumXY += i * history[i];
+      sumX2 += i * i;
+    }
+    
+    const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+    return slope / (sumY / n); // Return as percentage
+  }
+  
+  // Get current month usage
+  private getCurrentMonthUsage(history: number[]): number {
+    const currentMonth = new Date().getMonth();
+    return history
+      .slice(-new Date().getDate())
+      .reduce((sum, usage) => sum + usage, 0);
+  }
+}
+
+// Export metrics registry
+export { register as metricsRegistry };

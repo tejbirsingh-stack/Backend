@@ -1,0 +1,539 @@
+# 📚 Comprehensive Developer's Guide
+
+## 🏗️ System Architecture Overview
+
+### High-Level Architecture
+Noah is built as a cloud-native, microservices-based platform designed for extreme scale and reliability. The architecture follows Domain-Driven Design principles with clear service boundaries.
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        WEB[React Web App]
+        MOBILE[React Native Apps]
+        NLE[NLE Plugins]
+    end
+    
+    subgraph "API Gateway Layer"
+        KONG[Kong API Gateway]
+        LB[Load Balancer]
+    end
+    
+    subgraph "Service Layer"
+        AUTH[Auth Service]
+        MEDIA[Media Service]
+        COMP[Compression Service]
+        STORAGE[Storage Service]
+        BILLING[Billing Service]
+        AI[AI Service]
+    end
+    
+    subgraph "Data Layer"
+        PG[(PostgreSQL)]
+        REDIS[(Redis)]
+        ES[(Elasticsearch)]
+        B2[(Backblaze B2)]
+    end
+    
+    subgraph "Infrastructure Layer"
+        K8S[Kubernetes]
+        KAFKA[Kafka]
+        PROM[Prometheus]
+    end
+    
+    WEB --> KONG
+    MOBILE --> KONG
+    NLE --> KONG
+    
+    KONG --> AUTH
+    KONG --> MEDIA
+    KONG --> COMP
+    KONG --> STORAGE
+    KONG --> BILLING
+    KONG --> AI
+    
+    AUTH --> PG
+    AUTH --> REDIS
+    MEDIA --> PG
+    MEDIA --> ES
+    COMP --> KAFKA
+    STORAGE --> B2
+    
+    K8S --> Service Layer
+    PROM --> Service Layer
+Service Responsibilities
+Auth Service
+
+User authentication and authorization
+Multi-tenant management
+Session handling
+API key management
+SSO integration
+
+Media Service
+
+Asset metadata management
+Search functionality
+Folder hierarchy
+Permissions
+Version control
+
+Compression Service
+
+Video/image compression
+Format conversion
+Quality validation
+Thumbnail generation
+Processing queue management
+
+Storage Service
+
+Backblaze B2 integration
+CDN management
+Upload/download handling
+Storage tiering
+Quota management
+
+Billing Service
+
+Subscription management
+Usage tracking
+Invoice generation
+Payment processing
+Quota enforcement
+
+AI Service
+
+Content analysis
+Auto-tagging
+Face detection
+Scene analysis
+Transcription
+
+📊 Data Flow Diagrams
+Upload Flow
+mermaidsequenceDiagram
+    participant Client
+    participant Gateway
+    participant Auth
+    participant Media
+    participant Storage
+    participant Compression
+    participant Queue
+    
+    Client->>Gateway: POST /upload
+    Gateway->>Auth: Validate token
+    Auth-->>Gateway: User context
+    Gateway->>Media: Create asset record
+    Media-->>Gateway: Asset ID
+    Gateway->>Storage: Initiate multipart upload
+    Storage-->>Gateway: Upload ID
+    Gateway-->>Client: Upload credentials
+    
+    Client->>Storage: Upload chunks
+    Storage-->>Client: Progress
+    
+    Client->>Gateway: Complete upload
+    Gateway->>Storage: Finalize upload
+    Storage-->>Gateway: File details
+    Gateway->>Media: Update asset
+    Gateway->>Queue: Queue compression job
+    Queue->>Compression: Process video
+    Compression->>Storage: Store compressed
+    Compression->>Media: Update metadata
+    Compression-->>Client: WebSocket notification
+Search Flow
+mermaidsequenceDiagram
+    participant Client
+    participant Gateway
+    participant Auth
+    participant Media
+    participant ES
+    participant Cache
+    
+    Client->>Gateway: GET /search?q=...
+    Gateway->>Auth: Validate token
+    Auth-->>Gateway: User context
+    Gateway->>Cache: Check cache
+    
+    alt Cache Hit
+        Cache-->>Gateway: Cached results
+        Gateway-->>Client: Search results
+    else Cache Miss
+        Gateway->>Media: Search request
+        Media->>ES: Query Elasticsearch
+        ES-->>Media: Raw results
+        Media->>Media: Apply permissions
+        Media-->>Gateway: Filtered results
+        Gateway->>Cache: Store results
+        Gateway-->>Client: Search results
+    end
+🔧 Development Workflows
+Local Development Setup
+bash# 1. Clone repository
+git clone https://github.com/your-org/noah.git
+cd noah
+
+# 2. Install dependencies
+npm install
+
+# 3. Setup environment
+cp .env.example .env.local
+# Edit .env.local with your credentials
+
+# 4. Start infrastructure
+docker-compose -f docker-compose.dev.yml up -d
+
+# 5. Run migrations
+npm run db:migrate
+
+# 6. Seed development data
+npm run db:seed
+
+# 7. Start development servers
+npm run dev
+
+# Access at:
+# - API: http://localhost:3000
+# - Web: http://localhost:5173
+# - Docs: http://localhost:3000/docs
+Adding a New Feature
+bash# 1. Create feature branch
+git checkout -b feature/your-feature
+
+# 2. Generate service boilerplate
+npm run generate:service your-feature
+
+# 3. Create database migration
+npm run db:migration:create add_your_feature_table
+
+# 4. Update API schema
+# Edit packages/api/src/schemas/your-feature.ts
+
+# 5. Implement service logic
+# Edit apps/api/src/services/your-feature.service.ts
+
+# 6. Add tests
+npm run test:watch apps/api/src/services/your-feature.test.ts
+
+# 7. Update documentation
+npm run docs:generate
+
+# 8. Create PR
+git push origin feature/your-feature
+Deployment Pipeline
+yaml# .github/workflows/deploy.yml
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - run: npm ci
+      - run: npm run test:ci
+      - run: npm run lint
+      - run: npm run type-check
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+      - run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --tag noah/api:${{ github.sha }} \
+            --push .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/setup-kubectl@v3
+      - run: |
+          kubectl set image deployment/noah-api \
+            api=noah/api:${{ github.sha }} \
+            -n production
+      - run: kubectl rollout status deployment/noah-api -n production
+🏃 Performance Guidelines
+Database Optimization
+
+Use connection pooling (PgBouncer)
+Implement proper indexing strategy
+Partition large tables by date
+Use materialized views for analytics
+Enable query plan caching
+
+Caching Strategy
+
+L1: In-memory cache (Node.js process)
+L2: Redis cache (shared across services)
+L3: CDN cache (global edge locations)
+Cache warming for predictable patterns
+TTL based on data volatility
+
+API Best Practices
+
+Use pagination for list endpoints
+Implement field selection (GraphQL-style)
+Support batch operations
+Use ETag for conditional requests
+Implement request coalescing
+
+Frontend Optimization
+
+Code splitting by route
+Lazy load heavy components
+Use virtual scrolling for large lists
+Implement optimistic updates
+Preload critical resources
+
+🔒 Security Considerations
+Authentication Flow
+
+User submits credentials
+Validate against database
+Check MFA if enabled
+Generate JWT tokens (access + refresh)
+Return tokens with secure headers
+
+Authorization Model
+
+Role-Based Access Control (RBAC)
+Resource-based permissions
+Hierarchical organization structure
+API key scoping
+Audit all permission checks
+
+Data Protection
+
+Encrypt sensitive data at rest
+Use TLS 1.3 for all connections
+Implement field-level encryption
+Secure key management (AWS KMS)
+Regular security audits
+
+📈 Monitoring & Observability
+Key Metrics
+typescript// Business Metrics
+- Daily Active Users (DAU)
+- Storage utilization by tier
+- Compression ratio trends
+- API usage by endpoint
+- Revenue per user
+
+// Technical Metrics
+- API latency (P50, P95, P99)
+- Error rates by service
+- Database query performance
+- Cache hit rates
+- Queue processing times
+
+// Infrastructure Metrics
+- CPU/Memory utilization
+- Disk I/O patterns
+- Network throughput
+- Container restarts
+- Cost per transaction
+Logging Strategy
+typescript// Structured logging format
+logger.info('Asset uploaded', {
+  assetId: asset.id,
+  userId: user.id,
+  fileSize: file.size,
+  duration: uploadTime,
+  compressionRatio: result.ratio,
+  tags: ['upload', 'compression']
+});
+
+// Log aggregation pipeline
+Application -> Fluentd -> Elasticsearch -> Kibana
+Alerting Rules
+yaml# Prometheus alerts
+groups:
+  - name: noah-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        annotations:
+          summary: "High error rate detected"
+          
+      - alert: SlowCompression
+        expr: histogram_quantile(0.95, compression_duration_seconds) > 300
+        for: 10m
+        annotations:
+          summary: "Compression taking too long"
+🚨 Troubleshooting Guide
+Common Issues
+Upload Failures
+bash# Check storage service logs
+kubectl logs -f deployment/storage-service -n production
+
+# Verify B2 credentials
+curl -X GET https://api.backblazeb2.com/b2api/v2/b2_authorize_account
+
+# Test multipart upload
+node scripts/test-multipart-upload.js
+Compression Quality Issues
+bash# Run quality validation
+npm run validate:quality -- --input=original.mp4 --output=compressed.mp4
+
+# Check VMAF scores
+ffmpeg -i original.mp4 -i compressed.mp4 -lavfi libvmaf -f null -
+
+# Analyze compression logs
+grep "compression_failed" /var/log/noah/compression.log
+Performance Degradation
+bash# Profile database queries
+psql -c "SELECT * FROM pg_stat_statements ORDER BY total_time DESC LIMIT 10;"
+
+# Check Redis memory
+redis-cli INFO memory
+
+# Analyze slow API endpoints
+curl https://api.noah.com/metrics | grep http_request_duration
+🔄 Maintenance Procedures
+Database Maintenance
+sql-- Weekly vacuum
+VACUUM ANALYZE media_assets;
+
+-- Monthly reindex
+REINDEX INDEX CONCURRENTLY idx_assets_org_created;
+
+-- Quarterly partition maintenance
+CALL partition_maintenance();
+Cache Maintenance
+bash# Clear specific cache keys
+redis-cli --scan --pattern "cache:media:*" | xargs redis-cli DEL
+
+# Warm cache after deployment
+npm run cache:warm
+
+# Monitor cache efficiency
+redis-cli INFO stats | grep hit
+Storage Cleanup
+typescript// Cleanup orphaned files
+async function cleanupOrphans() {
+  const dbAssets = await db.assets.findAll();
+  const b2Files = await b2.listFiles();
+  
+  const orphans = b2Files.filter(file => 
+    !dbAssets.find(asset => asset.b2FileId === file.fileId)
+  );
+  
+  for (const orphan of orphans) {
+    await b2.deleteFile(orphan.fileId);
+  }
+}
+🚀 Scaling Considerations
+Horizontal Scaling
+
+Services are stateless (except WebSocket connections)
+Use Redis for shared state
+Database read replicas for read-heavy workloads
+Kafka partitions match service instances
+CDN for static asset delivery
+
+Vertical Scaling
+
+Compression service: GPU instances for acceleration
+Database: High-memory instances for caching
+Redis: Cluster mode for large datasets
+Elasticsearch: Dedicated master nodes
+
+Geographic Distribution
+
+Multi-region deployment strategy
+Cross-region replication for disasters
+Edge locations for low latency
+Region-specific compliance requirements
+
+📝 API Documentation
+REST API Conventions
+typescript// Resource naming
+GET    /api/v1/assets          // List
+POST   /api/v1/assets          // Create
+GET    /api/v1/assets/:id      // Read
+PUT    /api/v1/assets/:id      // Update
+DELETE /api/v1/assets/:id      // Delete
+
+// Query parameters
+?page=1&limit=50              // Pagination
+?sort=-created_at             // Sorting
+?filter[status]=active        // Filtering
+?fields=id,name,size          // Field selection
+?include=thumbnails,metadata  // Relationships
+
+// Response format
+{
+  "data": [...],
+  "meta": {
+    "page": 1,
+    "limit": 50,
+    "total": 1000
+  },
+  "links": {
+    "self": "/api/v1/assets?page=1",
+    "next": "/api/v1/assets?page=2"
+  }
+}
+WebSocket Events
+typescript// Client -> Server
+{
+  "event": "subscribe",
+  "data": {
+    "channel": "compression:status",
+    "assetId": "123"
+  }
+}
+
+// Server -> Client
+{
+  "event": "compression:progress",
+  "data": {
+    "assetId": "123",
+    "progress": 0.75,
+    "eta": 120
+  }
+}
+GraphQL Schema
+graphqltype Query {
+  asset(id: ID!): Asset
+  assets(
+    filter: AssetFilter
+    sort: AssetSort
+    page: Int
+    limit: Int
+  ): AssetConnection!
+}
+
+type Asset {
+  id: ID!
+  filename: String!
+  size: BigInt!
+  mimeType: String!
+  metadata: JSON
+  thumbnails: [Thumbnail!]!
+  versions: [AssetVersion!]!
+  permissions: Permissions!
+}
+
+type Mutation {
+  createAsset(input: CreateAssetInput!): Asset!
+  updateAsset(id: ID!, input: UpdateAssetInput!): Asset!
+  deleteAsset(id: ID!): Boolean!
+}
+
+type Subscription {
+  assetProcessing(assetId: ID!): ProcessingUpdate!
+}
+
+This comprehensive guide provides everything needed to understand, develop, deploy, and maintain the Noah platform. Each section includes practical examples, best practices, and production-ready code that can be directly implemented.
