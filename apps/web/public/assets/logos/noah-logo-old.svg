@@ -1,0 +1,18 @@
+<svg width="120" height="40" viewBox="0 0 120 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90E2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#5D8DE1;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Noah text -->
+  <text x="45" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="600" fill="url(#logoGradient)">Noah</text>
+  
+  <!-- Icon/Symbol -->
+  <g transform="translate(8, 8)">
+    <circle cx="12" cy="12" r="10" fill="url(#logoGradient)" opacity="0.1"/>
+    <path d="M6 18L12 6L18 18H16L12 10L8 18H6Z" fill="url(#logoGradient)"/>
+    <circle cx="12" cy="8" r="2" fill="url(#logoGradient)"/>
+  </g>
+</svg>

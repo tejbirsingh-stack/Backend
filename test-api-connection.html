@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Connection Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #5a67d8;
+        }
+        .asset-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .asset-card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            background: #f9f9f9;
+        }
+        .asset-thumbnail {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #eee;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        img.asset-thumbnail {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 API Connection Debugger</h1>
+        
+        <div class="status info">
+            <strong>Testing API at:</strong> http://localhost:3000/api
+        </div>
+
+        <div>
+            <button onclick="testHealth()">Test Health Endpoint</button>
+            <button onclick="testMedia()">Test Media Endpoint</button>
+            <button onclick="testCORS()">Test CORS</button>
+        </div>
+
+        <h2>Test Results:</h2>
+        <div id="results"></div>
+
+        <h2>Raw API Response:</h2>
+        <pre id="rawResponse">Click a test button to see results...</pre>
+
+        <h2>Parsed Assets:</h2>
+        <div id="assetGrid" class="asset-grid"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+
+        function log(message, type = 'info') {
+            const resultsDiv = document.getElementById('results');
+            const div = document.createElement('div');
+            div.className = `status ${type}`;
+            div.innerHTML = `<strong>${new Date().toLocaleTimeString()}:</strong> ${message}`;
+            resultsDiv.appendChild(div);
+        }
+
+        async function testHealth() {
+            log('Testing health endpoint...');
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                log('✅ Health check successful', 'success');
+                document.getElementById('rawResponse').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                log(`❌ Health check failed: ${error.message}`, 'error');
+                document.getElementById('rawResponse').textContent = error.toString();
+            }
+        }
+
+        async function testMedia() {
+            log('Testing media endpoint...');
+            try {
+                const response = await fetch(`${API_URL}/media`);
+                const data = await response.json();
+                
+                log(`✅ Media endpoint responded with ${data.count || 0} assets`, 'success');
+                document.getElementById('rawResponse').textContent = JSON.stringify(data, null, 2);
+                
+                // Display assets
+                const assets = data.assets || data || [];
+                displayAssets(assets);
+                
+                // Log asset details
+                if (assets.length > 0) {
+                    log(`First asset structure: ${JSON.stringify(Object.keys(assets[0]))}`, 'info');
+                    log(`Asset types found: ${[...new Set(assets.map(a => a.type))].join(', ')}`, 'info');
+                }
+                
+            } catch (error) {
+                log(`❌ Media endpoint failed: ${error.message}`, 'error');
+                document.getElementById('rawResponse').textContent = error.toString();
+            }
+        }
+
+        async function testCORS() {
+            log('Testing CORS configuration...');
+            try {
+                // Test from current origin
+                const response = await fetch(`${API_URL}/health`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    credentials: 'include'
+                });
+                
+                if (response.ok) {
+                    log('✅ CORS is properly configured', 'success');
+                } else {
+                    log(`⚠️ Response status: ${response.status}`, 'error');
+                }
+                
+                // Check CORS headers
+                const corsHeaders = {
+                    'Access-Control-Allow-Origin': response.headers.get('Access-Control-Allow-Origin'),
+                    'Access-Control-Allow-Credentials': response.headers.get('Access-Control-Allow-Credentials'),
+                };
+                log(`CORS Headers: ${JSON.stringify(corsHeaders)}`, 'info');
+                
+            } catch (error) {
+                log(`❌ CORS test failed: ${error.message}`, 'error');
+            }
+        }
+
+        function displayAssets(assets) {
+            const grid = document.getElementById('assetGrid');
+            grid.innerHTML = '';
+            
+            if (!assets || assets.length === 0) {
+                grid.innerHTML = '<p>No assets found</p>';
+                return;
+            }
+            
+            assets.forEach(asset => {
+                const card = document.createElement('div');
+                card.className = 'asset-card';
+                
+                let thumbnail = '';
+                if (asset.type === 'image' || asset.type?.includes('image')) {
+                    thumbnail = `<img src="${asset.url}" class="asset-thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                                <div class="asset-thumbnail" style="display:none;">📷 ${asset.type}</div>`;
+                } else if (asset.type === 'video' || asset.type?.includes('video')) {
+                    thumbnail = `<div class="asset-thumbnail">🎬 ${asset.type}</div>`;
+                } else if (asset.type === 'audio' || asset.type?.includes('audio')) {
+                    thumbnail = `<div class="asset-thumbnail">🎵 ${asset.type}</div>`;
+                } else {
+                    thumbnail = `<div class="asset-thumbnail">📄 ${asset.type}</div>`;
+                }
+                
+                card.innerHTML = `
+                    ${thumbnail}
+                    <h4 style="margin: 10px 0 5px; font-size: 14px; word-break: break-all;">${asset.name}</h4>
+                    <p style="margin: 0; font-size: 12px; color: #666;">
+                        Size: ${formatFileSize(asset.size)}<br>
+                        Type: ${asset.type}<br>
+                        URL: ${asset.url ? '✓' : '✗'}<br>
+                        ID: ${asset.id}
+                    </p>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        function formatFileSize(bytes) {
+            if (!bytes) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Auto-test on load
+        window.onload = () => {
+            setTimeout(() => {
+                testHealth();
+                setTimeout(() => {
+                    testMedia();
+                }, 1000);
+            }, 500);
+        };
+    </script>
+</body>
+</html>

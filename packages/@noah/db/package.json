@@ -1,0 +1,23 @@
+{
+  "name": "@noah/db",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "scripts": {
+    "build": "prisma generate",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "studio": "prisma studio",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "prisma": "^5.20.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.6.0"
+  }
+}

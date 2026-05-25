@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.noah.premiere.panel" 
+                   ExtensionBundleVersion="1.0.0" ExtensionBundleName="Noah Media Panel">
+  
+  <ExtensionList>
+    <Extension Id="com.noah.premiere.panel.main" Version="1.0.0"/>
+  </ExtensionList>
+  
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[14.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="11.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  
+  <DispatchInfoList>
+    <Extension Id="com.noah.premiere.panel.main">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./extendscript/noah.jsx</ScriptPath>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Noah Media Manager</Menu>
+          <Geometry>
+            <Size>
+              <Width>400</Width>
+              <Height>600</Height>
+            </Size>
+            <MinSize>
+              <Width>300</Width>
+              <Height>400</Height>
+            </MinSize>
+          </Geometry>
+          <Icons>
+            <Icon Type="Normal">./assets/icon-normal.png</Icon>
+            <Icon Type="RollOver">./assets/icon-hover.png</Icon>
+            <Icon Type="DarkNormal">./assets/icon-dark.png</Icon>
+            <Icon Type="DarkRollOver">./assets/icon-dark-hover.png</Icon>
+          </Icons>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+  
+</ExtensionManifest>

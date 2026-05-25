@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Final Upload Test - Success!</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            max-width: 1200px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .subtitle {
+            color: #666;
+            font-size: 1.2em;
+            margin-bottom: 30px;
+        }
+        .success-badge {
+            display: inline-block;
+            background: #10b981;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        .test-section {
+            background: #f9fafb;
+            border-radius: 12px;
+            padding: 25px;
+            margin: 20px 0;
+            border: 2px solid #e5e7eb;
+        }
+        .btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(79, 172, 254, 0.3);
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(79, 172, 254, 0.4);
+        }
+        .btn.secondary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .status {
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .status.success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #6ee7b7;
+        }
+        .status.info {
+            background: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #93c5fd;
+        }
+        .media-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .media-item {
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+        .media-item:hover {
+            transform: scale(1.05);
+        }
+        .media-item img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+        }
+        .media-item-info {
+            padding: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+        .test-results {
+            background: #f3f4f6;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <span class="success-badge">✅ UPLOAD SYSTEM FIXED</span>
+        <h1>🎉 Upload System Test</h1>
+        <p class="subtitle">The upload functionality has been successfully fixed and is ready for use!</p>
+        
+        <div class="test-section">
+            <h2>📤 Test Upload Functionality</h2>
+            <p>Click the button below to create and upload a test image to verify everything works:</p>
+            <button class="btn" onclick="testUpload()">Upload Test Image</button>
+            <button class="btn secondary" onclick="fetchAndDisplay()">Refresh Media List</button>
+            <div id="upload-status"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>📊 System Status</h2>
+            <div id="system-status">Checking system status...</div>
+        </div>
+
+        <div class="test-section">
+            <h2>🖼️ Recent Media Files</h2>
+            <div id="media-grid" class="media-grid"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>📝 Test Results</h2>
+            <div id="test-results" class="test-results">Ready for testing...</div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+        
+        // Check system status on load
+        window.addEventListener('load', async () => {
+            await checkSystemStatus();
+            await fetchAndDisplay();
+        });
+
+        async function checkSystemStatus() {
+            const statusDiv = document.getElementById('system-status');
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                
+                statusDiv.innerHTML = `
+                    <div class="status success">
+                        <strong>✅ Server Status: ONLINE</strong><br>
+                        Version: ${data.version}<br>
+                        Uploads Directory: ${data.uploadsDir}<br>
+                        Time: ${new Date(data.timestamp).toLocaleString()}
+                    </div>
+                `;
+            } catch (error) {
+                statusDiv.innerHTML = `
+                    <div class="status error">
+                        ❌ Server is not responding. Please ensure the server is running on port 3000.
+                    </div>
+                `;
+            }
+        }
+
+        async function testUpload() {
+            const statusDiv = document.getElementById('upload-status');
+            const resultsDiv = document.getElementById('test-results');
+            
+            statusDiv.innerHTML = '<div class="status info">Creating test image...</div>';
+            
+            // Create a unique test image
+            const canvas = document.createElement('canvas');
+            canvas.width = 400;
+            canvas.height = 300;
+            const ctx = canvas.getContext('2d');
+            
+            // Unique gradient
+            const time = Date.now();
+            const gradient = ctx.createLinearGradient(0, 0, 400, 300);
+            gradient.addColorStop(0, `hsl(${time % 360}, 70%, 60%)`);
+            gradient.addColorStop(1, `hsl(${(time + 120) % 360}, 70%, 60%)`);
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 400, 300);
+            
+            // Add text
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 30px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Noah Test ' + (time % 1000), 200, 150);
+            ctx.font = '16px Arial';
+            ctx.fillText(new Date().toLocaleString(), 200, 180);
+            
+            // Convert to blob
+            canvas.toBlob(async (blob) => {
+                const file = new File([blob], `test-${time}.png`, { type: 'image/png' });
+                
+                statusDiv.innerHTML = '<div class="status info">Uploading to server...</div>';
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    const response = await fetch(`${API_URL}/media/upload`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        statusDiv.innerHTML = `
+                            <div class="status success">
+                                <strong>✅ Upload Successful!</strong><br>
+                                File: ${result.asset.originalName}<br>
+                                ID: ${result.asset.id}<br>
+                                Size: ${(result.asset.size / 1024).toFixed(2)} KB<br>
+                                URL: ${result.asset.url}
+                            </div>
+                        `;
+                        
+                        resultsDiv.innerHTML = '✅ UPLOAD TEST PASSED\n' + JSON.stringify(result, null, 2);
+                        
+                        // Refresh the media display
+                        setTimeout(() => fetchAndDisplay(), 500);
+                    } else {
+                        statusDiv.innerHTML = `
+                            <div class="status error">
+                                ❌ Upload failed: ${result.error}
+                            </div>
+                        `;
+                        resultsDiv.innerHTML = '❌ UPLOAD TEST FAILED\n' + JSON.stringify(result, null, 2);
+                    }
+                } catch (error) {
+                    statusDiv.innerHTML = `
+                        <div class="status error">
+                            ❌ Error: ${error.message}
+                        </div>
+                    `;
+                    resultsDiv.innerHTML = '❌ ERROR\n' + error.toString();
+                }
+            });
+        }
+
+        async function fetchAndDisplay() {
+            const gridDiv = document.getElementById('media-grid');
+            
+            try {
+                const response = await fetch(`${API_URL}/media`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Display last 8 items
+                    const items = data.assets.slice(-8).reverse();
+                    
+                    gridDiv.innerHTML = items.map(asset => `
+                        <div class="media-item">
+                            ${asset.type === 'image' || asset.type.includes('image') ? `
+                                <img src="http://localhost:3000${asset.url}" 
+                                     alt="${asset.name}"
+                                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22150%22%3E%3Crect width=%22200%22 height=%22150%22 fill=%22%23ddd%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23999%22%3E${asset.type}%3C/text%3E%3C/svg%3E'">
+                            ` : `
+                                <div style="height: 150px; display: flex; align-items: center; justify-content: center; background: #f3f4f6;">
+                                    <span style="font-size: 48px;">📄</span>
+                                </div>
+                            `}
+                            <div class="media-item-info">
+                                <strong>${asset.name.length > 20 ? asset.name.substring(0, 20) + '...' : asset.name}</strong><br>
+                                ${asset.type} • ${(asset.size / 1024 / 1024).toFixed(2)} MB
+                            </div>
+                        </div>
+                    `).join('');
+                    
+                    document.getElementById('test-results').innerHTML = 
+                        `Total files: ${data.count}\nDisplaying: ${items.length} most recent`;
+                }
+            } catch (error) {
+                gridDiv.innerHTML = '<p>Error loading media</p>';
+            }
+        }
+    </script>
+</body>
+</html>

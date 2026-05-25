@@ -1,0 +1,35 @@
+{
+  "name": "@noah/billing-service",
+  "version": "1.0.0",
+  "description": "Noah Enterprise Billing Service with Stripe Integration",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx --watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "fastify": "^4.24.3",
+    "@fastify/cors": "^8.4.0",
+    "@fastify/helmet": "^11.1.1",
+    "@fastify/rate-limit": "^9.0.1",
+    "@fastify/jwt": "^7.2.4",
+    "stripe": "^14.7.0",
+    "prisma": "^5.6.0",
+    "@prisma/client": "^5.6.0",
+    "zod": "^3.22.4",
+    "winston": "^3.11.0",
+    "node-cron": "^3.0.3",
+    "bull": "^4.12.0",
+    "ioredis": "^5.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.1.4",
+    "typescript": "^5.6.0",
+    "vitest": "^0.34.6"
+  }
+}

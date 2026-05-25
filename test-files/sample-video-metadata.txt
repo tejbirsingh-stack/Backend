@@ -1,0 +1,10 @@
+This is a sample video metadata file for testing Noah platform.
+
+Video Information:
+- Title: Sample Marketing Video
+- Duration: 2:30
+- Resolution: 1920x1080
+- Format: MP4
+- Created: July 31, 2025
+
+This file represents a video asset that would typically be uploaded to the Noah media management platform for collaboration and annotation features.

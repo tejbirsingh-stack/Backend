@@ -1,0 +1,303 @@
+// packages/@noah/db/prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"] // For potential future use with pg_trgm
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String    @db.VarChar(255)
+  slug             String    @unique @db.VarChar(255)
+  planType         String    @db.VarChar(50)
+  storageQuotaBytes BigInt   @default(1099511627776) // 1TB default
+  storageUsedBytes BigInt   @default(0)
+  maxUsers         Int      @default(10)
+  features         Json     @default("{}") @db.JsonB
+  metadata         Json     @default("{}") @db.JsonB
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  users        User[]
+  mediaAssets  MediaAsset[]
+  collections  Collection[]
+  tags         Tag[]
+  shareLinks   ShareLink[]
+
+  @@map("organizations")
+}
+
+model User {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId       String    @db.Uuid
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  email       String    @unique @db.VarChar(255)
+  name        String?   @db.VarChar(255)
+  passwordHash String?  @db.VarChar(255) // Added for direct password auth
+  role        String    @db.VarChar(50)
+  preferences Json     @default("{}") @db.JsonB
+  mfaSecret   String?   @db.VarChar(255) // Secret key for TOTP MFA
+  mfaEnabled  Boolean   @default(false)  // Whether MFA is enabled
+  status      String    @default("active") @db.VarChar(50) // active, inactive, suspended
+  failedLoginAttempts Int @default(0)     // Track failed login attempts
+  lockoutUntil DateTime? @db.Timestamptz(6) // Account lockout timestamp
+  lastLoginAt DateTime? @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  uploadedMediaAssets MediaAsset[] @relation("UploadedBy")
+  createdCollections  Collection[] @relation("CreatedBy")
+  addedToCollections  CollectionAsset[]
+  addedAssetTags      AssetTag[]
+  createdShareLinks   ShareLink[]
+  auditLogs           AuditLog[]
+  analyticsEvents     AnalyticsEvent[]
+  createdAssetVersions AssetVersion[]
+
+  @@unique([orgId, email], name: "unique_email_per_org")
+  // Sessions related to this user
+  sessions UserSession[]
+
+  // Password reset tokens
+  passwordResetTokens PasswordResetToken[]
+
+  @@map("users")
+}
+
+// Password reset tokens
+model PasswordResetToken {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  token     String   @unique @db.VarChar(255)
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  
+  @@index([token])
+  @@map("password_reset_tokens")
+}
+
+// User sessions for authentication
+model UserSession {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String   @db.Uuid
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token           String   @unique @db.Text
+  refreshToken    String?  @db.Text
+  ipAddress       String?  @db.VarChar(50)
+  userAgent       String?  @db.Text
+  expiresAt       DateTime @db.Timestamptz(6)
+  lastActiveAt    DateTime @default(now()) @db.Timestamptz(6)
+  revokedAt       DateTime? @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  
+  @@index([userId])
+  @@index([token])
+  @@map("user_sessions")
+}
+
+model MediaAsset {
+  id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String     @db.Uuid
+  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parentId          String?    @db.Uuid // For versions
+  parentAsset       MediaAsset? @relation("MediaAssetVersions", fields: [parentId], references: [id])
+  childAssets       MediaAsset[] @relation("MediaAssetVersions")
+
+  fileName          String     @db.VarChar(500)
+  filePath          String     @db.VarChar(1000) // Path in B2/S3
+  fileSize          BigInt
+  originalSize      BigInt
+  mimeType          String     @db.VarChar(100)
+  fileExtension     String?    @db.VarChar(20)
+  b2FileId          String?    @unique @db.VarChar(255)
+  b2BucketId        String?    @db.VarChar(50)
+  cdnUrl            String?    @db.VarChar(500)
+  storageClass      String     @default("STANDARD") @db.VarChar(50)
+  compressionRatio  Decimal?   @db.Decimal(4, 2)
+  durationSeconds   Decimal?   @db.Decimal(10, 3)
+  width             Int?
+  height            Int?
+  fps               Decimal?   @db.Decimal(5, 2)
+  bitrate           Int?
+  codec             String?    @db.VarChar(50)
+  metadata          Json      @default("{}") @db.JsonB // Technical metadata, custom properties
+  aiTags            Json      @default("[]") @db.JsonB // AI-extracted tags
+  customMetadata    Json      @default("{}") @db.JsonB // User-defined custom metadata
+  checksum          String?    @db.VarChar(64) // SHA-256
+  status            String     @default("uploading") @db.VarChar(50) // e.g., uploading, processing, ready, failed
+  transcodingStatus String?    @db.VarChar(50) // e.g., queued, in_progress, completed, failed
+
+  uploadedByUserId  String?    @db.Uuid
+  uploadedBy        User?      @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
+
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?  @db.Timestamptz(6)
+
+  collectionAssets CollectionAsset[]
+  assetVersions    AssetVersion[]
+  assetTags        AssetTag[]
+  shareLinks       ShareLink[]
+  analyticsEvents  AnalyticsEvent[]
+  thumbnailForCollections Collection[] @relation("ThumbnailAsset")
+
+  @@index([orgId])
+  @@index([status])
+  @@index([mimeType])
+  @@index([createdAt(sort: Desc)])
+  // Use raw SQL for GIN indexes like gin(metadata) and gin(aiTags) if Prisma doesn't support directly
+  // @@fulltext([fileName]) // Use this with PostgreSQL's full-text search
+  // @@index([fileName(ops: Raw("gin_trgm_ops"))]) // For pg_trgm, requires raw SQL for now
+  @@map("media_assets")
+}
+
+model Collection {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @db.Uuid
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parentId        String?   @db.Uuid
+  parentCollection Collection? @relation("CollectionHierarchy", fields: [parentId], references: [id])
+  childCollections Collection[] @relation("CollectionHierarchy")
+  name            String    @db.VarChar(255)
+  description     String?
+  type            String    @default("manual") @db.VarChar(50) // e.g., manual, smart
+  rules           Json?    @db.JsonB // For smart collections
+  thumbnailAssetId String?  @db.Uuid
+  thumbnailAsset  MediaAsset? @relation("ThumbnailAsset", fields: [thumbnailAssetId], references: [id])
+  metadata        Json     @default("{}") @db.JsonB
+  createdById     String?   @db.Uuid
+  createdBy       User?     @relation("CreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  collectionAssets CollectionAsset[]
+  shareLinks       ShareLink[]
+
+  @@index([orgId])
+  @@map("collections")
+}
+
+model CollectionAsset {
+  collectionId String @db.Uuid
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  assetId      String @db.Uuid
+  asset        MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  position     Int    @default(0)
+  addedById    String? @db.Uuid
+  addedBy      User?  @relation(fields: [addedById], references: [id])
+  addedAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([collectionId, assetId])
+  @@index([assetId])
+  @@map("collection_assets")
+}
+
+model AssetVersion {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId         String    @db.Uuid
+  asset           MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  versionNumber   Int
+  changeDescription String?
+  createdById     String?   @db.Uuid
+  createdBy       User?     @relation(fields: [createdById], references: [id])
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([assetId, versionNumber])
+  @@map("asset_versions")
+}
+
+model Tag {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId       String    @db.Uuid
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String    @db.VarChar(100)
+  color       String?   @db.VarChar(7) // Hex color
+  category    String?   @db.VarChar(50)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  assetTags   AssetTag[]
+
+  @@unique([orgId, name], name: "unique_tag_per_org")
+  @@map("tags")
+}
+
+model AssetTag {
+  assetId    String    @db.Uuid
+  asset      MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  tagId      String    @db.Uuid
+  tag        Tag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  addedById  String?   @db.Uuid
+  addedBy    User?     @relation(fields: [addedById], references: [id])
+  addedAt    DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@id([assetId, tagId])
+  @@map("asset_tags")
+}
+
+model ShareLink {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String    @db.Uuid
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assetId         String?   @db.Uuid
+  asset           MediaAsset? @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  collectionId    String?   @db.Uuid
+  collection      Collection? @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  token           String    @unique @db.VarChar(255)
+  passwordHash    String?   @db.VarChar(255)
+  expiresAt       DateTime? @db.Timestamptz(6)
+  maxDownloads    Int?
+  downloadCount   Int       @default(0)
+  permissions     Json     @default("{\"view\": true, \"download\": false}") @db.JsonB
+  createdById     String?   @db.Uuid
+  createdBy       User?     @relation(fields: [createdById], references: [id])
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  lastAccessedAt  DateTime? @db.Timestamptz(6)
+
+  @@index([orgId])
+  @@map("share_links")
+}
+
+// Audit log as TimescaleDB hypertable
+// Note: create_hypertable is done via raw SQL migration script
+model AuditLog {
+  id           String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @db.Uuid
+  userId       String?   @db.Uuid
+  user         User?     @relation(fields: [userId], references: [id])
+  action       String    @db.VarChar(100)
+  resourceType String    @db.VarChar(50)
+  resourceId   String?   @db.Uuid
+  ipAddress    String?   @db.Inet
+  userAgent    String?
+  details      Json     @default("{}") @db.JsonB
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@id([id, createdAt]) // TimescaleDB requires composite primary key on time column
+  @@index([orgId, userId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_log")
+}
+
+// Analytics events hypertable
+// Note: create_hypertable is done via raw SQL migration script
+model AnalyticsEvent {
+  id           String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String    @db.Uuid
+  userId       String?   @db.Uuid
+  user         User?     @relation(fields: [userId], references: [id])
+  eventType    String    @db.VarChar(100)
+  assetId      String?   @db.Uuid
+  asset        MediaAsset? @relation(fields: [assetId], references: [id])
+  properties   Json     @default("{}") @db.JsonB
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@id([id, createdAt]) // TimescaleDB requires composite primary key on time column
+  @@index([orgId, createdAt(sort: Desc)])
+  @@map("analytics_events")
+}

@@ -1,0 +1,448 @@
+// Authentication routes for login, registration, and session management
+const authService = require("../services/auth-service");
+const { authenticate } = require("../middleware/auth-middleware");
+
+async function routes(fastify, options) {
+  // Login route
+  fastify.post("/login", async (request, reply) => {
+    const { email, password, mfaCode } = request.body;
+
+    try {
+      // Validate input
+      if (!email || !password) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Email and password are required",
+        });
+      }
+
+      // Find the user
+      const user = await authService.findUserByEmail(email);
+
+      // Check if user exists and password is valid
+      if (
+        !user ||
+        !(await authService.verifyPassword(user.passwordHash, password))
+      ) {
+        return reply.status(401).send({
+          error: "Unauthorized",
+          message: "Invalid email or password",
+        });
+      }
+
+      // Check user status
+      if (user.status !== "active") {
+        return reply.status(403).send({
+          error: "Forbidden",
+          message: "Account is not active",
+        });
+      }
+
+      // Check if MFA is enabled and verify the code
+      if (user.mfaEnabled) {
+        if (!mfaCode) {
+          return reply.status(400).send({
+            error: "MFA Required",
+            message: "Multi-factor authentication code is required",
+            requiresMfa: true,
+          });
+        }
+
+        if (!authService.verifyTotp(mfaCode, user.mfaSecret)) {
+          return reply.status(401).send({
+            error: "Unauthorized",
+            message: "Invalid authentication code",
+            requiresMfa: true,
+          });
+        }
+      }
+
+      // Create a new session
+      const session = await authService.createSession(
+        user.id,
+        request.headers["user-agent"],
+        request.ip
+      );
+
+      // Return user info and session token
+      // return {
+      //   user: {
+      //     id: user.id,
+      //     email: user.email,
+      //     name: user.name,
+      //     role: user.role,
+      //     orgId: user.orgId,
+      //   },
+      //   token: session.token,
+      //   expiresAt: session.expiresAt,
+      // };
+      return {
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          orgId: user.orgId,
+          organization: { id: user.orgId, name: '', slug: '' }
+        },
+        accessToken: session.token,
+        refreshToken: session.token,
+        expiresAt: session.expiresAt,
+      };
+    } catch (error) {
+      console.error("Login error:", error);
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Failed to process login",
+      });
+    }
+  });
+
+  // Register route
+  fastify.post("/register", async (request, reply) => {
+    const { name, email, password, orgId } = request.body;
+
+    try {
+      // Validate input
+      if (!name || !email || !password || !orgId) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Name, email, password, and organization ID are required",
+        });
+      }
+
+      // Check if user already exists
+      const existingUser = await authService.findUserByEmail(email);
+      if (existingUser) {
+        return reply.status(409).send({
+          error: "Conflict",
+          message: "Email is already registered",
+        });
+      }
+
+      // Check if organization exists
+      const organization = await fastify.prisma.organization.findUnique({
+        where: { id: orgId },
+      });
+
+      if (!organization) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Invalid organization ID",
+        });
+      }
+
+      // Hash the password
+      const passwordHash = await authService.hashPassword(password);
+
+      // Create the user
+      const user = await fastify.prisma.user.create({
+        data: {
+          name,
+          email,
+          passwordHash,
+          orgId,
+          role: "user", // Default role
+          status: "active",
+        },
+      });
+
+      // Create a session for the new user
+      const session = await authService.createSession(
+        user.id,
+        request.headers["user-agent"],
+        request.ip
+      );
+
+      // Return the user info and session token
+      return {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          orgId: user.orgId,
+        },
+        token: session.token,
+        expiresAt: session.expiresAt,
+      };
+    } catch (error) {
+      console.error("Registration error:", error);
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Failed to process registration",
+      });
+    }
+  });
+
+  // Logout route (requires authentication)
+  fastify.post(
+    "/logout",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      try {
+        // Get token from the request (it's guaranteed to be valid due to the authenticate preHandler)
+        const authHeader = request.headers.authorization;
+        const token = authHeader.replace("Bearer ", "");
+
+        // Revoke the session
+        await authService.revokeSession(token);
+
+        return { message: "Logged out successfully" };
+      } catch (error) {
+        console.error("Logout error:", error);
+        return reply.status(500).send({
+          error: "Internal Server Error",
+          message: "Failed to process logout",
+        });
+      }
+    }
+  );
+
+  // Setup MFA route (requires authentication)
+  fastify.post(
+    "/mfa/setup",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      try {
+        const userId = request.user.id;
+
+        // Generate a new TOTP secret
+        const secret = authService.generateTotpSecret();
+
+        // Store the secret but don't enable MFA yet (will be enabled after verification)
+        await fastify.prisma.user.update({
+          where: { id: userId },
+          data: {
+            mfaSecret: secret,
+            mfaEnabled: false,
+          },
+        });
+
+        // Generate the OTP URI for QR code generation
+        const otpUri = authService.generateTotpUri(request.user.email, secret);
+
+        return {
+          secret,
+          otpUri,
+        };
+      } catch (error) {
+        console.error("MFA setup error:", error);
+        return reply.status(500).send({
+          error: "Internal Server Error",
+          message: "Failed to setup MFA",
+        });
+      }
+    }
+  );
+
+  // Verify and enable MFA route (requires authentication)
+  fastify.post(
+    "/mfa/enable",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { code } = request.body;
+
+      try {
+        // Validate input
+        if (!code) {
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: "Verification code is required",
+          });
+        }
+
+        // Get the user with MFA secret
+        const user = await fastify.prisma.user.findUnique({
+          where: { id: request.user.id },
+          select: { id: true, mfaSecret: true },
+        });
+
+        // Check if the user has a secret
+        if (!user.mfaSecret) {
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: "MFA has not been setup",
+          });
+        }
+
+        // Verify the code
+        if (!authService.verifyTotp(code, user.mfaSecret)) {
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: "Invalid verification code",
+          });
+        }
+
+        // Enable MFA
+        await fastify.prisma.user.update({
+          where: { id: user.id },
+          data: { mfaEnabled: true },
+        });
+
+        return { message: "MFA enabled successfully" };
+      } catch (error) {
+        console.error("MFA enable error:", error);
+        return reply.status(500).send({
+          error: "Internal Server Error",
+          message: "Failed to enable MFA",
+        });
+      }
+    }
+  );
+
+  // Disable MFA route (requires authentication)
+  fastify.post(
+    "/mfa/disable",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      try {
+        // Update the user
+        await fastify.prisma.user.update({
+          where: { id: request.user.id },
+          data: {
+            mfaSecret: null,
+            mfaEnabled: false,
+          },
+        });
+
+        return { message: "MFA disabled successfully" };
+      } catch (error) {
+        console.error("MFA disable error:", error);
+        return reply.status(500).send({
+          error: "Internal Server Error",
+          message: "Failed to disable MFA",
+        });
+      }
+    }
+  );
+
+  // Get current user info (requires authentication)
+  fastify.get("/me", { preHandler: authenticate }, async (request, reply) => {
+    return {
+      user: request.user,
+    };
+  });
+
+  // Forgot password route
+  fastify.post("/forgot-password", async (request, reply) => {
+    const { email } = request.body;
+
+    try {
+      // Validate input
+      if (!email) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Email is required",
+        });
+      }
+
+      // Find the user
+      const user = await authService.findUserByEmail(email);
+
+      // If user doesn't exist, still return success to prevent email enumeration
+      if (!user) {
+        return {
+          success: true,
+          message:
+            "If an account exists for this email, a password reset link has been sent",
+        };
+      }
+
+      // Check user status
+      if (user.status !== "active") {
+        return {
+          success: true,
+          message:
+            "If an account exists for this email, a password reset link has been sent",
+        };
+      }
+
+      // Generate token
+      const resetToken = await authService.createPasswordResetToken(user.id);
+
+      // Send email with reset link
+      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+
+      // Use the email service to send the email
+      // This is a placeholder - you'll need to implement email sending
+      console.log(`Password reset email for ${user.email}: ${resetUrl}`);
+
+      // In production, you would use:
+      // await fastify.emailService.sendPasswordReset(user.email, user.name, resetUrl);
+
+      return {
+        success: true,
+        message:
+          "If an account exists for this email, a password reset link has been sent",
+      };
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Failed to process password reset request",
+      });
+    }
+  });
+
+  // Reset password route
+  fastify.post("/reset-password", async (request, reply) => {
+    const { token, newPassword } = request.body;
+
+    try {
+      // Validate input
+      if (!token || !newPassword) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Token and new password are required",
+        });
+      }
+
+      // Verify token and get user ID
+      const userId = await authService.verifyPasswordResetToken(token);
+
+      if (!userId) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Invalid or expired token",
+        });
+      }
+
+      // Get the user
+      const user = await fastify.prisma.user.findUnique({
+        where: { id: userId },
+      });
+
+      if (!user) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "User not found",
+        });
+      }
+
+      // Hash the new password
+      const passwordHash = await authService.hashPassword(newPassword);
+
+      // Update the user's password
+      await fastify.prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash },
+      });
+
+      // Revoke all active sessions for security
+      await authService.revokeAllUserSessions(userId);
+
+      // Return success
+      return { success: true, message: "Password successfully reset" };
+    } catch (error) {
+      console.error("Reset password error:", error);
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Failed to reset password",
+      });
+    }
+  });
+}
+
+module.exports = routes;

@@ -1,0 +1,354 @@
+version: '3.9'
+
+services:
+  # API Gateway
+  api-gateway:
+    image: kong:3.5-alpine
+    container_name: noah-api-gateway
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: postgres-primary # Connects to the primary postgres service
+      KONG_PG_DATABASE: noah
+      KONG_PG_USER: noah_admin
+      KONG_PG_PASSWORD: ${POSTGRES_PASSWORD}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      KONG_PROXY_LISTEN: 0.0.0.0:8000, 0.0.0.0:8443 ssl
+    ports:
+      - "8000:8000" # Proxy HTTP
+      - "8443:8443" # Proxy HTTPS
+      - "8001:8001" # Admin API (for local configuration)
+    networks:
+      - noah-network
+    depends_on:
+      - postgres-primary
+      - api
+      - web
+    command: kong start --vv
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    deploy: # Docker Compose deploy settings for local resource limits
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+
+  # PostgreSQL Primary (with TimescaleDB extension)
+  postgres-primary:
+    image: timescale/timescaledb-ha:pg16-latest
+    container_name: noah-postgres-primary
+    environment:
+      POSTGRES_DB: noah
+      POSTGRES_USER: noah_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --data-checksums"
+      TIMESCALEDB_TELEMETRY: "off"
+    volumes:
+      - postgres-primary-data:/var/lib/postgresql/data
+      - ./infrastructure/scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro # For initial extensions
+    ports:
+      - "5432:5432" # Expose for direct access (e.g., from host machine for migrations)
+    networks:
+      - noah-network
+    command: > # PostgreSQL configuration for performance
+      postgres
+      -c shared_buffers=4GB
+      -c effective_cache_size=12GB
+      -c maintenance_work_mem=1GB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=20MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+      -c max_worker_processes=8
+      -c max_parallel_workers_per_gather=4
+      -c max_parallel_workers=8
+      -c max_parallel_maintenance_workers=4
+      -c archive_mode=off # Disable for local, enable for cloud backups
+      -c max_connections=200
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 16G
+        reservations:
+          cpus: '2'
+          memory: 8G
+
+  # PostgreSQL Replica (for read replicas, can be scaled)
+  postgres-replica:
+    image: timescale/timescaledb-ha:pg16-latest
+    container_name: noah-postgres-replica
+    environment:
+      POSTGRES_DB: noah
+      POSTGRES_USER: noah_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PRIMARY_HOST: postgres-primary
+      POSTGRES_PRIMARY_PORT: 5432
+      POSTGRES_PRIMARY_USER: replicator # User for replication, might need to create
+      POSTGRES_PRIMARY_PASSWORD: ${REPLICATOR_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --data-checksums"
+      TIMESCALEDB_TELEMETRY: "off"
+    volumes:
+      - postgres-replica-data:/var/lib/postgresql/data
+    networks:
+      - noah-network
+    command: > # PostgreSQL configuration for replica
+      postgres
+      -c hot_standby=on
+      -c max_standby_archive_delay=30s
+      -c max_standby_streaming_delay=30s
+      -c wal_receiver_status_interval=10s
+      -c hot_standby_feedback=on
+    depends_on:
+      - postgres-primary
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 4G
+
+  # PgBouncer (Connection Pooler for PostgreSQL)
+  pgbouncer:
+    image: pgbouncer/pgbouncer:1.21.0
+    container_name: noah-pgbouncer
+    environment:
+      DATABASES_HOST: postgres-primary
+      DATABASES_PORT: 5432
+      DATABASES_USER: noah_admin
+      DATABASES_PASSWORD: ${POSTGRES_PASSWORD}
+      DATABASES_DBNAME: noah
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 10000
+      DEFAULT_POOL_SIZE: 25
+    volumes:
+      - ./infrastructure/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro # Mount pgbouncer config
+      # You might need to create a userlist.txt for scram-sha-256 auth, or switch auth_type
+    ports:
+      - "6432:6432" # Expose PgBouncer port for applications to connect
+    networks:
+      - noah-network
+    depends_on:
+      - postgres-primary
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+  # Redis Cluster (Simulated with Redis Sentinel for HA)
+  # For a true Redis Cluster mode locally, you'd need multiple redis nodes + a cluster orchestrator
+  # This setup uses Sentinel for high availability of a master-replica pair.
+  redis-sentinel:
+    image: redis:7.2-alpine
+    container_name: noah-redis-sentinel
+    command: redis-sentinel /etc/redis/sentinel.conf
+    volumes:
+      - ./infrastructure/redis-sentinel.conf:/etc/redis/sentinel.conf
+    ports:
+      - "26379:26379" # Redis Sentinel port
+    networks:
+      - noah-network
+    deploy:
+      replicas: 3 # Run 3 sentinels for quorum
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    # You'd typically need redis primary/replica services managed by these sentinels
+    # For simplicity, start with a single Redis instance if sentinel is too complex for local MVP:
+    # redis:
+    #   image: redis:7.2-alpine
+    #   ports: ["6379:6379"]
+    #   networks: [noah-network]
+    #   command: redis-server --appendonly yes --maxmemory 8gb --maxmemory-policy allkeys-lru
+
+  # Kafka
+  kafka:
+    image: confluentinc/cp-kafka:7.5.2
+    container_name: noah-kafka
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false" # Explicitly create topics via scripts/code
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_RETENTION_BYTES: 1073741824
+      KAFKA_NUM_NETWORK_THREADS: 8
+      KAFKA_NUM_IO_THREADS: 8
+      KAFKA_SOCKET_SEND_BUFFER_BYTES: 102400
+      KAFKA_SOCKET_RECEIVE_BUFFER_BYTES: 102400
+      KAFKA_SOCKET_REQUEST_MAX_BYTES: 104857600
+    ports:
+      - "9092:9092" # Expose for external Kafka clients (e.g., from host)
+      - "9101:9101" # JMX port
+    networks:
+      - noah-network
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    depends_on:
+      - zookeeper
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  # Zookeeper (Kafka dependency)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.2
+    container_name: noah-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - noah-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  # Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: noah-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms2g -Xmx2g"
+      - xpack.security.enabled=false # Set to true for production, manage credentials
+      # - xpack.security.authc.api_key.enabled=true # Enable and configure if xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD} # If xpack.security.enabled=true
+      - xpack.monitoring.collection.enabled=true
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200" # Main Elasticsearch HTTP port
+      - "9300:9300" # Inter-node communication port
+    networks:
+      - noah-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "curl --silent --fail localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Service
+  api:
+    build:
+      context: .
+      dockerfile: ./apps/api/Dockerfile
+    container_name: noah-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://noah_admin:${POSTGRES_PASSWORD}@pgbouncer:6432/noah
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis-master:6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRE: ${JWT_EXPIRE:-15m}
+      JWT_REFRESH_EXPIRE: ${JWT_REFRESH_EXPIRE:-7d}
+      COOKIE_SECRET: ${COOKIE_SECRET}
+      MFA_ISSUER: ${MFA_ISSUER:-Noah Media Platform}
+      FRONTEND_URL: ${FRONTEND_URL}
+      KAFKA_BROKERS: kafka:9092
+      S3_ENDPOINT: ${S3_ENDPOINT}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:-noah-assets}
+    networks:
+      - noah-network
+    depends_on:
+      - pgbouncer
+      - redis-master
+      - kafka
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Web Frontend
+  web:
+    build:
+      context: .
+      dockerfile: ./apps/web/Dockerfile
+    container_name: noah-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+    networks:
+      - noah-network
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+volumes:
+  postgres-primary-data:
+  postgres-replica-data:
+  kafka-data:
+  elasticsearch-data:
+
+networks:
+  noah-network:
+    driver: bridge
+    ipam: # Define a fixed subnet for consistent IP ranges if needed (optional)
+      config:
+        - subnet: 172.20.0.0/16

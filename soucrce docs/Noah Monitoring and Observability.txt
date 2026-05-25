@@ -1,0 +1,1055 @@
+# prometheus-values.yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: noah-production
+    environment: production
+    region: us-east-1
+
+alertmanager:
+  enabled: true
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - alertmanager.noah.app
+    tls:
+      - secretName: alertmanager-tls
+        hosts:
+          - alertmanager.noah.app
+  
+  config:
+    global:
+      resolve_timeout: 5m
+      slack_api_url: ${SLACK_WEBHOOK_URL}
+      pagerduty_url: https://events.pagerduty.com/v2/enqueue
+    
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'default'
+      routes:
+      - match:
+          severity: critical
+        receiver: pagerduty-critical
+        continue: true
+      - match:
+          severity: warning
+        receiver: slack-warnings
+      - match_re:
+          service: database|redis
+        receiver: database-team
+      
+    receivers:
+    - name: 'default'
+      slack_configs:
+      - channel: '#noah-alerts'
+        title: 'Noah Alert'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ .Annotations.description }}{{ end }}'
+    
+    - name: 'pagerduty-critical'
+      pagerduty_configs:
+      - service_key: ${PAGERDUTY_SERVICE_KEY}
+        description: '{{ .GroupLabels.alertname }}: {{ .Annotations.summary }}'
+        details:
+          cluster: '{{ .GroupLabels.cluster }}'
+          severity: '{{ .GroupLabels.severity }}'
+    
+    - name: 'slack-warnings'
+      slack_configs:
+      - channel: '#noah-warnings'
+        title: 'Warning: {{ .GroupLabels.alertname }}'
+        text: '{{ .Annotations.description }}'
+        send_resolved: true
+    
+    - name: 'database-team'
+      slack_configs:
+      - channel: '#database-alerts'
+        webhook_configs:
+        - url: ${DATABASE_TEAM_WEBHOOK}
+
+prometheus:
+  enabled: true
+  
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - prometheus.noah.app
+    tls:
+      - secretName: prometheus-tls
+        hosts:
+          - prometheus.noah.app
+  
+  prometheusSpec:
+    retention: 30d
+    retentionSize: "100GB"
+    
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: fast-ssd
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 200Gi
+    
+    resources:
+      requests:
+        cpu: 2
+        memory: 8Gi
+      limits:
+        cpu: 4
+        memory: 16Gi
+    
+    serviceMonitorSelector:
+      matchLabels:
+        prometheus: noah
+    
+    ruleSelector:
+      matchLabels:
+        prometheus: noah
+    
+    additionalScrapeConfigs:
+    - job_name: 'blackbox'
+      metrics_path: /probe
+      params:
+        module: [http_2xx]
+      static_configs:
+      - targets:
+        - https://api.noah.app
+        - https://noah.app
+      relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+    
+    - job_name: 'kubernetes-nodes-cadvisor'
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      kubernetes_sd_configs:
+      - role: node
+      relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - replacement: kubernetes.default.svc:443
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+        target_label: __metrics_path__
+
+grafana:
+  enabled: true
+  
+  adminPassword: ${GRAFANA_ADMIN_PASSWORD}
+  
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - grafana.noah.app
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.noah.app
+  
+  persistence:
+    enabled: true
+    storageClassName: fast-ssd
+    size: 50Gi
+  
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-server
+        isDefault: true
+      - name: CloudWatch
+        type: cloudwatch
+        jsonData:
+          authType: default
+          defaultRegion: us-east-1
+      - name: Loki
+        type: loki
+        url: http://loki:3100
+  
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+      - name: 'noah'
+        orgId: 1
+        folder: 'Noah'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        options:
+          path: /var/lib/grafana/dashboards/noah
+  
+  dashboards:
+    noah:
+      noah-overview:
+        json: |
+          ${file("dashboards/noah-overview.json")}
+      noah-api-performance:
+        json: |
+          ${file("dashboards/noah-api-performance.json")}
+      noah-compression-queue:
+        json: |
+          ${file("dashboards/noah-compression-queue.json")}
+      noah-storage-usage:
+        json: |
+          ${file("dashboards/noah-storage-usage.json")}
+
+---
+# noah-overview-dashboard.json
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "pluginVersion": "8.0.0",
+      "targets": [
+        {
+          "expr": "sum(rate(noah_http_requests_total{job=\"noah-api\"}[5m])) by (method, status)",
+          "refId": "A",
+          "legendFormat": "{{method}} {{status}}"
+        }
+      ],
+      "title": "Request Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "text": {}
+      },
+      "pluginVersion": "8.0.0",
+      "targets": [
+        {
+          "expr": "noah_compression_queue_size",
+          "refId": "A"
+        }
+      ],
+      "title": "Compression Queue Size",
+      "type": "gauge"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "text": {}
+      },
+      "pluginVersion": "8.0.0",
+      "targets": [
+        {
+          "expr": "(noah_storage_bytes_used / noah_storage_bytes_quota) * 100",
+          "refId": "A"
+        }
+      ],
+      "title": "Storage Usage %",
+      "type": "gauge"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          },
+          "unit": "ms"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "pluginVersion": "8.0.0",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(noah_http_request_duration_seconds_bucket[5m])) by (le))",
+          "refId": "A",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(noah_http_request_duration_seconds_bucket[5m])) by (le))",
+          "refId": "B",
+          "legendFormat": "p99"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(noah_http_request_duration_seconds_bucket[5m])) by (le))",
+          "refId": "C",
+          "legendFormat": "p50"
+        }
+      ],
+      "title": "Request Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "percent"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "pluginVersion": "8.0.0",
+      "targets": [
+        {
+          "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"noah-production\"}[5m])) by (pod) * 100",
+          "refId": "A",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "title": "CPU Usage by Pod",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 30,
+  "style": "dark",
+  "tags": ["noah", "overview"],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Noah Platform Overview",
+  "uid": "noah-overview",
+  "version": 0
+}
+
+---
+# prometheus-rules.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: noah-platform-rules
+  namespace: noah-production
+  labels:
+    prometheus: noah
+spec:
+  groups:
+  - name: noah-api
+    interval: 30s
+    rules:
+    # API Health Rules
+    - alert: NoahAPIDown
+      expr: up{job="noah-api"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        service: noah-api
+        team: platform
+      annotations:
+        summary: "Noah API is down"
+        description: "Noah API instance {{ $labels.instance }} has been down for more than 1 minute"
+        runbook_url: "https://runbooks.noah.app/api-down"
+        dashboard_url: "https://grafana.noah.app/d/noah-api/noah-api-performance"
+    
+    - alert: NoahAPIHighErrorRate
+      expr: |
+        (
+          sum(rate(noah_http_requests_total{status=~"5.."}[5m])) by (job)
+          /
+          sum(rate(noah_http_requests_total[5m])) by (job)
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        service: noah-api
+        team: platform
+      annotations:
+        summary: "High error rate on Noah API"
+        description: "Error rate is {{ $value | humanizePercentage }} for job {{ $labels.job }}"
+        runbook_url: "https://runbooks.noah.app/api-high-error-rate"
+    
+    - alert: NoahAPIHighLatency
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(noah_http_request_duration_seconds_bucket[5m])) by (le, job)
+        ) > 1
+      for: 5m
+      labels:
+        severity: warning
+        service: noah-api
+        team: platform
+      annotations:
+        summary: "High latency on Noah API"
+        description: "95th percentile latency is {{ $value }}s for job {{ $labels.job }}"
+        runbook_url: "https://runbooks.noah.app/api-high-latency"
+    
+    # Resource Usage Rules
+    - alert: NoahAPIPodHighMemory
+      expr: |
+        (
+          container_memory_working_set_bytes{namespace="noah-production",pod=~"noah-api-.*"}
+          /
+          container_spec_memory_limit_bytes{namespace="noah-production",pod=~"noah-api-.*"}
+        ) > 0.9
+      for: 5m
+      labels:
+        severity: warning
+        service: noah-api
+        team: platform
+      annotations:
+        summary: "High memory usage in Noah API pod"
+        description: "Pod {{ $labels.pod }} memory usage is at {{ $value | humanizePercentage }}"
+        runbook_url: "https://runbooks.noah.app/pod-high-memory"
+    
+    - alert: NoahAPIPodCPUThrottling
+      expr: |
+        rate(container_cpu_cfs_throttled_seconds_total{namespace="noah-production",pod=~"noah-api-.*"}[5m]) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+        service: noah-api
+        team: platform
+      annotations:
+        summary: "CPU throttling detected in Noah API pod"
+        description: "Pod {{ $labels.pod }} is experiencing CPU throttling"
+        runbook_url: "https://runbooks.noah.app/pod-cpu-throttling"
+    
+    # Database Rules
+    - alert: NoahDatabaseConnectionsHigh
+      expr: |
+        noah_database_connections_active / noah_database_connections_max > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        service: database
+        team: database
+      annotations:
+        summary: "Database connection pool usage high"
+        description: "Database connection usage is at {{ $value | humanizePercentage }}"
+        runbook_url: "https://runbooks.noah.app/database-connections-high"
+    
+    - alert: NoahDatabaseReplicationLag
+      expr: |
+        noah_database_replication_lag_seconds > 60
+      for: 5m
+      labels:
+        severity: critical
+        service: database
+        team: database
+      annotations:
+        summary: "Database replication lag detected"
+        description: "Replication lag is {{ $value }}s for replica {{ $labels.replica }}"
+        runbook_url: "https://runbooks.noah.app/database-replication-lag"
+    
+    # Queue and Worker Rules
+    - alert: NoahCompressionQueueBacklog
+      expr: |
+        noah_compression_queue_size > 1000
+      for: 15m
+      labels:
+        severity: warning
+        service: noah-worker
+        team: platform
+      annotations:
+        summary: "Compression queue backlog detected"
+        description: "Compression queue has {{ $value }} items pending"
+        runbook_url: "https://runbooks.noah.app/compression-queue-backlog"
+    
+    - alert: NoahWorkerProcessingError
+      expr: |
+        rate(noah_worker_processing_errors_total[5m]) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+        service: noah-worker
+        team: platform
+      annotations:
+        summary: "Worker processing errors detected"
+        description: "Worker {{ $labels.worker_type }} is experiencing {{ $value }} errors per second"
+        runbook_url: "https://runbooks.noah.app/worker-processing-errors"
+    
+    # Storage Rules
+    - alert: NoahStorageUsageHigh
+      expr: |
+        (noah_storage_bytes_used / noah_storage_bytes_quota) > 0.9
+      for: 30m
+      labels:
+        severity: warning
+        service: noah-storage
+        team: platform
+      annotations:
+        summary: "Storage usage is high"
+        description: "Storage usage is at {{ $value | humanizePercentage }} of quota"
+        runbook_url: "https://runbooks.noah.app/storage-usage-high"
+    
+    - alert: NoahB2UploadErrors
+      expr: |
+        rate(noah_b2_upload_errors_total[5m]) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        service: noah-storage
+        team: platform
+      annotations:
+        summary: "B2 upload errors detected"
+        description: "B2 upload error rate is {{ $value }} per second"
+        runbook_url: "https://runbooks.noah.app/b2-upload-errors"
+    
+    # SLO Rules
+    - alert: NoahSLOBudgetBurn
+      expr: |
+        (
+          1 - (
+            sum(rate(noah_http_requests_total{status!~"5.."}[30m]))
+            /
+            sum(rate(noah_http_requests_total[30m]))
+          )
+        ) > 0.001
+      for: 5m
+      labels:
+        severity: warning
+        service: noah-api
+        team: platform
+        slo: availability
+      annotations:
+        summary: "SLO budget burn rate high"
+        description: "Error budget burn rate is {{ $value | humanizePercentage }} over the last 30 minutes"
+        runbook_url: "https://runbooks.noah.app/slo-budget-burn"
+
+---
+# blackbox-exporter-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blackbox-config
+  namespace: monitoring
+data:
+  blackbox.yml: |
+    modules:
+      http_2xx:
+        prober: http
+        timeout: 5s
+        http:
+          valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+          valid_status_codes: []
+          method: GET
+          no_follow_redirects: false
+          fail_if_ssl: false
+          fail_if_not_ssl: true
+          tls_config:
+            insecure_skip_verify: false
+          preferred_ip_protocol: "ip4"
+      
+      http_post_2xx:
+        prober: http
+        timeout: 5s
+        http:
+          valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+          method: POST
+          headers:
+            Content-Type: application/json
+          body: '{"test": true}'
+          valid_status_codes: []
+          no_follow_redirects: false
+          fail_if_ssl: false
+          fail_if_not_ssl: true
+      
+      tcp_connect:
+        prober: tcp
+        timeout: 5s
+      
+      dns_noah:
+        prober: dns
+        timeout: 5s
+        dns:
+          query_name: "noah.app"
+          query_type: "A"
+          valid_rcodes:
+          - NOERROR
+
+---
+# loki-values.yaml
+loki:
+  auth_enabled: false
+  
+  config:
+    ingester:
+      chunk_idle_period: 30m
+      chunk_block_size: 262144
+      chunk_target_size: 1572864
+      max_chunk_age: 1h
+      
+    limits_config:
+      enforce_metric_name: false
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      max_entries_limit_per_query: 5000
+      
+    schema_config:
+      configs:
+      - from: 2023-01-01
+        store: boltdb-shipper
+        object_store: s3
+        schema: v11
+        index:
+          prefix: index_
+          period: 24h
+          
+    server:
+      http_listen_port: 3100
+      
+    storage_config:
+      aws:
+        s3: s3://us-east-1/noah-loki-storage
+        s3forcepathstyle: true
+      boltdb_shipper:
+        active_index_directory: /loki/boltdb-shipper-active
+        cache_location: /loki/boltdb-shipper-cache
+        shared_store: s3
+        
+    chunk_store_config:
+      max_look_back_period: 0s
+      
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 720h
+
+promtail:
+  config:
+    clients:
+    - url: http://loki:3100/loki/api/v1/push
+    
+    positions:
+      filename: /tmp/positions.yaml
+      
+    scrape_configs:
+    - job_name: kubernetes-pods
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - noah-production
+      
+      relabel_configs:
+      - source_labels:
+        - __meta_kubernetes_pod_controller_name
+        regex: ([0-9a-z-.]+?)(-[0-9a-f]{8,10})?
+        action: replace
+        target_label: __tmp_controller_name
+      
+      - source_labels:
+        - __meta_kubernetes_pod_label_app
+        - __meta_kubernetes_pod_label_name
+        - __tmp_controller_name
+        - __meta_kubernetes_pod_name
+        regex: ^;*([^;]+)(;.*)?$
+        action: replace
+        target_label: app
+      
+      - source_labels:
+        - __meta_kubernetes_namespace
+        action: replace
+        target_label: namespace
+      
+      - source_labels:
+        - __meta_kubernetes_pod_name
+        action: replace
+        target_label: pod
+      
+      - source_labels:
+        - __meta_kubernetes_pod_container_name
+        action: replace
+        target_label: container
+      
+      - replacement: /var/log/pods/*$1/*.log
+        separator: /
+        source_labels:
+        - __meta_kubernetes_pod_uid
+        - __meta_kubernetes_pod_container_name
+        target_label: __path__
+
+---
+# datadog-values.yaml
+datadog:
+  apiKey: ${DATADOG_API_KEY}
+  appKey: ${DATADOG_APP_KEY}
+  
+  clusterName: noah-production
+  
+  tags:
+    - "env:production"
+    - "service:noah"
+    - "region:us-east-1"
+  
+  logs:
+    enabled: true
+    containerCollectAll: true
+    containerCollectUsingFiles: true
+  
+  apm:
+    enabled: true
+    portEnabled: true
+  
+  processAgent:
+    enabled: true
+    processCollection: true
+  
+  systemProbe:
+    enabled: true
+    enableTCPQueueLength: true
+    enableOOMKill: true
+  
+  kubeStateMetricsCore:
+    enabled: true
+  
+  prometheusScrape:
+    enabled: true
+    serviceEndpoints: true
+  
+  datadog:
+    podAnnotationsAsTags:
+      app: app
+      version: version
+    
+    nodeLabelsAsTags:
+      kubernetes.io/hostname: node_name
+      node.kubernetes.io/instance-type: instance_type
+
+---
+# sentry-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentry-config
+  namespace: noah-production
+data:
+  sentry.yaml: |
+    dsn: ${SENTRY_DSN}
+    environment: production
+    release: ${APP_VERSION}
+    
+    integrations:
+      - name: Http
+        enabled: true
+      - name: Express
+        enabled: true
+      - name: Postgres
+        enabled: true
+      - name: Redis
+        enabled: true
+    
+    tracesSampleRate: 0.1
+    profilesSampleRate: 0.1
+    
+    beforeSend: |
+      function(event, hint) {
+        // Filter out sensitive data
+        if (event.request && event.request.headers) {
+          delete event.request.headers['authorization'];
+          delete event.request.headers['cookie'];
+        }
+        return event;
+      }

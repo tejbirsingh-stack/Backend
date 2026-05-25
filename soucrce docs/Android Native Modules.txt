@@ -1,0 +1,581 @@
+// Android Native Modules
+
+// VideoCompressorModule.kt
+package com.yourcompany.instagram.modules
+
+import com.facebook.react.bridge.*
+import com.arthenica.mobileffmpeg.Config
+import com.arthenica.mobileffmpeg.FFmpeg
+import kotlinx.coroutines.*
+import java.io.File
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+
+class VideoCompressorModule(reactContext: ReactApplicationContext) : 
+    ReactContextBaseJavaModule(reactContext) {
+    
+    override fun getName(): String = "VideoCompressor"
+    
+    @ReactMethod
+    fun compressVideo(
+        inputPath: String,
+        outputPath: String,
+        quality: Float,
+        promise: Promise
+    ) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val inputFile = File(inputPath)
+                if (!inputFile.exists()) {
+                    promise.reject("FILE_NOT_FOUND", "Input file does not exist")
+                    return@launch
+                }
+                
+                // Get video metadata
+                val retriever = MediaMetadataRetriever()
+                retriever.setDataSource(inputPath)
+                val duration = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_DURATION
+                )?.toLong() ?: 0
+                val width = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH
+                )?.toInt() ?: 1920
+                val height = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT
+                )?.toInt() ?: 1080
+                retriever.release()
+                
+                // Calculate compression parameters
+                val bitrate = calculateBitrate(quality, width, height)
+                val scale = calculateScale(quality, width, height)
+                
+                // FFmpeg command for compression
+                val command = arrayOf(
+                    "-i", inputPath,
+                    "-c:v", "libx264",
+                    "-preset", getPreset(quality),
+                    "-crf", getCRF(quality),
+                    "-vf", "scale=$scale",
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    "-y",
+                    outputPath
+                )
+                
+                val rc = FFmpeg.execute(command)
+                
+                if (rc == Config.RETURN_CODE_SUCCESS) {
+                    val outputFile = File(outputPath)
+                    val result = WritableNativeMap().apply {
+                        putString("path", outputPath)
+                        putDouble("size", outputFile.length().toDouble())
+                        putDouble("duration", duration.toDouble() / 1000)
+                    }
+                    promise.resolve(result)
+                } else {
+                    promise.reject(
+                        "COMPRESSION_FAILED",
+                        "FFmpeg execution failed with rc=$rc"
+                    )
+                }
+            } catch (e: Exception) {
+                promise.reject("COMPRESSION_ERROR", e.message, e)
+            }
+        }
+    }
+    
+    private fun calculateBitrate(quality: Float, width: Int, height: Int): String {
+        val baseBitrate = when {
+            quality < 0.3 -> 1000000 // 1 Mbps
+            quality < 0.7 -> 2500000 // 2.5 Mbps
+            else -> 5000000 // 5 Mbps
+        }
+        
+        val pixels = width * height
+        val hdPixels = 1920 * 1080
+        val scaleFactor = pixels.toFloat() / hdPixels
+        
+        return "${(baseBitrate * scaleFactor).toInt()}"
+    }
+    
+    private fun calculateScale(quality: Float, width: Int, height: Int): String {
+        val maxDimension = when {
+            quality < 0.3 -> 854
+            quality < 0.7 -> 1280
+            else -> 1920
+        }
+        
+        return if (width > height) {
+            "w=$maxDimension:h=-2"
+        } else {
+            "w=-2:h=$maxDimension"
+        }
+    }
+    
+    private fun getPreset(quality: Float): String = when {
+        quality < 0.3 -> "ultrafast"
+        quality < 0.7 -> "fast"
+        else -> "medium"
+    }
+    
+    private fun getCRF(quality: Float): String = when {
+        quality < 0.3 -> "28"
+        quality < 0.7 -> "23"
+        else -> "18"
+    }
+}
+
+// ImageProcessorModule.kt
+package com.yourcompany.instagram.modules
+
+import com.facebook.react.bridge.*
+import android.graphics.*
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.media.ExifInterface
+import kotlinx.coroutines.*
+import java.io.File
+import java.io.FileOutputStream
+import java.util.UUID
+
+class ImageProcessorModule(reactContext: ReactApplicationContext) : 
+    ReactContextBaseJavaModule(reactContext) {
+    
+    override fun getName(): String = "ImageProcessor"
+    
+    @ReactMethod
+    fun applyFilter(
+        imagePath: String,
+        filter: String,
+        promise: Promise
+    ) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val bitmap = loadBitmap(imagePath)
+                val filteredBitmap = when (filter) {
+                    "vintage" -> applyVintageFilter(bitmap)
+                    "noir" -> applyNoirFilter(bitmap)
+                    "chrome" -> applyChromeFilter(bitmap)
+                    "fade" -> applyFadeFilter(bitmap)
+                    "mono" -> applyMonoFilter(bitmap)
+                    else -> bitmap
+                }
+                
+                val outputPath = saveBitmap(filteredBitmap)
+                bitmap.recycle()
+                filteredBitmap.recycle()
+                
+                promise.resolve(outputPath)
+            } catch (e: Exception) {
+                promise.reject("FILTER_ERROR", e.message, e)
+            }
+        }
+    }
+    
+    @ReactMethod
+    fun cropImage(
+        imagePath: String,
+        cropData: ReadableMap,
+        promise: Promise
+    ) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val bitmap = loadBitmap(imagePath)
+                
+                val x = cropData.getInt("x")
+                val y = cropData.getInt("y")
+                val width = cropData.getInt("width")
+                val height = cropData.getInt("height")
+                
+                val croppedBitmap = Bitmap.createBitmap(bitmap, x, y, width, height)
+                val outputPath = saveBitmap(croppedBitmap)
+                
+                bitmap.recycle()
+                croppedBitmap.recycle()
+                
+                promise.resolve(outputPath)
+            } catch (e: Exception) {
+                promise.reject("CROP_ERROR", e.message, e)
+            }
+        }
+    }
+    
+    @ReactMethod
+    fun adjustImage(
+        imagePath: String,
+        adjustments: ReadableMap,
+        promise: Promise
+    ) {
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val bitmap = loadBitmap(imagePath)
+                val adjustedBitmap = bitmap.copy(bitmap.config, true)
+                
+                val canvas = Canvas(adjustedBitmap)
+                val paint = Paint()
+                
+                val colorMatrix = ColorMatrix()
+                
+                // Apply brightness
+                adjustments.getDouble("brightness").let { brightness ->
+                    if (!brightness.isNaN()) {
+                        colorMatrix.postConcat(ColorMatrix().apply {
+                            setScale(
+                                brightness.toFloat(),
+                                brightness.toFloat(),
+                                brightness.toFloat(),
+                                1f
+                            )
+                        })
+                    }
+                }
+                
+                // Apply contrast
+                adjustments.getDouble("contrast").let { contrast ->
+                    if (!contrast.isNaN()) {
+                        val scale = contrast.toFloat()
+                        val translate = (1f - scale) / 2f * 255f
+                        colorMatrix.postConcat(ColorMatrix(floatArrayOf(
+                            scale, 0f, 0f, 0f, translate,
+                            0f, scale, 0f, 0f, translate,
+                            0f, 0f, scale, 0f, translate,
+                            0f, 0f, 0f, 1f, 0f
+                        )))
+                    }
+                }
+                
+                // Apply saturation
+                adjustments.getDouble("saturation").let { saturation ->
+                    if (!saturation.isNaN()) {
+                        colorMatrix.setSaturation(saturation.toFloat())
+                    }
+                }
+                
+                paint.colorFilter = ColorMatrixColorFilter(colorMatrix)
+                canvas.drawBitmap(bitmap, 0f, 0f, paint)
+                
+                val outputPath = saveBitmap(adjustedBitmap)
+                
+                bitmap.recycle()
+                adjustedBitmap.recycle()
+                
+                promise.resolve(outputPath)
+            } catch (e: Exception) {
+                promise.reject("ADJUST_ERROR", e.message, e)
+            }
+        }
+    }
+    
+    private fun loadBitmap(path: String): Bitmap {
+        val options = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        
+        val bitmap = BitmapFactory.decodeFile(path, options)
+            ?: throw Exception("Failed to load bitmap")
+        
+        // Handle EXIF orientation
+        val exif = ExifInterface(path)
+        val orientation = exif.getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL
+        )
+        
+        return when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> rotateBitmap(bitmap, 90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> rotateBitmap(bitmap, 180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> rotateBitmap(bitmap, 270f)
+            else -> bitmap
+        }
+    }
+    
+    private fun rotateBitmap(bitmap: Bitmap, degrees: Float): Bitmap {
+        val matrix = Matrix().apply { postRotate(degrees) }
+        return Bitmap.createBitmap(
+            bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+        )
+    }
+    
+    private fun saveBitmap(bitmap: Bitmap): String {
+        val outputDir = reactApplicationContext.cacheDir
+        val outputFile = File(outputDir, "processed_${UUID.randomUUID()}.jpg")
+        
+        FileOutputStream(outputFile).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+        }
+        
+        return outputFile.absolutePath
+    }
+    
+    private fun applyVintageFilter(bitmap: Bitmap): Bitmap {
+        val matrix = ColorMatrix().apply {
+            setSaturation(0.5f)
+            postConcat(ColorMatrix(floatArrayOf(
+                1.2f, 0.1f, 0.1f, 0f, 0f,
+                0.1f, 1.0f, 0.1f, 0f, 0f,
+                0.1f, 0.1f, 0.8f, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f
+            )))
+        }
+        return applyColorMatrix(bitmap, matrix)
+    }
+    
+    private fun applyNoirFilter(bitmap: Bitmap): Bitmap {
+        val matrix = ColorMatrix().apply {
+            setSaturation(0f)
+            postConcat(ColorMatrix(floatArrayOf(
+                1.5f, 0f, 0f, 0f, -50f,
+                0f, 1.5f, 0f, 0f, -50f,
+                0f, 0f, 1.5f, 0f, -50f,
+                0f, 0f, 0f, 1f, 0f
+            )))
+        }
+        return applyColorMatrix(bitmap, matrix)
+    }
+    
+    private fun applyChromeFilter(bitmap: Bitmap): Bitmap {
+        val matrix = ColorMatrix(floatArrayOf(
+            1.5f, 0f, 0f, 0f, 0f,
+            0f, 1.3f, 0f, 0f, 0f,
+            0f, 0f, 1.0f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        ))
+        return applyColorMatrix(bitmap, matrix)
+    }
+    
+    private fun applyFadeFilter(bitmap: Bitmap): Bitmap {
+        val matrix = ColorMatrix().apply {
+            setScale(1.2f, 1.2f, 1.2f, 0.8f)
+        }
+        return applyColorMatrix(bitmap, matrix)
+    }
+    
+    private fun applyMonoFilter(bitmap: Bitmap): Bitmap {
+        val matrix = ColorMatrix().apply {
+            setSaturation(0f)
+        }
+        return applyColorMatrix(bitmap, matrix)
+    }
+    
+    private fun applyColorMatrix(bitmap: Bitmap, colorMatrix: ColorMatrix): Bitmap {
+        val result = bitmap.copy(bitmap.config, true)
+        val canvas = Canvas(result)
+        val paint = Paint().apply {
+            colorFilter = ColorMatrixColorFilter(colorMatrix)
+        }
+        canvas.drawBitmap(bitmap, 0f, 0f, paint)
+        return result
+    }
+}
+
+// Package Registration - InstagramPackage.kt
+package com.yourcompany.instagram
+
+import com.facebook.react.ReactPackage
+import com.facebook.react.bridge.NativeModule
+import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.uimanager.ViewManager
+import com.yourcompany.instagram.modules.VideoCompressorModule
+import com.yourcompany.instagram.modules.ImageProcessorModule
+
+class InstagramPackage : ReactPackage {
+    override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
+        return listOf(
+            VideoCompressorModule(reactContext),
+            ImageProcessorModule(reactContext)
+        )
+    }
+    
+    override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
+        return emptyList()
+    }
+}
+
+// MainApplication.kt
+package com.yourcompany.instagram
+
+import android.app.Application
+import android.content.Context
+import com.facebook.react.PackageList
+import com.facebook.react.ReactApplication
+import com.facebook.react.ReactInstanceManager
+import com.facebook.react.ReactNativeHost
+import com.facebook.react.ReactPackage
+import com.facebook.react.config.ReactFeatureFlags
+import com.facebook.soloader.SoLoader
+import expo.modules.ApplicationLifecycleDispatcher
+import expo.modules.ReactNativeHostWrapper
+import com.facebook.react.bridge.JSIModulePackage
+import com.swmansion.reanimated.ReanimatedJSIModulePackage
+
+class MainApplication : Application(), ReactApplication {
+    
+    override val reactNativeHost: ReactNativeHost = ReactNativeHostWrapper(
+        this,
+        object : ReactNativeHost(this) {
+            override fun getUseDeveloperSupport(): Boolean = BuildConfig.DEBUG
+            
+            override fun getPackages(): List<ReactPackage> {
+                val packages = PackageList(this).packages.toMutableList()
+                packages.add(InstagramPackage())
+                return packages
+            }
+            
+            override fun getJSMainModuleName(): String = "index"
+            
+            override fun getJSIModulePackage(): JSIModulePackage {
+                return ReanimatedJSIModulePackage()
+            }
+            
+            override fun getJSBundleFile(): String? {
+                return if (BuildConfig.DEBUG) {
+                    null
+                } else {
+                    "assets://index.android.bundle"
+                }
+            }
+        }
+    )
+    
+    override fun onCreate() {
+        super.onCreate()
+        
+        // Enable New Architecture
+        ReactFeatureFlags.useTurboModules = true
+        ReactFeatureFlags.enableFabricRenderer = true
+        
+        SoLoader.init(this, false)
+        ApplicationLifecycleDispatcher.onApplicationCreate(this)
+        
+        // Initialize performance monitoring
+        if (!BuildConfig.DEBUG) {
+            initializePerformanceMonitoring()
+        }
+    }
+    
+    private fun initializePerformanceMonitoring() {
+        // Add your performance monitoring initialization here
+        // e.g., Firebase Performance, Sentry, etc.
+    }
+}
+
+// build.gradle (app level)
+apply plugin: "com.android.application"
+apply plugin: "com.facebook.react"
+apply plugin: "kotlin-android"
+
+android {
+    namespace "com.yourcompany.instagram"
+    compileSdkVersion rootProject.ext.compileSdkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    
+    defaultConfig {
+        applicationId "com.yourcompany.instagram"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        
+        missingDimensionStrategy 'react-native-camera', 'general'
+        multiDexEnabled true
+        
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
+        }
+    }
+    
+    signingConfigs {
+        release {
+            if (project.hasProperty('MYAPP_UPLOAD_STORE_FILE')) {
+                storeFile file(MYAPP_UPLOAD_STORE_FILE)
+                storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                keyAlias MYAPP_UPLOAD_KEY_ALIAS
+                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
+            }
+        }
+    }
+    
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+        }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+    
+    packagingOptions {
+        pickFirst '**/libc++_shared.so'
+        pickFirst '**/libjsc.so'
+        pickFirst '**/libhermes.so'
+    }
+}
+
+dependencies {
+    implementation("com.facebook.react:react-android")
+    implementation("com.facebook.react:hermes-android")
+    
+    // Native module dependencies
+    implementation 'com.arthenica:mobile-ffmpeg-full:4.4.LTS'
+    implementation 'androidx.work:work-runtime-ktx:2.8.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.1'
+    
+    if (hermesEnabled.toBoolean()) {
+        implementation("com.facebook.react:hermes-android")
+    } else {
+        implementation jscFlavor
+    }
+}
+
+apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle")
+applyNativeModulesAppBuildGradle(project)
+
+// iOS Podfile
+require_relative '../node_modules/react-native/scripts/react_native_pods'
+require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
+
+platform :ios, '13.0'
+install! 'cocoapods', :deterministic_uuids => false
+
+target 'InstagramClone' do
+  use_modular_headers!
+  
+  # Enable New Architecture
+  use_react_native!(
+    :path => config[:reactNativePath],
+    :hermes_enabled => true,
+    :fabric_enabled => true,
+    :new_arch_enabled => true,
+    :flipper_configuration => FlipperConfiguration.disabled
+  )
+  
+  # Native dependencies
+  pod 'MMKV'
+  pod 'RNFastImage', :path => '../node_modules/react-native-fast-image'
+  
+  target 'InstagramCloneTests' do
+    inherit! :complete
+  end
+  
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      :mac_catalyst_enabled => false
+    )
+    __apply_Xcode_12_5_M1_post_install_workaround(installer)
+    
+    # Enable dead code stripping
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        config.build_settings['DEAD_CODE_STRIPPING'] = 'YES'
+        config.build_settings['ENABLE_BITCODE'] = 'NO'
+      end
+    end
+  end
+end

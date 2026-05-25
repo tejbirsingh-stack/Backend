@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>B2 Upload Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        h1 {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .upload-area {
+            border: 2px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            transition: all 0.3s;
+            margin: 20px 0;
+        }
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: rgba(102, 126, 234, 0.1);
+        }
+        .upload-area.dragover {
+            background: rgba(102, 126, 234, 0.2);
+            border-color: #fff;
+        }
+        select, button {
+            padding: 10px 20px;
+            margin: 10px;
+            border-radius: 5px;
+            border: none;
+            background: #667eea;
+            color: white;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #764ba2;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .status.success {
+            background: #10b981;
+            display: block;
+        }
+        .status.error {
+            background: #ef4444;
+            display: block;
+        }
+        .status.info {
+            background: #3b82f6;
+            display: block;
+        }
+        .file-list {
+            margin: 20px 0;
+        }
+        .file-item {
+            background: #2a2a2a;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+        pre {
+            background: #2a2a2a;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 Backblaze B2 Upload Test</h1>
+    
+    <div class="upload-area" id="uploadArea">
+        <p>📁 Drag and drop files here or click to select</p>
+        <input type="file" id="fileInput" multiple style="display: none;">
+    </div>
+    
+    <div>
+        <label>Upload Destination:</label>
+        <select id="destination">
+            <option value="local">📁 Local Only</option>
+            <option value="b2">☁️ B2 Only</option>
+            <option value="both" selected>🔄 Both (Local + B2)</option>
+        </select>
+        <button onclick="checkStorageStatus()">📊 Check Storage Status</button>
+    </div>
+    
+    <div id="status" class="status"></div>
+    
+    <div id="fileList" class="file-list"></div>
+    
+    <div>
+        <h2>📋 Recent Uploads</h2>
+        <div id="recentUploads"></div>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const statusDiv = document.getElementById('status');
+        const fileList = document.getElementById('fileList');
+        const destinationSelect = document.getElementById('destination');
+        const recentUploads = document.getElementById('recentUploads');
+        
+        // Click to select files
+        uploadArea.addEventListener('click', () => fileInput.click());
+        
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+        
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+        
+        async function handleFiles(files) {
+            const destination = destinationSelect.value;
+            showStatus(`Uploading ${files.length} file(s) to ${destination}...`, 'info');
+            
+            for (const file of files) {
+                await uploadFile(file, destination);
+            }
+        }
+        
+        async function uploadFile(file, destination) {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('destination', destination);
+            
+            try {
+                const response = await fetch('http://localhost:3000/api/media/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showStatus(`✅ ${file.name} uploaded successfully!`, 'success');
+                    addToRecentUploads({
+                        name: file.name,
+                        size: file.size,
+                        destination: destination,
+                        uploadedTo: result.uploadedTo,
+                        b2Url: result.asset.b2Url,
+                        timestamp: new Date().toLocaleString()
+                    });
+                } else {
+                    showStatus(`❌ ${file.name} upload failed: ${result.error}`, 'error');
+                }
+                
+                console.log('Upload result:', result);
+            } catch (error) {
+                showStatus(`❌ ${file.name} upload error: ${error.message}`, 'error');
+                console.error('Upload error:', error);
+            }
+        }
+        
+        function showStatus(message, type) {
+            statusDiv.textContent = message;
+            statusDiv.className = `status ${type}`;
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+        
+        function addToRecentUploads(upload) {
+            const uploadDiv = document.createElement('div');
+            uploadDiv.className = 'file-item';
+            uploadDiv.innerHTML = `
+                <div>
+                    <strong>${upload.name}</strong><br>
+                    <small>
+                        Size: ${formatSize(upload.size)} | 
+                        Destination: ${upload.destination} |
+                        Local: ${upload.uploadedTo.local ? '✅' : '❌'} |
+                        B2: ${upload.uploadedTo.b2 ? '✅' : '❌'}
+                    </small>
+                </div>
+                <div>
+                    <small>${upload.timestamp}</small>
+                </div>
+            `;
+            recentUploads.insertBefore(uploadDiv, recentUploads.firstChild);
+        }
+        
+        function formatSize(bytes) {
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            if (bytes === 0) return '0 Bytes';
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+        }
+        
+        async function checkStorageStatus() {
+            try {
+                const response = await fetch('http://localhost:3000/api/storage/status');
+                const data = await response.json();
+                
+                const message = `
+Storage Status:
+• Local: ${data.storage.local.enabled ? '✅' : '❌'} ${data.storage.local.totalFiles} files (${data.storage.local.formattedSize})
+• B2: ${data.storage.b2.enabled ? '✅' : '❌'} ${data.storage.b2.totalFiles || 0} files (${data.storage.b2.formattedSize || '0 B'})
+${data.storage.b2.bucket ? `• Bucket: ${data.storage.b2.bucket}` : ''}
+                `;
+                
+                showStatus(message, 'info');
+                console.log('Storage status:', data);
+            } catch (error) {
+                showStatus(`❌ Failed to check storage status: ${error.message}`, 'error');
+            }
+        }
+        
+        // Check storage status on load
+        checkStorageStatus();
+    </script>
+</body>
+</html>

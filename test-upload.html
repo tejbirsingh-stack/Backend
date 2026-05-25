@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Upload to Noah</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        .upload-zone {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            margin: 20px 0;
+            transition: all 0.3s ease;
+            background: #f8f9ff;
+        }
+        .upload-zone.dragover {
+            background: #e8eaff;
+            border-color: #4a5aea;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            transition: transform 0.2s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        #results {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .file-list {
+            list-style: none;
+            padding: 0;
+        }
+        .file-item {
+            background: white;
+            margin: 10px 0;
+            padding: 15px;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .progress {
+            width: 100%;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s ease;
+        }
+        .status {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status.success { background: #4caf50; color: white; }
+        .status.error { background: #f44336; color: white; }
+        .status.uploading { background: #2196f3; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Test Upload to Noah Media Server</h1>
+        
+        <div class="upload-zone" id="dropZone">
+            <h2>📁 Drag & Drop Files Here</h2>
+            <p>or click to browse</p>
+            <button class="btn" onclick="document.getElementById('fileInput').click()">
+                Choose Files
+            </button>
+            <input type="file" id="fileInput" multiple accept="image/*,video/*,audio/*,.pdf,.doc,.docx">
+        </div>
+
+        <div style="margin: 20px 0;">
+            <button class="btn" onclick="testSingleUpload()">Test Single Image Upload</button>
+            <button class="btn" onclick="testMultipleUploads()">Test Multiple Uploads</button>
+            <button class="btn" onclick="fetchMediaList()">Fetch Media List</button>
+            <button class="btn" onclick="clearResults()">Clear Results</button>
+        </div>
+
+        <h3>Upload Queue:</h3>
+        <ul id="fileList" class="file-list"></ul>
+
+        <h3>Server Response:</h3>
+        <div id="results">Ready to test uploads...</div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const results = document.getElementById('results');
+
+        // Drag and drop handlers
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                uploadFile(file);
+            });
+        }
+
+        function uploadFile(file) {
+            const listItem = document.createElement('li');
+            listItem.className = 'file-item';
+            listItem.innerHTML = `
+                <div style="flex: 1;">
+                    <strong>${file.name}</strong>
+                    <div class="progress">
+                        <div class="progress-bar" style="width: 0%"></div>
+                    </div>
+                    <small>${(file.size / 1024 / 1024).toFixed(2)} MB</small>
+                </div>
+                <span class="status uploading">Uploading</span>
+            `;
+            fileList.appendChild(listItem);
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const xhr = new XMLHttpRequest();
+            const progressBar = listItem.querySelector('.progress-bar');
+            const status = listItem.querySelector('.status');
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percentComplete = (e.loaded / e.total) * 100;
+                    progressBar.style.width = percentComplete + '%';
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status === 200) {
+                    const response = JSON.parse(xhr.responseText);
+                    status.textContent = 'Success';
+                    status.className = 'status success';
+                    progressBar.style.width = '100%';
+                    
+                    results.textContent = `✅ Upload successful!\n${JSON.stringify(response, null, 2)}`;
+                    console.log('Upload successful:', response);
+                } else {
+                    status.textContent = 'Error';
+                    status.className = 'status error';
+                    results.textContent = `❌ Upload failed: ${xhr.statusText}`;
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                status.textContent = 'Error';
+                status.className = 'status error';
+                results.textContent = `❌ Upload error: ${xhr.statusText}`;
+            });
+
+            xhr.open('POST', `${API_URL}/media/upload`);
+            xhr.send(formData);
+        }
+
+        async function testSingleUpload() {
+            results.textContent = 'Creating test image...';
+            
+            // Create a test image using canvas
+            const canvas = document.createElement('canvas');
+            canvas.width = 400;
+            canvas.height = 300;
+            const ctx = canvas.getContext('2d');
+            
+            // Draw gradient background
+            const gradient = ctx.createLinearGradient(0, 0, 400, 300);
+            gradient.addColorStop(0, '#667eea');
+            gradient.addColorStop(1, '#764ba2');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 400, 300);
+            
+            // Add text
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 30px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Noah Test Image', 200, 150);
+            ctx.font = '16px Arial';
+            ctx.fillText(new Date().toLocaleString(), 200, 180);
+            
+            canvas.toBlob((blob) => {
+                const file = new File([blob], `test-image-${Date.now()}.png`, { type: 'image/png' });
+                uploadFile(file);
+            });
+        }
+
+        async function testMultipleUploads() {
+            results.textContent = 'Creating multiple test files...';
+            
+            for (let i = 1; i <= 3; i++) {
+                const canvas = document.createElement('canvas');
+                canvas.width = 400;
+                canvas.height = 300;
+                const ctx = canvas.getContext('2d');
+                
+                // Different color for each image
+                const colors = [
+                    ['#FF6B6B', '#4ECDC4'],
+                    ['#45B7D1', '#96CEB4'],
+                    ['#FFEAA7', '#DFE6E9']
+                ];
+                
+                const gradient = ctx.createLinearGradient(0, 0, 400, 300);
+                gradient.addColorStop(0, colors[i-1][0]);
+                gradient.addColorStop(1, colors[i-1][1]);
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, 400, 300);
+                
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 30px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(`Test Image ${i}`, 200, 150);
+                
+                canvas.toBlob((blob) => {
+                    const file = new File([blob], `test-batch-${i}-${Date.now()}.png`, { type: 'image/png' });
+                    uploadFile(file);
+                });
+                
+                // Delay between uploads
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+
+        async function fetchMediaList() {
+            results.textContent = 'Fetching media list...';
+            
+            try {
+                const response = await fetch(`${API_URL}/media`);
+                const data = await response.json();
+                
+                results.textContent = `📊 Media List (${data.count || data.assets?.length || 0} items):\n${JSON.stringify(data, null, 2)}`;
+            } catch (error) {
+                results.textContent = `❌ Error fetching media: ${error.message}`;
+            }
+        }
+
+        function clearResults() {
+            results.textContent = 'Ready to test uploads...';
+            fileList.innerHTML = '';
+        }
+
+        // Initial load - fetch media list
+        window.addEventListener('load', () => {
+            console.log('🚀 Noah Upload Test Page Ready');
+            console.log(`📡 API URL: ${API_URL}`);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Run pre-commit hooks
+npx lint-staged
+
+# Run security checks
+npm run security:audit
+
+# Check for secrets
+git secrets --pre_commit_hook -- "$@"
+
+# Validate environment files
+node scripts/validate-env.js
+
+# Check bundle size
+npm run analyze:size
+
+# Run type checking
+npm run typecheck

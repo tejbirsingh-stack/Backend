@@ -1,0 +1,489 @@
+# Noah Enterprise Integrations
+
+Enterprise-grade integrations for Noah Media Asset Management platform, including billing, SSO, webhooks, and comprehensive monitoring.
+
+## Features
+
+### 🏦 Stripe Billing Integration
+- **Subscription Management**: Create, update, and cancel subscriptions
+- **Usage-Based Billing**: Track storage, bandwidth, and processing usage
+- **Metered Billing**: Real-time usage recording with batched reporting
+- **Payment Methods**: Support for cards, SEPA, and ACH
+- **Revenue Recognition**: Automated invoice generation and reporting
+
+### 🔐 Enterprise SSO
+- **SAML 2.0**: Support for Okta, Azure AD, OneLogin, and more
+- **OpenID Connect**: Google Workspace, Auth0, and custom providers
+- **OAuth 2.0**: Generic OAuth2 provider support
+- **Single Logout**: Coordinated logout across all services
+- **JIT Provisioning**: Automatic user creation and updates
+
+### 🔔 Webhook System
+- **Reliable Delivery**: Exponential backoff with jitter
+- **Event Types**: Asset, subscription, user, and custom events
+- **Signatures**: HMAC-SHA256 webhook verification
+- **Rate Limiting**: Per-endpoint rate limits
+- **Circuit Breaker**: Automatic failure detection and recovery
+
+### 📊 Monitoring & Analytics
+- **Prometheus Metrics**: Custom business and technical metrics
+- **Grafana Dashboards**: Pre-built enterprise dashboards
+- **Distributed Tracing**: OpenTelemetry integration
+- **Log Aggregation**: Centralized logging with ELK stack
+- **Alerting**: PagerDuty and Slack integrations
+
+## Quick Start
+
+### Prerequisites
+- Node.js 18+
+- PostgreSQL 15+
+- Redis 7+
+- Docker & Docker Compose
+- Stripe account
+- SSO provider (optional)
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/noah-app/enterprise-integrations.git
+cd enterprise-integrations
+
+# Install dependencies
+npm install
+
+# Setup environment variables
+cp .env.example .env
+# Edit .env with your configuration
+
+# Run migrations
+npm run migrate
+
+# Start development server
+npm run dev
+```
+
+### Docker Compose
+
+```bash
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f api
+
+# Stop services
+docker-compose down
+```
+
+## Configuration
+
+### Environment Variables
+
+```env
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/noah
+
+# Redis
+REDIS_URL=redis://localhost:6379
+
+# Stripe
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+STRIPE_PRICE_STORAGE=price_...
+STRIPE_PRICE_BANDWIDTH=price_...
+STRIPE_PRICE_PROCESSING=price_...
+
+# SSO
+SAML_CERT_PATH=/path/to/cert.pem
+OIDC_CLIENT_ID=your-client-id
+OIDC_CLIENT_SECRET=your-client-secret
+
+# JWT
+JWT_SECRET=your-jwt-secret
+JWT_EXPIRY=3600
+
+# Monitoring
+DATADOG_API_KEY=your-datadog-key
+SENTRY_DSN=your-sentry-dsn
+```
+
+## API Reference
+
+### Authentication
+
+All API requests require authentication via Bearer token or API key:
+
+```bash
+# Bearer token
+curl -H "Authorization: Bearer YOUR_TOKEN" https://api.noah.app/v1/endpoint
+
+# API key
+curl -H "X-API-Key: YOUR_API_KEY" https://api.noah.app/v1/endpoint
+```
+
+### Billing Endpoints
+
+#### Create Subscription
+```http
+POST /v1/billing/subscriptions
+Content-Type: application/json
+
+{
+  "customerId": "cus_123",
+  "planId": "plan_enterprise",
+  "trialDays": 14,
+  "addons": ["addon_priority_support"],
+  "metadata": {
+    "organizationId": "org_123"
+  }
+}
+```
+
+#### Record Usage
+```http
+POST /v1/billing/usage
+Content-Type: application/json
+
+{
+  "subscriptionItemId": "si_123",
+  "quantity": 1024,
+  "timestamp": 1234567890,
+  "metadata": {
+    "resource": "storage",
+    "unit": "mb"
+  }
+}
+```
+
+### SSO Configuration
+
+#### Configure SAML Provider
+```http
+POST /v1/sso/providers
+Content-Type: application/json
+
+{
+  "type": "saml",
+  "providerId": "okta",
+  "entryPoint": "https://company.okta.com/app/app_id/sso/saml",
+  "certificate": "-----BEGIN CERTIFICATE-----...",
+  "domains": ["company.com"],
+  "attributeMapping": {
+    "email": "Email",
+    "name": "DisplayName",
+    "groups": "Groups"
+  }
+}
+```
+
+#### SSO Login Flow
+```
+1. User visits: https://app.noah.app/login
+2. Enter email: user@company.com
+3. Redirect to: https://company.okta.com/login
+4. After auth: https://app.noah.app/auth/saml/callback
+5. Token issued: JWT with user info and permissions
+```
+
+### Webhook Management
+
+#### Register Webhook
+```http
+POST /v1/webhooks/endpoints
+Content-Type: application/json
+
+{
+  "url": "https://your-app.com/webhooks/noah",
+  "events": ["asset.created", "asset.updated", "subscription.updated"],
+  "headers": {
+    "X-Custom-Header": "value"
+  },
+  "rateLimit": {
+    "requests": 100,
+    "window": 60
+  }
+}
+```
+
+#### Webhook Payload
+```json
+{
+  "id": "evt_123",
+  "type": "asset.created",
+  "data": {
+    "id": "asset_456",
+    "name": "video.mp4",
+    "size": 1048576,
+    "created_at": "2024-01-01T00:00:00Z"
+  },
+  "timestamp": "2024-01-01T00:00:00Z",
+  "version": "1.0"
+}
+```
+
+#### Signature Verification
+```javascript
+const crypto = require('crypto');
+
+function verifyWebhook(payload, signature, secret, timestamp) {
+  const expectedSignature = crypto
+    .createHmac('sha256', secret)
+    .update(`${timestamp}.${payload}`)
+    .digest('hex');
+  
+  return crypto.timingSafeEqual(
+    Buffer.from(signature),
+    Buffer.from(expectedSignature)
+  );
+}
+```
+
+## SDK Usage
+
+### JavaScript/TypeScript
+```typescript
+import { NoahEnterpriseClient } from '@noah/enterprise-sdk';
+
+const client = new NoahEnterpriseClient({
+  apiKey: 'your-api-key'
+});
+
+// Create subscription
+const subscription = await client.billing.createSubscription({
+  customerId: 'cus_123',
+  planId: 'plan_enterprise'
+});
+
+// Record usage
+await client.billing.recordUsage({
+  subscriptionItemId: subscription.items[0].id,
+  quantity: 1024
+});
+
+// Register webhook
+const webhook = await client.webhooks.register({
+  url: 'https://your-app.com/webhooks',
+  events: ['asset.created']
+});
+```
+
+### Python
+```python
+from noah_enterprise import Client
+
+client = Client(api_key='your-api-key')
+
+# Create subscription
+subscription = client.billing.create_subscription(
+    customer_id='cus_123',
+    plan_id='plan_enterprise'
+)
+
+# Configure SSO
+provider = client.sso.configure_provider(
+    type='saml',
+    provider_id='okta',
+    config={
+        'entry_point': 'https://company.okta.com/sso/saml',
+        'certificate': '...'
+    }
+)
+```
+
+## Deployment
+
+### Kubernetes
+
+```bash
+# Apply configurations
+kubectl apply -f k8s/
+
+# Check status
+kubectl get pods -n production
+
+# View logs
+kubectl logs -f deployment/noah-api -n production
+```
+
+### AWS Infrastructure
+
+```bash
+# Initialize Terraform
+cd terraform
+terraform init
+
+# Plan deployment
+terraform plan -out=tfplan
+
+# Apply changes
+terraform apply tfplan
+
+# Destroy resources
+terraform destroy
+```
+
+### CI/CD Pipeline
+
+The project includes GitHub Actions workflows for:
+- Running tests on pull requests
+- Building and pushing Docker images
+- Deploying to staging on develop branch
+- Deploying to production on main branch
+
+## Monitoring
+
+### Metrics
+
+Key metrics tracked:
+- **API Latency**: p50, p95, p99 percentiles
+- **Error Rate**: 4xx and 5xx responses
+- **Billing**: MRR, churn rate, usage trends
+- **SSO**: Login success rate, provider availability
+- **Webhooks**: Delivery rate, retry rate, latency
+
+### Dashboards
+
+Access Grafana dashboards:
+```
+https://monitoring.noah.app/grafana
+Username: admin
+Password: [from kubectl secret]
+```
+
+Available dashboards:
+- Enterprise Overview
+- Billing Analytics
+- SSO Performance
+- Webhook Delivery
+- Infrastructure Health
+
+### Alerts
+
+Configured alerts:
+- High error rate (>5% for 5 minutes)
+- Billing service down
+- SSO provider unreachable
+- Webhook delivery failures
+- Database connection issues
+- High memory/CPU usage
+
+## Testing
+
+### Unit Tests
+```bash
+npm test
+```
+
+### Integration Tests
+```bash
+npm run test:integration
+```
+
+### Load Testing
+```bash
+npm run test:load
+```
+
+### E2E Tests
+```bash
+npm run test:e2e
+```
+
+## Security
+
+### Best Practices
+- All sensitive data encrypted at rest
+- TLS 1.3 for all communications
+- API rate limiting per customer
+- JWT tokens with short expiry
+- Webhook signatures for authenticity
+- Regular security audits
+
+### Compliance
+- PCI DSS compliant for payment processing
+- SOC 2 Type II certified
+- GDPR compliant data handling
+- HIPAA ready infrastructure
+
+## Troubleshooting
+
+### Common Issues
+
+#### Stripe Webhook Failures
+```bash
+# Check webhook logs
+kubectl logs -f deployment/webhook-processor -n production
+
+# Verify webhook secret
+stripe listen --print-secret
+
+# Test webhook locally
+stripe trigger payment_intent.succeeded
+```
+
+#### SSO Login Issues
+```bash
+# Check SAML response
+kubectl logs -f deployment/noah-api -n production | grep saml
+
+# Validate certificate
+openssl x509 -in cert.pem -text -noout
+
+# Test metadata endpoint
+curl https://api.noah.app/v1/sso/metadata/okta
+```
+
+#### High Memory Usage
+```bash
+# Check memory usage
+kubectl top pods -n production
+
+# Analyze heap dump
+npm run heapdump
+npm run analyze-heap
+
+# Increase memory limits
+kubectl edit deployment noah-api -n production
+```
+
+## Support
+
+### Documentation
+- [API Reference](https://docs.noah.app/api)
+- [Integration Guides](https://docs.noah.app/integrations)
+- [Video Tutorials](https://noah.app/tutorials)
+
+### Community
+- [Discord](https://discord.gg/noah)
+- [Stack Overflow](https://stackoverflow.com/questions/tagged/noah)
+- [GitHub Discussions](https://github.com/noah-app/discussions)
+
+### Enterprise Support
+- Email: enterprise@noah.app
+- Phone: +1 (555) 123-4567
+- SLA: 99.9% uptime guarantee
+- Response time: <2 hours for critical issues
+
+## Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+### Development Setup
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
+
+### Code Style
+- ESLint configuration provided
+- Prettier for formatting
+- Conventional commits
+- 100% test coverage for new features
+
+## License
+
+Copyright © 2024 Noah Systems Inc. All rights reserved.
+
+Licensed under the Enterprise License. See [LICENSE](LICENSE) for details.

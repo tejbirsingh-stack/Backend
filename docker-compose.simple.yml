@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  # PostgreSQL - Core database
+  postgres:
+    image: postgres:16-alpine
+    container_name: noah-postgres-simple
+    environment:
+      POSTGRES_DB: noah_dev
+      POSTGRES_USER: noah_user
+      POSTGRES_PASSWORD: noah_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - noah-network
+
+  # Redis - Caching and sessions
+  redis:
+    image: redis:7-alpine
+    container_name: noah-redis-simple
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass noah_redis_password
+    networks:
+      - noah-network
+
+  # MinIO - S3-compatible storage
+  minio:
+    image: minio/minio:latest
+    container_name: noah-minio-simple
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: noah_minio_user
+      MINIO_ROOT_PASSWORD: noah_minio_password
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - noah-network
+
+  # Web Frontend (Static file server)
+  web:
+    image: nginx:alpine
+    container_name: noah-web-simple
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend-demo.html:/usr/share/nginx/html/index.html:ro
+    networks:
+      - noah-network
+
+volumes:
+  postgres_data:
+  minio_data:
+
+networks:
+  noah-network:
+    driver: bridge

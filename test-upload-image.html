@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Test Image Upload</title>
+</head>
+<body>
+    <h1>Test Image Upload</h1>
+    <button onclick="createAndUploadImage()">Create & Upload Test Image</button>
+    <div id="results"></div>
+    
+    <script>
+        function createAndUploadImage() {
+            const results = document.getElementById('results');
+            results.innerHTML = 'Creating test image...';
+            
+            // Create a canvas
+            const canvas = document.createElement('canvas');
+            canvas.width = 400;
+            canvas.height = 300;
+            const ctx = canvas.getContext('2d');
+            
+            // Draw gradient background
+            const gradient = ctx.createLinearGradient(0, 0, 400, 300);
+            gradient.addColorStop(0, '#667eea');
+            gradient.addColorStop(1, '#764ba2');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 400, 300);
+            
+            // Add text
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 30px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Noah Test Image', 200, 150);
+            ctx.font = '16px Arial';
+            ctx.fillText(new Date().toLocaleString(), 200, 180);
+            
+            // Convert to blob and upload
+            canvas.toBlob(async (blob) => {
+                const file = new File([blob], `test-image-${Date.now()}.png`, { type: 'image/png' });
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                results.innerHTML = 'Uploading...';
+                
+                try {
+                    const response = await fetch('http://localhost:3000/api/media/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const data = await response.json();
+                    results.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                    
+                    if (data.success) {
+                        // Display the uploaded image
+                        const img = document.createElement('img');
+                        img.src = data.asset.url;
+                        img.style.maxWidth = '400px';
+                        img.style.marginTop = '20px';
+                        results.appendChild(img);
+                    }
+                } catch (error) {
+                    results.innerHTML = `Error: ${error.message}`;
+                }
+            });
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,333 @@
+// iOS Native Modules
+
+// VideoCompressor.swift
+import Foundation
+import AVFoundation
+import React
+
+@objc(VideoCompressor)
+class VideoCompressor: NSObject {
+  
+  @objc
+  static func requiresMainQueueSetup() -> Bool {
+    return false
+  }
+  
+  @objc
+  func compressVideo(_ inputPath: String,
+                     outputPath: String,
+                     quality: Float,
+                     resolver resolve: @escaping RCTPromiseResolveBlock,
+                     rejecter reject: @escaping RCTPromiseRejectBlock) {
+    
+    let inputURL = URL(fileURLWithPath: inputPath)
+    let outputURL = URL(fileURLWithPath: outputPath)
+    
+    // Remove existing file if needed
+    try? FileManager.default.removeItem(at: outputURL)
+    
+    let asset = AVAsset(url: inputURL)
+    
+    guard let exportSession = AVAssetExportSession(asset: asset, presetName: determinePreset(quality: quality)) else {
+      reject("EXPORT_FAILED", "Could not create export session", nil)
+      return
+    }
+    
+    exportSession.outputURL = outputURL
+    exportSession.outputFileType = .mp4
+    exportSession.shouldOptimizeForNetworkUse = true
+    
+    // Configure video composition for compression
+    let videoComposition = AVMutableVideoComposition()
+    videoComposition.frameDuration = CMTime(value: 1, timescale: 30) // 30 fps
+    
+    if let videoTrack = asset.tracks(withMediaType: .video).first {
+      let instruction = AVMutableVideoCompositionInstruction()
+      instruction.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+      
+      let transformer = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+      
+      // Adjust resolution based on quality
+      let targetSize = calculateTargetSize(originalSize: videoTrack.naturalSize, quality: quality)
+      let transform = videoTrack.preferredTransform
+      transformer.setTransform(transform, at: .zero)
+      
+      instruction.layerInstructions = [transformer]
+      videoComposition.instructions = [instruction]
+      videoComposition.renderSize = targetSize
+      
+      exportSession.videoComposition = videoComposition
+    }
+    
+    exportSession.exportAsynchronously {
+      switch exportSession.status {
+      case .completed:
+        if let outputURL = exportSession.outputURL {
+          do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+            let fileSize = attributes[.size] as? Int64 ?? 0
+            
+            resolve([
+              "path": outputURL.path,
+              "size": fileSize,
+              "duration": CMTimeGetSeconds(asset.duration)
+            ])
+          } catch {
+            reject("FILE_ERROR", "Could not get file attributes", error)
+          }
+        }
+        
+      case .failed:
+        reject("COMPRESSION_FAILED", "Video compression failed", exportSession.error)
+        
+      case .cancelled:
+        reject("COMPRESSION_CANCELLED", "Video compression was cancelled", nil)
+        
+      default:
+        reject("UNKNOWN_ERROR", "Unknown error occurred", nil)
+      }
+    }
+  }
+  
+  private func determinePreset(quality: Float) -> String {
+    switch quality {
+    case 0..<0.3:
+      return AVAssetExportPresetLowQuality
+    case 0.3..<0.7:
+      return AVAssetExportPresetMediumQuality
+    case 0.7..<0.9:
+      return AVAssetExportPresetHighestQuality
+    default:
+      return AVAssetExportPresetPassthrough
+    }
+  }
+  
+  private func calculateTargetSize(originalSize: CGSize, quality: Float) -> CGSize {
+    let maxDimension: CGFloat = quality > 0.7 ? 1920 : (quality > 0.3 ? 1280 : 854)
+    
+    let aspectRatio = originalSize.width / originalSize.height
+    var targetSize = originalSize
+    
+    if originalSize.width > originalSize.height {
+      if originalSize.width > maxDimension {
+        targetSize.width = maxDimension
+        targetSize.height = maxDimension / aspectRatio
+      }
+    } else {
+      if originalSize.height > maxDimension {
+        targetSize.height = maxDimension
+        targetSize.width = maxDimension * aspectRatio
+      }
+    }
+    
+    return targetSize
+  }
+}
+
+// ImageProcessor.swift
+import UIKit
+import CoreImage
+import React
+
+@objc(ImageProcessor)
+class ImageProcessor: NSObject {
+  
+  private let context = CIContext()
+  
+  @objc
+  static func requiresMainQueueSetup() -> Bool {
+    return false
+  }
+  
+  @objc
+  func applyFilter(_ imagePath: String,
+                   filter filterName: String,
+                   resolver resolve: @escaping RCTPromiseResolveBlock,
+                   rejecter reject: @escaping RCTPromiseRejectBlock) {
+    
+    guard let image = UIImage(contentsOfFile: imagePath),
+          let ciImage = CIImage(image: image) else {
+      reject("INVALID_IMAGE", "Could not load image", nil)
+      return
+    }
+    
+    let filter: CIFilter?
+    
+    switch filterName {
+    case "vintage":
+      filter = CIFilter(name: "CIPhotoEffectInstant")
+    case "noir":
+      filter = CIFilter(name: "CIPhotoEffectNoir")
+    case "chrome":
+      filter = CIFilter(name: "CIPhotoEffectChrome")
+    case "fade":
+      filter = CIFilter(name: "CIPhotoEffectFade")
+    case "mono":
+      filter = CIFilter(name: "CIPhotoEffectMono")
+    case "process":
+      filter = CIFilter(name: "CIPhotoEffectProcess")
+    case "tonal":
+      filter = CIFilter(name: "CIPhotoEffectTonal")
+    case "transfer":
+      filter = CIFilter(name: "CIPhotoEffectTransfer")
+    default:
+      filter = nil
+    }
+    
+    guard let activeFilter = filter else {
+      reject("INVALID_FILTER", "Unknown filter: \(filterName)", nil)
+      return
+    }
+    
+    activeFilter.setValue(ciImage, forKey: kCIInputImageKey)
+    
+    guard let outputImage = activeFilter.outputImage,
+          let cgImage = context.createCGImage(outputImage, from: outputImage.extent) else {
+      reject("FILTER_FAILED", "Could not apply filter", nil)
+      return
+    }
+    
+    let filteredImage = UIImage(cgImage: cgImage)
+    let outputPath = generateOutputPath(extension: "jpg")
+    
+    do {
+      try filteredImage.jpegData(compressionQuality: 0.9)?.write(to: URL(fileURLWithPath: outputPath))
+      resolve(outputPath)
+    } catch {
+      reject("SAVE_FAILED", "Could not save filtered image", error)
+    }
+  }
+  
+  @objc
+  func cropImage(_ imagePath: String,
+                 cropData: [String: Any],
+                 resolver resolve: @escaping RCTPromiseResolveBlock,
+                 rejecter reject: @escaping RCTPromiseRejectBlock) {
+    
+    guard let image = UIImage(contentsOfFile: imagePath),
+          let x = cropData["x"] as? CGFloat,
+          let y = cropData["y"] as? CGFloat,
+          let width = cropData["width"] as? CGFloat,
+          let height = cropData["height"] as? CGFloat else {
+      reject("INVALID_PARAMS", "Invalid crop parameters", nil)
+      return
+    }
+    
+    let cropRect = CGRect(x: x, y: y, width: width, height: height)
+    
+    guard let cgImage = image.cgImage?.cropping(to: cropRect) else {
+      reject("CROP_FAILED", "Could not crop image", nil)
+      return
+    }
+    
+    let croppedImage = UIImage(cgImage: cgImage)
+    let outputPath = generateOutputPath(extension: "jpg")
+    
+    do {
+      try croppedImage.jpegData(compressionQuality: 0.9)?.write(to: URL(fileURLWithPath: outputPath))
+      resolve(outputPath)
+    } catch {
+      reject("SAVE_FAILED", "Could not save cropped image", error)
+    }
+  }
+  
+  @objc
+  func adjustImage(_ imagePath: String,
+                   adjustments: [String: Any],
+                   resolver resolve: @escaping RCTPromiseResolveBlock,
+                   rejecter reject: @escaping RCTPromiseRejectBlock) {
+    
+    guard let image = UIImage(contentsOfFile: imagePath),
+          let ciImage = CIImage(image: image) else {
+      reject("INVALID_IMAGE", "Could not load image", nil)
+      return
+    }
+    
+    var outputImage = ciImage
+    
+    // Apply brightness
+    if let brightness = adjustments["brightness"] as? Double {
+      let brightnessFilter = CIFilter(name: "CIColorControls")!
+      brightnessFilter.setValue(outputImage, forKey: kCIInputImageKey)
+      brightnessFilter.setValue(brightness, forKey: kCIInputBrightnessKey)
+      outputImage = brightnessFilter.outputImage ?? outputImage
+    }
+    
+    // Apply contrast
+    if let contrast = adjustments["contrast"] as? Double {
+      let contrastFilter = CIFilter(name: "CIColorControls")!
+      contrastFilter.setValue(outputImage, forKey: kCIInputImageKey)
+      contrastFilter.setValue(contrast, forKey: kCIInputContrastKey)
+      outputImage = contrastFilter.outputImage ?? outputImage
+    }
+    
+    // Apply saturation
+    if let saturation = adjustments["saturation"] as? Double {
+      let saturationFilter = CIFilter(name: "CIColorControls")!
+      saturationFilter.setValue(outputImage, forKey: kCIInputImageKey)
+      saturationFilter.setValue(saturation, forKey: kCIInputSaturationKey)
+      outputImage = saturationFilter.outputImage ?? outputImage
+    }
+    
+    guard let cgImage = context.createCGImage(outputImage, from: outputImage.extent) else {
+      reject("ADJUSTMENT_FAILED", "Could not apply adjustments", nil)
+      return
+    }
+    
+    let adjustedImage = UIImage(cgImage: cgImage)
+    let outputPath = generateOutputPath(extension: "jpg")
+    
+    do {
+      try adjustedImage.jpegData(compressionQuality: 0.9)?.write(to: URL(fileURLWithPath: outputPath))
+      resolve(outputPath)
+    } catch {
+      reject("SAVE_FAILED", "Could not save adjusted image", error)
+    }
+  }
+  
+  private func generateOutputPath(extension ext: String) -> String {
+    let tempDir = NSTemporaryDirectory()
+    let fileName = "processed_\(UUID().uuidString).\(ext)"
+    return (tempDir as NSString).appendingPathComponent(fileName)
+  }
+}
+
+// Bridging Header - React-Native-Bridging-Header.h
+#import <React/RCTBridgeModule.h>
+#import <React/RCTEventEmitter.h>
+#import <React/RCTViewManager.h>
+
+// Module Registration - VideoCompressor.m
+#import <React/RCTBridgeModule.h>
+
+@interface RCT_EXTERN_MODULE(VideoCompressor, NSObject)
+
+RCT_EXTERN_METHOD(compressVideo:(NSString *)inputPath
+                  outputPath:(NSString *)outputPath
+                  quality:(float)quality
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+@end
+
+// ImageProcessor.m
+#import <React/RCTBridgeModule.h>
+
+@interface RCT_EXTERN_MODULE(ImageProcessor, NSObject)
+
+RCT_EXTERN_METHOD(applyFilter:(NSString *)imagePath
+                  filter:(NSString *)filter
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(cropImage:(NSString *)imagePath
+                  cropData:(NSDictionary *)cropData
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+RCT_EXTERN_METHOD(adjustImage:(NSString *)imagePath
+                  adjustments:(NSDictionary *)adjustments
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+
+@end
