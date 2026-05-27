@@ -346,11 +346,9 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
       // For enhanced media server, we need to delete by filename
       const assetsToDelete = get().assets.filter(asset => assetIds.includes(asset.id));
       await Promise.all(
-        assetsToDelete.map(asset => {
-          // Extract filename from URL or use name
-          const filename = asset.url?.split('/').pop() || asset.name;
-          return axios.delete(`${API_BASE_URL}/media/${filename}`);
-        })
+        assetsToDelete.map((asset) =>
+          axios.delete(`${API_BASE_URL}/media/${encodeURIComponent(asset.id)}`)
+        )
       );
 
       set(state => ({

@@ -69,7 +69,7 @@ class B2StorageService {
         for (const prefixObj of response.CommonPrefixes) {
           const folderPath = prefixObj.Prefix.replace(/\/$/, '');
           items.push({
-            id: uuidv4(),
+            id: folderPath,
             name: path.basename(folderPath),
             key: prefixObj.Prefix,
             size: 0,
@@ -89,8 +89,8 @@ class B2StorageService {
       const files = (response.Contents || []).map(obj => {
         const folderPath = this.extractFolderFromKey(obj.Key, prefix);
         return {
-          id: uuidv4(),
-          name: path.basename(obj.Key),
+          id: path.basename(obj.Key),
+          name: path.basename(obj.Key).replace(/^\d+-/, ""),
           key: obj.Key,
           size: obj.Size,
           lastModified: obj.LastModified,

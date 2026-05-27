@@ -42,6 +42,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     folders: storeFolders,
     isLoading,
     fetchAssets,
+    deleteAssets,
     fetchFolderAssets,
     searchAssets,
     storageSource,
@@ -202,22 +203,16 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
 
   const handleDeleteSelected = async () => {
     const assetIds = Array.from(selectedAssets);
+    if (assetIds.length === 0) return;
     try {
-      await Promise.all(
-        assetIds.map(id =>
-          fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3000/api'}/media/${id}`, { method: 'DELETE' })
-        )
-      );
-
-      // Optimistically update the UI
-      const newAssets = displayAssets.filter((asset: any) => !selectedAssets.has(asset.id));
-      // This assumes you have a way to update the assets in your store
-      // For now, let's just clear the selection
+      await deleteAssets(assetIds);
       setSelectedAssets(new Set());
-
-      // You would typically refetch the assets here
-      // fetchAssets();
-
+      // Reload list from API so UI matches disk without a full page refresh
+      if (isSearchMode && searchQuery) {
+        await searchAssets(searchQuery);
+      } else {
+        await fetchAssets(true);
+      }
     } catch (error) {
       console.error('Failed to delete assets:', error);
     }

@@ -229,7 +229,12 @@ module.exports = function (fastify, opts, done) {
     const mimeType = asset.mimeType || inferMimeType(asset.name || "");
     const normalizedType = normalizeAssetType(mimeType);
     const uploadDate = asset.uploadDate || asset.createdAt || new Date().toISOString();
-    const thumbnail = normalizedType === "image" ? asset.url : asset.thumbnail || null;
+    const streamUrl =
+      asset.url || (asset.id ? `/api/media/${encodeURIComponent(asset.id)}/stream` : null);
+    const thumbnail =
+      normalizedType === "image"
+        ? streamUrl
+        : asset.thumbnail || null;
 
     return {
       id: asset.id,
@@ -237,12 +242,74 @@ module.exports = function (fastify, opts, done) {
       type: normalizedType,
       size: asset.size,
       uploadDate,
-      url: asset.url,
+      url: streamUrl,
       thumbnail,
       tags: asset.tags || [],
       metadata: asset.metadata || {},
       compressionStatus: asset.compressionStatus || "completed",
     };
+  }
+
+  const fs = require("fs");
+  const path = require("path");
+
+  function getUploadsDir() {
+    return path.join(__dirname, "../../uploads");
+  }
+
+  /** Find stored filename on disk from id or display name */
+  function resolveMediaFilename(id) {
+    const uploadsDir = getUploadsDir();
+    if (!fs.existsSync(uploadsDir)) return null;
+
+    const files = fs.readdirSync(uploadsDir);
+    const matched = files.find((filename) => {
+      if (filename === id) return true;
+      const originalName = filename.replace(/^\d+-/, "");
+      return originalName === id;
+    });
+    return matched || null;
+  }
+
+  function resolveMediaFilePath(id) {
+    const filename = resolveMediaFilename(id);
+    if (!filename) return null;
+    return path.join(getUploadsDir(), filename);
+  }
+
+  /**
+   * Stream a file to the client (used by video/audio players).
+   * Supports HTTP Range requests so the browser can seek in long videos.
+   */
+  async function serveMediaFile(request, reply, filePath, options = {}) {
+    const { download = false, displayName } = options;
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const mimeType = inferMimeType(path.basename(filePath));
+    const name = displayName || path.basename(filePath);
+
+    reply.header("Accept-Ranges", "bytes");
+    reply.header(
+      "Content-Disposition",
+      download ? `attachment; filename="${name}"` : "inline"
+    );
+    reply.type(mimeType);
+
+    const range = request.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = end - start + 1;
+
+      reply.code(206);
+      reply.header("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+      reply.header("Content-Length", chunkSize);
+      return reply.send(fs.createReadStream(filePath, { start, end }));
+    }
+
+    reply.header("Content-Length", fileSize);
+    return reply.send(fs.createReadStream(filePath));
   }
 
   // Get media assets - return real uploaded files
@@ -280,8 +347,10 @@ module.exports = function (fastify, opts, done) {
             mimeType,
             size: stats.size,
             uploadDate: stats.mtime.toISOString(),
-            url: `/uploads/${filename}`,
-            thumbnail: mimeType.startsWith("image/") ? `/uploads/${filename}` : null,
+            url: `/api/media/${encodeURIComponent(filename)}/stream`,
+            thumbnail: mimeType.startsWith("image/")
+              ? `/api/media/${encodeURIComponent(filename)}/stream`
+              : null,
             tags: [],
             metadata: {},
             compressionStatus: "completed",
@@ -461,9 +530,9 @@ module.exports = function (fastify, opts, done) {
               mimeType,
               size: stats.size,
               uploadDate: stats.mtime.toISOString(),
-              url: `/uploads/${filename}`,
+              url: `/api/media/${encodeURIComponent(filename)}/stream`,
               thumbnail: mimeType.startsWith("image/")
-                ? `/uploads/${filename}`
+                ? `/api/media/${encodeURIComponent(filename)}/stream`
                 : null,
               tags: [],
               metadata: {},
@@ -501,62 +570,98 @@ module.exports = function (fastify, opts, done) {
     }
   });
 
-  // Get single media asset
-  fastify.get("/:id", async (request, reply) => {
+  // Stream file for preview/playback (video player uses this URL)
+  fastify.get("/:filename/stream", async (request, reply) => {
     try {
-      const fs = require("fs");
-      const path = require("path");
-      const { id } = request.params;
-      const uploadsDir = path.join(__dirname, "../../uploads");
+      const { filename } = request.params;
+      const filePath = resolveMediaFilePath(filename);
 
-      if (!fs.existsSync(uploadsDir)) {
-        return reply.code(404).send({
-          success: false,
-          error: "File not found",
-        });
+      if (!filePath || !fs.existsSync(filePath)) {
+        return reply.code(404).send({ success: false, error: "File not found" });
       }
 
-      const files = fs.readdirSync(uploadsDir);
-
-      // Try exact filename match first, then original name match (timestamp stripped)
-      const matchedFile = files.find((filename) => {
-        if (filename === id) return true;
-        const originalName = filename.replace(/^\d+-/, "");
-        return originalName === id;
-      });
-
-      if (!matchedFile) {
-        return reply.code(404).send({
-          success: false,
-          error: "File not found",
-        });
-      }
-
-      const filepath = path.join(uploadsDir, matchedFile);
-      const stats = fs.statSync(filepath);
-      const mimeType = inferMimeType(matchedFile);
-
-      const asset = toFrontendAssetShape({
-        id: matchedFile,
-        name: matchedFile.replace(/^\d+-/, ""),
-        mimeType,
-        size: stats.size,
-        uploadDate: stats.mtime.toISOString(),
-        url: `/api/uploads/${matchedFile}`,
-        thumbnail: mimeType.startsWith("image/") ? `/api/uploads/${matchedFile}` : null,
-        tags: [],
-        metadata: {},
-        compressionStatus: "completed",
-      });
-
-      return reply.send({
-        success: true,
-        asset,
+      const displayName = filename.replace(/^\d+-/, "");
+      return serveMediaFile(request, reply, filePath, {
+        download: false,
+        displayName,
       });
     } catch (error) {
       return reply.code(500).send({
         success: false,
-        error: "Failed to retrieve media asset",
+        error: "Failed to stream file",
+        message: error.message,
+      });
+    }
+  });
+
+  // Download file (browser saves to disk)
+  fastify.get("/:filename/download", async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      const filePath = resolveMediaFilePath(filename);
+
+      if (!filePath || !fs.existsSync(filePath)) {
+        return reply.code(404).send({ success: false, error: "File not found" });
+      }
+
+      const displayName = filename.replace(/^\d+-/, "");
+      return serveMediaFile(request, reply, filePath, {
+        download: true,
+        displayName,
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to download file",
+        message: error.message,
+      });
+    }
+  });
+
+  // GET /api/media/:filename — file bytes for players, or ?meta=true for JSON info
+  fastify.get("/:filename", async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      const wantsMeta =
+        request.query.meta === "true" || request.query.meta === "1";
+
+      if (wantsMeta) {
+        const storedName = resolveMediaFilename(filename);
+        const filePath = resolveMediaFilePath(filename);
+        if (!filePath || !fs.existsSync(filePath)) {
+          return reply.code(404).send({ success: false, error: "File not found" });
+        }
+
+        const stats = fs.statSync(filePath);
+        const mimeType = inferMimeType(storedName || filename);
+        const asset = toFrontendAssetShape({
+          id: storedName || filename,
+          name: (storedName || filename).replace(/^\d+-/, ""),
+          mimeType,
+          size: stats.size,
+          uploadDate: stats.mtime.toISOString(),
+          tags: [],
+          metadata: {},
+          compressionStatus: "completed",
+        });
+
+        return reply.send({ success: true, asset });
+      }
+
+      const filePath = resolveMediaFilePath(filename);
+      if (!filePath || !fs.existsSync(filePath)) {
+        return reply.code(404).send({ success: false, error: "File not found" });
+      }
+
+      const displayName = filename.replace(/^\d+-/, "");
+      return serveMediaFile(request, reply, filePath, {
+        download: false,
+        displayName,
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to serve file",
         message: error.message,
       });
     }
@@ -577,7 +682,7 @@ module.exports = function (fastify, opts, done) {
       }
 
       const parts = request.parts();
-      const uploadedFiles = [];
+      const tempFiles = [];
       const uploadOptions = {
         destination: "both",
       };
@@ -591,43 +696,13 @@ module.exports = function (fastify, opts, done) {
           await pipeline(part.file, fs.createWriteStream(filepath));
 
           const stats = fs.statSync(filepath);
-          let b2Result = null;
-
-          if ((uploadOptions.destination === "b2" || uploadOptions.destination === "both") && b2Storage.isEnabled()) {
-            try {
-              const b2Key = `uploads/${filename}`;
-              b2Result = await b2Storage.uploadFile(filepath, b2Key, {
-                originalName: part.filename,
-              });
-            } catch (b2Error) {
-              console.error("B2 upload failed:", b2Error.message);
-              if (uploadOptions.destination === "b2") {
-                throw new Error(`B2 upload failed: ${b2Error.message}`);
-              }
-            }
-          }
-
-          const fileInfo = toFrontendAssetShape({
-            id: filename,
-            name: part.filename,
-            mimeType: part.mimetype,
+          tempFiles.push({
+            filepath,
+            filename,
+            originalName: part.filename,
+            mimetype: part.mimetype,
             size: stats.size,
-            uploadDate: new Date().toISOString(),
-            url: `/api/uploads/${filename}`,
-            thumbnail: part.mimetype.startsWith("image/") ? `/api/uploads/${filename}` : null,
-            tags: [],
-            metadata: {},
-            compressionStatus: "completed",
           });
-
-          fileInfo.storageLocation = b2Result ? "both" : "local";
-          fileInfo.b2Url = b2Result?.url || null;
-          fileInfo.b2Key = b2Result?.key || null;
-
-          uploadedFiles.push(fileInfo);
-
-          // Log upload success
-          console.log(`File uploaded: ${part.filename} (${stats.size} bytes)`);
         } else {
           if (part.fieldname === "destination" && part.value) {
             const destination = String(part.value).toLowerCase();
@@ -638,11 +713,62 @@ module.exports = function (fastify, opts, done) {
         }
       }
 
-      if (uploadedFiles.length === 0) {
+      if (tempFiles.length === 0) {
         return reply.code(400).send({
           success: false,
           message: "No files uploaded",
         });
+      }
+
+      const uploadedFiles = [];
+      for (const file of tempFiles) {
+        let b2Result = null;
+
+        if ((uploadOptions.destination === "b2" || uploadOptions.destination === "both") && b2Storage.isEnabled()) {
+          try {
+            const b2Key = `uploads/${file.filename}`;
+            b2Result = await b2Storage.uploadFile(file.filepath, b2Key, {
+              originalName: file.originalName,
+            });
+
+            // If strictly B2, delete local file
+            if (uploadOptions.destination === "b2" && b2Result) {
+              fs.unlinkSync(file.filepath);
+              console.log(`Local file deleted after upload (B2-only mode)`);
+            }
+          } catch (b2Error) {
+            console.error("B2 upload failed:", b2Error.message);
+            if (uploadOptions.destination === "b2") {
+              throw new Error(`B2 upload failed: ${b2Error.message}`);
+            }
+          }
+        }
+
+        const fileInfo = toFrontendAssetShape({
+          id: file.filename,
+          name: file.originalName,
+          mimeType: file.mimetype,
+          size: file.size,
+          uploadDate: new Date().toISOString(),
+          url: uploadOptions.destination === "b2" && b2Result?.url 
+            ? b2Result.url 
+            : `/api/media/${encodeURIComponent(file.filename)}/stream`,
+          thumbnail: file.mimetype.startsWith("image/")
+            ? (uploadOptions.destination === "b2" && b2Result?.url ? b2Result.url : `/api/media/${encodeURIComponent(file.filename)}/stream`)
+            : null,
+          tags: [],
+          metadata: {},
+          compressionStatus: "completed",
+        });
+
+        fileInfo.storageLocation = b2Result ? (uploadOptions.destination === "b2" ? "b2" : "both") : "local";
+        fileInfo.b2Url = b2Result?.url || null;
+        fileInfo.b2Key = b2Result?.key || null;
+
+        uploadedFiles.push(fileInfo);
+
+        // Log upload success
+        console.log(`File uploaded: ${file.originalName} (${file.size} bytes)`);
       }
 
       reply.send({
@@ -672,24 +798,45 @@ module.exports = function (fastify, opts, done) {
   // Delete media asset
   fastify.delete("/:filename", async (request, reply) => {
     try {
-      const fs = require("fs");
-      const path = require("path");
       const { filename } = request.params;
-      const uploadsDir = path.join(__dirname, "../../uploads");
-      const filePath = path.join(uploadsDir, filename);
+      
+      let deletedFromLocal = false;
+      let deletedFromB2 = false;
 
-      if (!fs.existsSync(filePath)) {
-        return reply.code(404).send({
-          success: false,
-          error: "File not found",
-        });
+      // 1. Try deleting from local
+      const filePath = resolveMediaFilePath(filename);
+      if (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        deletedFromLocal = true;
       }
 
-      fs.unlinkSync(filePath);
+      // 2. Try deleting from B2
+      if (b2Storage.isEnabled()) {
+        try {
+          // B2 keys usually start with 'uploads/'
+          const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+          // Delete from B2
+          await b2Storage.deleteFile(cleanKey);
+          deletedFromB2 = true;
+        } catch (b2Error) {
+          console.warn(`Failed to delete key ${filename} from B2:`, b2Error.message);
+        }
+      }
+
+      if (!deletedFromLocal && !deletedFromB2) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found on local disk or B2 storage",
+        });
+      }
 
       return reply.send({
         success: true,
         message: "File deleted successfully",
+        deletedFrom: {
+          local: deletedFromLocal,
+          b2: deletedFromB2,
+        }
       });
     } catch (error) {
       return reply.code(500).send({
@@ -698,6 +845,7 @@ module.exports = function (fastify, opts, done) {
       });
     }
   });
+
 
   done();
 };

@@ -124,8 +124,18 @@ export default function MediaViewer({
         <div className="flex-1 flex items-center justify-center max-h-full">
           {isVideo ? (
             <EnhancedProfessionalVideoPlayer
-              src={asset.url.startsWith('http') ? asset.url : `/uploads${asset.url}`}
-              poster={asset.thumbnail ? (asset.thumbnail.startsWith('http') ? asset.thumbnail : `/uploads${asset.thumbnail}`) : undefined}
+             src={
+                asset.url.startsWith('http') || asset.url.startsWith('/api/')
+                  ? asset.url
+                  : `/uploads${asset.url.startsWith('/') ? asset.url : `/${asset.url}`}`
+              }
+              poster={
+                asset.thumbnail
+                  ? asset.thumbnail.startsWith('http') || asset.thumbnail.startsWith('/api/')
+                    ? asset.thumbnail
+                    : `/uploads${asset.thumbnail.startsWith('/') ? asset.thumbnail : `/${asset.thumbnail}`}`
+                  : undefined
+              }
               title={asset.name}
               assetDetails={{
                 id: asset.id,
