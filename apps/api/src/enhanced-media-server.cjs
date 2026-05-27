@@ -65,7 +65,7 @@ const b2SyncService = new B2SyncService({
   region: process.env.B2_REGION,
   uploadsDir: path.resolve(__dirname, "../../../uploads"),
   syncInterval: 300000, // 5 minutes
-  autoSync: process.env.B2_AUTO_SYNC !== 'false' // Enable by default if B2 is configured
+  autoSync: process.env.B2_AUTO_SYNC === 'true' // Disable by default to respect 'local' uploads
 });
 
 // CORS configuration for both development and production
@@ -192,7 +192,7 @@ async function getFileMetadata(filePath, filename, useRelativeUrls = false) {
     const urlPrefix = useRelativeUrls ? "" : baseUrl;
 
     return {
-      id: uuidv4(),
+      id: filename,
       name: filename,
       type: type,
       size: stats.size,
@@ -204,6 +204,7 @@ async function getFileMetadata(filePath, filename, useRelativeUrls = false) {
       tags: [],
       metadata: {},
       compressionStatus: "completed",
+      storageLocation: "local",
     };
   } catch (error) {
     console.error("Error getting file metadata:", error);
@@ -1043,13 +1044,39 @@ app.get("/api/media", async (req, res) => {
         };
       });
       
-      if (source === 'b2') {
+      if (source === 'all') {
+        const mergedAssets = new Map();
+        for (const asset of assets) {
+          mergedAssets.set(asset.id, { ...asset, storageLocation: 'local' });
+        }
+        for (const asset of b2Assets) {
+          if (mergedAssets.has(asset.id)) {
+            const existing = mergedAssets.get(asset.id);
+            mergedAssets.set(asset.id, {
+              ...existing,
+              storageLocation: 'both',
+              b2Url: asset.url,
+              b2Key: asset.metadata?.key || asset.key || asset.id,
+            });
+          } else {
+            mergedAssets.set(asset.id, { ...asset, storageLocation: 'b2' });
+          }
+        }
+        assets = Array.from(mergedAssets.values());
+        
+        const mergedFolders = new Map();
+        for (const folder of folders) {
+          mergedFolders.set(folder.path, folder);
+        }
+        for (const folder of transformedB2Folders) {
+          mergedFolders.set(folder.path, folder);
+        }
+        folders = Array.from(mergedFolders.values());
+      } else if (source === 'b2') {
         folders = transformedB2Folders;
-      } else {
-        folders = [...folders, ...transformedB2Folders];
+        assets = b2Assets;
       }
       
-      assets = [...assets, ...b2Assets];
       console.log(`☁️ Added ${b2Assets.length} B2 assets and ${b2Folders.length} folders`);
     }
 
@@ -1414,8 +1441,38 @@ app.get("/api/media/folder", async (req, res) => {
           };
         });
         
-        assets = [...assets, ...b2Assets];
-        folders = [...folders, ...b2Folders];
+        if (source === 'all') {
+          const mergedAssets = new Map();
+          for (const asset of assets) {
+            mergedAssets.set(asset.id, { ...asset, storageLocation: 'local' });
+          }
+          for (const asset of b2Assets) {
+            if (mergedAssets.has(asset.id)) {
+              const existing = mergedAssets.get(asset.id);
+              mergedAssets.set(asset.id, {
+                ...existing,
+                storageLocation: 'both',
+                b2Url: asset.url,
+                b2Key: asset.metadata?.key || asset.key || asset.id,
+              });
+            } else {
+              mergedAssets.set(asset.id, { ...asset, storageLocation: 'b2' });
+            }
+          }
+          assets = Array.from(mergedAssets.values());
+          
+          const mergedFolders = new Map();
+          for (const folder of folders) {
+            mergedFolders.set(folder.path, folder);
+          }
+          for (const folder of b2Folders) {
+            mergedFolders.set(folder.path, folder);
+          }
+          folders = Array.from(mergedFolders.values());
+        } else if (source === 'b2') {
+          assets = b2Assets;
+          folders = b2Folders;
+        }
         
         console.log(`☁️ Added ${b2Assets.length} B2 assets and ${b2Folders.length} folders`);
       } catch (error) {
@@ -1483,7 +1540,28 @@ app.get("/api/media/search", async (req, res) => {
       const b2Files = await b2Storage.searchFiles(query);
       const b2Assets = await b2Storage.transformToMediaAssets(b2Files);
       
-      assets = [...assets, ...b2Assets];
+      if (source === 'all') {
+        const mergedAssets = new Map();
+        for (const asset of assets) {
+          mergedAssets.set(asset.id, { ...asset, storageLocation: 'local' });
+        }
+        for (const asset of b2Assets) {
+          if (mergedAssets.has(asset.id)) {
+            const existing = mergedAssets.get(asset.id);
+            mergedAssets.set(asset.id, {
+              ...existing,
+              storageLocation: 'both',
+              b2Url: asset.url,
+              b2Key: asset.metadata?.key || asset.key || asset.id,
+            });
+          } else {
+            mergedAssets.set(asset.id, { ...asset, storageLocation: 'b2' });
+          }
+        }
+        assets = Array.from(mergedAssets.values());
+      } else if (source === 'b2') {
+        assets = b2Assets;
+      }
       console.log(`☁️ Found ${b2Assets.length} B2 assets`);
     }
     

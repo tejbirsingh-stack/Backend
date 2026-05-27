@@ -424,7 +424,25 @@ module.exports = function (fastify, opts, done) {
             ]
           : [];
 
-      let allAssets = [...localAssets, ...b2Assets, ...mockAssets];
+      const combinedAssets = [...localAssets, ...b2Assets, ...mockAssets];
+      const deduplicatedAssets = [];
+      const seenIds = new Set();
+      
+      for (const asset of combinedAssets) {
+        if (!seenIds.has(asset.id)) {
+          seenIds.add(asset.id);
+          
+          const isLocal = localAssets.some(l => l.id === asset.id);
+          const isB2 = b2Assets.some(b => b.id === asset.id);
+          if (isLocal && isB2) {
+            asset.storageLocation = "both";
+          }
+          
+          deduplicatedAssets.push(asset);
+        }
+      }
+      
+      let allAssets = deduplicatedAssets;
 
       // Apply search filter
       if (query) {
@@ -690,24 +708,59 @@ module.exports = function (fastify, opts, done) {
       for await (const part of parts) {
         if (part.file) {
           const filename = `${Date.now()}-${part.filename}`;
-          const filepath = path.join(uploadsDir, filename);
+          
+          if (uploadOptions.destination === "b2" && b2Storage.isEnabled()) {
+            // Direct stream to B2 without touching local disk
+            console.log(`Streaming directly to B2: ${filename}`);
+            let size = 0;
+            part.file.on('data', (chunk) => {
+              size += chunk.length;
+            });
+            
+            const b2Key = `uploads/${filename}`;
+            try {
+              const b2Result = await b2Storage.uploadStream(part.file, b2Key, part.mimetype, {
+                originalName: part.filename,
+              });
+              
+              tempFiles.push({
+                isDirectB2: true,
+                filename,
+                originalName: part.filename,
+                mimetype: part.mimetype,
+                size, // calculated from stream chunks
+                b2Result
+              });
+            } catch (err) {
+              console.error("Direct B2 stream failed:", err);
+              throw new Error(`B2 upload failed: ${err.message}`);
+            }
+          } else {
+            // Save to local disk first
+            const filepath = path.join(uploadsDir, filename);
+            await pipeline(part.file, fs.createWriteStream(filepath));
 
-          // Save the file
-          await pipeline(part.file, fs.createWriteStream(filepath));
-
-          const stats = fs.statSync(filepath);
-          tempFiles.push({
-            filepath,
-            filename,
-            originalName: part.filename,
-            mimetype: part.mimetype,
-            size: stats.size,
-          });
+            const stats = fs.statSync(filepath);
+            tempFiles.push({
+              isDirectB2: false,
+              filepath,
+              filename,
+              originalName: part.filename,
+              mimetype: part.mimetype,
+              size: stats.size,
+            });
+          }
         } else {
-          if (part.fieldname === "destination" && part.value) {
-            const destination = String(part.value).toLowerCase();
+          if (part.fieldname === "destination") {
+            // fastify-multipart gives the value on part.value, sometimes as an object if JSON
+            let val = part.value;
+            if (typeof val === 'object' && val !== null) {
+               val = val.value || JSON.stringify(val);
+            }
+            const destination = String(val).toLowerCase().trim();
             if (["local", "b2", "both"].includes(destination)) {
               uploadOptions.destination = destination;
+              console.log(`Upload destination set to: ${destination}`);
             }
           }
         }
@@ -722,23 +775,29 @@ module.exports = function (fastify, opts, done) {
 
       const uploadedFiles = [];
       for (const file of tempFiles) {
-        let b2Result = null;
+        let b2Result = file.b2Result || null;
 
-        if ((uploadOptions.destination === "b2" || uploadOptions.destination === "both") && b2Storage.isEnabled()) {
+        if (!file.isDirectB2 && (uploadOptions.destination === "b2" || uploadOptions.destination === "both") && b2Storage.isEnabled()) {
           try {
             const b2Key = `uploads/${file.filename}`;
             b2Result = await b2Storage.uploadFile(file.filepath, b2Key, {
               originalName: file.originalName,
             });
 
-            // If strictly B2, delete local file
+            // If strictly B2 (but landed here for some reason), delete local file
             if (uploadOptions.destination === "b2" && b2Result) {
-              fs.unlinkSync(file.filepath);
-              console.log(`Local file deleted after upload (B2-only mode)`);
+              try {
+                fs.unlinkSync(file.filepath);
+                console.log(`Local file deleted after upload (B2-only mode fallback): ${file.filepath}`);
+              } catch (unlinkErr) {
+                console.error(`Failed to delete local file ${file.filepath}:`, unlinkErr);
+              }
             }
           } catch (b2Error) {
             console.error("B2 upload failed:", b2Error.message);
             if (uploadOptions.destination === "b2") {
+              // Try to delete local file even on B2 failure if strictly B2? 
+              // Usually we want to keep it or handle it, but let's throw.
               throw new Error(`B2 upload failed: ${b2Error.message}`);
             }
           }

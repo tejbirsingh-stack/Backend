@@ -20,37 +20,37 @@ interface UploadModalProps {
 export default function UploadModal({ isOpen, onClose, onUploadComplete }: UploadModalProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadQueue, setUploadQueue] = useState<UploadFile[]>([]);
-  const [uploadDestination, setUploadDestination] = useState<'local' | 'b2' | 'both'>('both');
+  const [uploadDestination, setUploadDestination] = useState<'local' | 'b2' | 'both'>('b2');
   const { fetchAssets } = useMediaStore();
 
-  const handleDragOver = useCallback((e: React.DragEvent) => {
+  const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
-  }, []);
+  };
 
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
+  const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     if (e.currentTarget === e.target) {
       setIsDragging(false);
     }
-  }, []);
+  };
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    
+
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       addFilesToQueue(files);
     }
-  }, []);
+  };
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length > 0) {
       addFilesToQueue(files);
     }
-  }, []);
+  };
 
   const addFilesToQueue = (files: File[]) => {
     const newUploads: UploadFile[] = files.map(file => ({
@@ -59,9 +59,9 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
       status: 'pending' as const,
       id: `upload-${Date.now()}-${Math.random()}`
     }));
-    
+
     setUploadQueue(prev => [...prev, ...newUploads]);
-    
+
     // Start uploading each file
     newUploads.forEach(upload => {
       uploadFile(upload);
@@ -70,38 +70,38 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
 
   const uploadFile = async (upload: UploadFile) => {
     // Update status to uploading
-    setUploadQueue(prev => prev.map(u => 
+    setUploadQueue(prev => prev.map(u =>
       u.id === upload.id ? { ...u, status: 'uploading' } : u
     ));
 
     try {
       const formData = new FormData();
-      formData.append('file', upload.file);
       formData.append('destination', uploadDestination);
-      
+      formData.append('file', upload.file);
+
       // Upload to the API
       const response = await axios.post('/api/media/upload', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
         onUploadProgress: (progressEvent) => {
-          const percentCompleted = progressEvent.total 
+          const percentCompleted = progressEvent.total
             ? Math.round((progressEvent.loaded * 100) / progressEvent.total)
             : 0;
-          
-          setUploadQueue(prev => prev.map(u => 
+
+          setUploadQueue(prev => prev.map(u =>
             u.id === upload.id ? { ...u, progress: percentCompleted } : u
           ));
         }
       });
 
       // Mark as complete
-      setUploadQueue(prev => prev.map(u => 
+      setUploadQueue(prev => prev.map(u =>
         u.id === upload.id ? { ...u, status: 'complete', progress: 100 } : u
       ));
 
       console.log('✅ File uploaded successfully:', upload.file.name);
-      
+
       // Refresh media assets after successful upload
       setTimeout(() => {
         fetchAssets(true);
@@ -110,11 +110,11 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
 
     } catch (error: any) {
       console.error('❌ Upload error:', error);
-      
-      setUploadQueue(prev => prev.map(u => 
-        u.id === upload.id ? { 
-          ...u, 
-          status: 'error', 
+
+      setUploadQueue(prev => prev.map(u =>
+        u.id === upload.id ? {
+          ...u,
+          status: 'error',
           error: error.response?.data?.error || error.message || 'Upload failed'
         } : u
       ));
@@ -215,8 +215,8 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
             borderRadius: '12px',
             padding: '48px 32px',
             textAlign: 'center',
-            background: isDragging 
-              ? 'rgba(79, 172, 254, 0.05)' 
+            background: isDragging
+              ? 'rgba(79, 172, 254, 0.05)'
               : 'rgba(255, 255, 255, 0.02)',
             transition: 'all 0.3s ease',
             cursor: 'pointer',
@@ -224,7 +224,7 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
             marginBottom: uploadQueue.length > 0 ? '24px' : '0'
           }}
         >
-          <Upload size={56} style={{ 
+          <Upload size={56} style={{
             color: isDragging ? '#4facfe' : 'rgba(79, 172, 254, 0.6)',
             marginBottom: '20px',
             margin: '0 auto 20px'
@@ -244,7 +244,7 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
           }}>
             or click to browse your computer
           </p>
-          
+
           <input
             type="file"
             multiple
@@ -259,7 +259,7 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
               cursor: 'pointer'
             }}
           />
-          
+
           <button
             style={{
               padding: '12px 32px',
@@ -301,8 +301,8 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
           borderRadius: '8px',
           border: '1px solid rgba(79, 172, 254, 0.2)'
         }}>
-          <span style={{ 
-            color: 'rgba(255, 255, 255, 0.8)', 
+          <span style={{
+            color: 'rgba(255, 255, 255, 0.8)',
             fontSize: '14px',
             fontWeight: '500'
           }}>
@@ -313,8 +313,8 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
               onClick={() => setUploadDestination('local')}
               style={{
                 padding: '8px 16px',
-                background: uploadDestination === 'local' 
-                  ? 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' 
+                background: uploadDestination === 'local'
+                  ? 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'
                   : 'rgba(255, 255, 255, 0.1)',
                 border: '1px solid rgba(79, 172, 254, 0.3)',
                 borderRadius: '6px',
@@ -330,8 +330,8 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
               onClick={() => setUploadDestination('b2')}
               style={{
                 padding: '8px 16px',
-                background: uploadDestination === 'b2' 
-                  ? 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' 
+                background: uploadDestination === 'b2'
+                  ? 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'
                   : 'rgba(255, 255, 255, 0.1)',
                 border: '1px solid rgba(79, 172, 254, 0.3)',
                 borderRadius: '6px',
@@ -347,8 +347,8 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
               onClick={() => setUploadDestination('both')}
               style={{
                 padding: '8px 16px',
-                background: uploadDestination === 'both' 
-                  ? 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)' 
+                background: uploadDestination === 'both'
+                  ? 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'
                   : 'rgba(255, 255, 255, 0.1)',
                 border: '1px solid rgba(79, 172, 254, 0.3)',
                 borderRadius: '6px',
@@ -442,10 +442,10 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
                 )}
               </div>
             </div>
-            
+
             <div style={{ maxHeight: '300px', overflow: 'auto' }}>
               {uploadQueue.map(upload => (
-                <div key={upload.id} style={{ 
+                <div key={upload.id} style={{
                   marginBottom: '12px',
                   padding: '12px',
                   background: 'rgba(255, 255, 255, 0.03)',
@@ -514,14 +514,14 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
                     <div style={{
                       width: `${upload.progress}%`,
                       height: '100%',
-                      background: upload.status === 'error' 
-                        ? '#ef4444' 
+                      background: upload.status === 'error'
+                        ? '#ef4444'
                         : upload.status === 'complete'
-                        ? '#34d399'
-                        : 'linear-gradient(90deg, #4facfe 0%, #00f2fe 100%)',
+                          ? '#34d399'
+                          : 'linear-gradient(90deg, #4facfe 0%, #00f2fe 100%)',
                       transition: 'width 0.3s ease',
-                      boxShadow: upload.status === 'uploading' 
-                        ? '0 0 10px rgba(79, 172, 254, 0.5)' 
+                      boxShadow: upload.status === 'uploading'
+                        ? '0 0 10px rgba(79, 172, 254, 0.5)'
                         : 'none'
                     }} />
                   </div>

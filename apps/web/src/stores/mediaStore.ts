@@ -99,18 +99,18 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
   setStorageSource: (source) => {
     set({ storageSource: source });
     // Fetch assets from the new source
-    const { currentFolder, isSearchMode, searchQuery } = get();
+    const { isSearchMode, searchQuery } = get();
     if (isSearchMode && searchQuery) {
       get().searchAssets(searchQuery, source);
     } else {
-      get().fetchFolderAssets(currentFolder, true);
+      get().fetchAssets(true, source);
     }
   },
 
   setCurrentFolder: (folder) => {
     set({ currentFolder: folder, isSearchMode: false });
-    // Fetch assets for the new folder
-    get().fetchFolderAssets(folder, true);
+    // Fetch assets
+    get().fetchAssets(true);
   },
 
   fetchAssets: async (forceRefresh = false, source) => {
@@ -446,8 +446,8 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
 
   searchAssets: async (query: string, source) => {
     if (!query.trim()) {
-      // If query is empty, go back to current folder view
-      get().fetchFolderAssets(get().currentFolder, true);
+      // If query is empty, go back to all assets view
+      get().fetchAssets(true);
       return;
     }
 
@@ -503,8 +503,8 @@ export const useMediaStore = create<MediaStore>((set, get) => ({
     if (query.trim()) {
       get().searchAssets(query);
     } else {
-      // Return to folder view if query is cleared
-      get().fetchFolderAssets(get().currentFolder, true);
+      // Return to all assets view if query is cleared
+      get().fetchAssets(true);
     }
   },
 

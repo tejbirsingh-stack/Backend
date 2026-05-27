@@ -92,7 +92,7 @@ class HealthChecker {
 // Configuration
 const config = {
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
-  MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '104857600', 10),
+  MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '5368709120', 10), // Default 5GB
   DATABASE_URL: process.env.DATABASE_URL || 'postgresql://noah_user:noah_dev_password@localhost:5432/noah_dev',
   REDIS_SENTINEL_HOST: process.env.REDIS_SENTINEL_HOST || 'localhost',
   REDIS_SENTINEL_PORT: parseInt(process.env.REDIS_SENTINEL_PORT || '26379', 10),

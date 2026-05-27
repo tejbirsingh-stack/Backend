@@ -77,7 +77,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
     if (isSearchMode && searchQuery) {
       await searchAssets(searchQuery);
     } else {
-      await fetchFolderAssets(currentFolder, true); // Force refresh current folder
+      await fetchAssets(true); // Force refresh all assets
     }
     setIsRefreshing(false);
   };
@@ -318,7 +318,7 @@ export default function MediaBrowser({ selectedAsset: externalSelectedAsset, onS
                     if (newQuery.trim()) {
                       searchAssets(newQuery);
                     } else {
-                      fetchFolderAssets(currentFolder, true);
+                      fetchAssets(true);
                     }
                   }}
                   className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 focus:border-purple-500 focus:ring-2 focus:ring-purple-200 outline-none transition-all"

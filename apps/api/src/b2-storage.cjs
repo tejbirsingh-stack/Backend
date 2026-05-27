@@ -199,18 +199,25 @@ class B2StorageService {
     }
     
     try {
-      const command = new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: stream,
-        ContentType: contentType,
-        Metadata: {
-          ...metadata,
-          uploadedAt: new Date().toISOString(),
+      // Use @aws-sdk/lib-storage to handle flowing readable streams 
+      // without needing to know the content-length or hashing upfront
+      const { Upload } = require('@aws-sdk/lib-storage');
+
+      const upload = new Upload({
+        client: this.s3Client,
+        params: {
+          Bucket: this.bucket,
+          Key: key,
+          Body: stream,
+          ContentType: contentType,
+          Metadata: {
+            ...metadata,
+            uploadedAt: new Date().toISOString(),
+          },
         },
       });
       
-      await this.s3Client.send(command);
+      await upload.done();
       
       console.log(`✅ Stream uploaded to B2: ${key}`);
       
@@ -467,8 +474,8 @@ class B2StorageService {
         // File is in this folder if it doesn't contain any more slashes
         return relativePath && !relativePath.includes('/');
       }).map(obj => ({
-        id: uuidv4(),
-        name: path.basename(obj.Key),
+        id: path.basename(obj.Key),
+        name: path.basename(obj.Key).replace(/^\d+-/, ""),
         key: obj.Key,
         size: obj.Size,
         lastModified: obj.LastModified,
@@ -514,8 +521,8 @@ class B2StorageService {
         .map(obj => {
           const folderPath = this.extractFolderFromKey(obj.Key, 'uploads/');
           return {
-            id: uuidv4(),
-            name: path.basename(obj.Key),
+            id: path.basename(obj.Key),
+            name: path.basename(obj.Key).replace(/^\d+-/, ""),
             key: obj.Key,
             size: obj.Size,
             lastModified: obj.LastModified,
