@@ -18,20 +18,8 @@ dotenv.config();
 // const Redis = null;
 // const PrismaClient = null;
 
-// Mock services
-const authService = {
-  validateSession: async (token) => {
-    return {
-      id: 'session_123',
-      user: {
-        id: 'user_123',
-        email: 'dev@example.com',
-        name: 'Development User',
-        role: 'admin'
-      }
-    };
-  }
-};
+// Use real auth service instead of mock
+const authService = require('./services/auth-service.js');
 
 const mediaService = {};
 const compressionService = {};
@@ -257,7 +245,7 @@ async function setupServer() {
         throw new Error('No authorization token provided');
       }
 
-      const decoded = await request.jwtVerify();
+      // const decoded = await request.jwtVerify();
       const session = await fastify.authService.validateSession(token);
 
       if (!session) {
@@ -267,10 +255,8 @@ async function setupServer() {
       request.user = session.user;
       request.session = session;
     } catch (err: any) {
-      reply.code(401).send({
-        error: 'Unauthorized',
-        message: err.message
-      });
+      err.statusCode = 401;
+      throw err;
     }
   });
 

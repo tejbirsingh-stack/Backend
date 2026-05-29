@@ -36,6 +36,7 @@ async function authenticate(request, reply) {
       error: "Unauthorized",
       message: error.message || "Authentication required",
     });
+    return reply;
   }
 }
 

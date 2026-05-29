@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { Upload, X, Check, AlertCircle, Loader2 } from 'lucide-react';
 import axios from 'axios';
 import { useMediaStore } from '../stores/mediaStore';
+import { useSimpleAuthStore } from '../stores/simpleAuthStore';
 
 interface UploadFile {
   file: File;
@@ -22,6 +23,7 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
   const [uploadQueue, setUploadQueue] = useState<UploadFile[]>([]);
   const [uploadDestination, setUploadDestination] = useState<'local' | 'b2' | 'both'>('b2');
   const { fetchAssets } = useMediaStore();
+  const token = useSimpleAuthStore(state => state.token);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -82,7 +84,7 @@ export default function UploadModal({ isOpen, onClose, onUploadComplete }: Uploa
       // Upload to the API
       const response = await axios.post('/api/media/upload', formData, {
         headers: {
-          'Content-Type': 'multipart/form-data',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
         onUploadProgress: (progressEvent) => {
           const percentCompleted = progressEvent.total

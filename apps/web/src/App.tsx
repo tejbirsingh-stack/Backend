@@ -35,7 +35,7 @@ function UploadArea({ onFilesUploaded }: { onFilesUploaded: (files: File[]) => v
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
-    
+
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
       handleUpload(files);
@@ -79,8 +79,8 @@ function UploadArea({ onFilesUploaded }: { onFilesUploaded: (files: File[]) => v
           borderRadius: '20px',
           padding: '48px 32px',
           textAlign: 'center',
-          background: isDragOver 
-            ? 'rgba(79, 172, 254, 0.1)' 
+          background: isDragOver
+            ? 'rgba(79, 172, 254, 0.1)'
             : 'rgba(255, 255, 255, 0.05)',
           backdropFilter: 'blur(10px)',
           transition: 'all 0.3s ease',
@@ -96,7 +96,7 @@ function UploadArea({ onFilesUploaded }: { onFilesUploaded: (files: File[]) => v
           left: 0,
           right: 0,
           bottom: 0,
-          background: isDragOver 
+          background: isDragOver
             ? 'radial-gradient(circle at center, rgba(79, 172, 254, 0.15) 0%, transparent 70%)'
             : 'radial-gradient(circle at center, rgba(255, 255, 255, 0.05) 0%, transparent 70%)',
           pointerEvents: 'none',
@@ -104,22 +104,22 @@ function UploadArea({ onFilesUploaded }: { onFilesUploaded: (files: File[]) => v
         }} />
 
         <div style={{ position: 'relative', zIndex: 1 }}>
-          <div style={{ 
-            fontSize: '48px', 
-            marginBottom: '24px', 
+          <div style={{
+            fontSize: '48px',
+            marginBottom: '24px',
             color: isDragOver ? '#4facfe' : 'rgba(79, 172, 254, 0.8)',
             transition: 'all 0.3s ease'
           }}>
             <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-              <polyline points="14,2 14,8 20,8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-              <polyline points="10,9 9,9 8,9"/>
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14,2 14,8 20,8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+              <polyline points="10,9 9,9 8,9" />
             </svg>
           </div>
-          <h3 style={{ 
-            fontSize: '24px', 
+          <h3 style={{
+            fontSize: '24px',
             marginBottom: '12px',
             color: 'white',
             fontWeight: '600',
@@ -127,16 +127,16 @@ function UploadArea({ onFilesUploaded }: { onFilesUploaded: (files: File[]) => v
           }}>
             {isDragOver ? 'Drop files here' : 'Drag & drop files here'}
           </h3>
-          <p style={{ 
-            fontSize: '16px', 
+          <p style={{
+            fontSize: '16px',
             color: 'rgba(255, 255, 255, 0.7)',
             marginBottom: '24px',
             fontWeight: '400'
           }}>
             or click to browse your computer
           </p>
-          <p style={{ 
-            fontSize: '14px', 
+          <p style={{
+            fontSize: '14px',
             color: 'rgba(255, 255, 255, 0.5)',
             fontWeight: '400'
           }}>
@@ -160,7 +160,7 @@ function UploadArea({ onFilesUploaded }: { onFilesUploaded: (files: File[]) => v
         />
 
         {isUploading && (
-          <div style={{ 
+          <div style={{
             marginTop: '32px',
             position: 'relative',
             zIndex: 2
@@ -182,8 +182,8 @@ function UploadArea({ onFilesUploaded }: { onFilesUploaded: (files: File[]) => v
                 boxShadow: '0 0 10px rgba(79, 172, 254, 0.5)',
               }} />
             </div>
-            <p style={{ 
-              marginTop: '12px', 
+            <p style={{
+              marginTop: '12px',
               fontSize: '16px',
               color: 'white',
               fontWeight: '500'
@@ -238,7 +238,7 @@ export default function App() {
   // Login Screen
   if (!isAuthenticated) {
     return (
-      <div style={{ 
+      <div style={{
         minHeight: '100vh',
         background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
         display: 'flex',
@@ -280,14 +280,14 @@ export default function App() {
           `,
         }}>
           {/* Logo Section */}
-          <div style={{ 
-            textAlign: 'center', 
+          <div style={{
+            textAlign: 'center',
             marginBottom: '40px',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center'
           }}>
-            <div style={{ 
+            <div style={{
               marginBottom: '24px',
               display: 'flex',
               justifyContent: 'center',
@@ -295,18 +295,18 @@ export default function App() {
             }}>
               <Logo variant="full" size="lg" />
             </div>
-            <h1 style={{ 
-              color: 'white', 
-              fontSize: '32px', 
+            <h1 style={{
+              color: 'white',
+              fontSize: '32px',
               fontWeight: '700',
               margin: '0 0 8px 0',
               letterSpacing: '-0.02em'
             }}>
               LOGIN
             </h1>
-            <p style={{ 
-              color: 'rgba(255, 255, 255, 0.8)', 
-              margin: 0, 
+            <p style={{
+              color: 'rgba(255, 255, 255, 0.8)',
+              margin: 0,
               fontSize: '16px',
               fontWeight: '400'
             }}>
@@ -343,9 +343,10 @@ export default function App() {
             fontFamily: 'monospace'
           }}>
             <div style={{ marginBottom: '8px', fontWeight: 'bold', textAlign: 'center', fontFamily: 'inherit' }}>Test Credentials:</div>
-            <div>admin@visitdetroit.com / admin123</div>
-            <div>test@example.com / test123</div>
-            <div>demo@demo.com / demo</div>
+            <div>admin@visitdetroit.com / VisitDetroit2025! </div>
+            <div>john.smith@visitdetroit.com / Detroit2025! </div>
+            <div>sarah.johnson@visitdetroit.com / Detroit2025!</div>
+            <div>mike.wilson@visitdetroit.com / Detroit2025!</div>
           </div>
 
           <form onSubmit={(e) => {
@@ -480,7 +481,7 @@ export default function App() {
 
   // Main Application Interface
   return (
-    <div style={{ 
+    <div style={{
       minHeight: '100vh',
       background: 'linear-gradient(135deg, #1a1a1f 0%, #2a2a2e 100%)',
       color: '#A9A9B4',
@@ -509,8 +510,8 @@ export default function App() {
             background: 'rgba(255, 255, 255, 0.2)',
             margin: '0 8px'
           }} />
-          <span style={{ 
-            color: 'rgba(255, 255, 255, 0.8)', 
+          <span style={{
+            color: 'rgba(255, 255, 255, 0.8)',
             fontSize: '14px',
             fontWeight: '500'
           }}>
@@ -529,7 +530,7 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-          <span style={{ 
+          <span style={{
             fontSize: '14px',
             color: 'rgba(255, 255, 255, 0.7)'
           }}>
@@ -565,14 +566,14 @@ export default function App() {
       </header>
 
       {/* Main Layout */}
-      <div style={{ 
-        display: 'flex', 
-        flex: 1, 
+      <div style={{
+        display: 'flex',
+        flex: 1,
         overflow: 'hidden',
         position: 'relative'
       }}>
         {/* Enhanced Sidebar */}
-        <EnhancedSidebar 
+        <EnhancedSidebar
           selectedAsset={selectedAsset}
           onFileSelect={setSelectedAsset}
         />
@@ -587,7 +588,7 @@ export default function App() {
           overflow: 'hidden',
           background: '#1a1a1f'
         }}>
-          <MediaBrowser 
+          <MediaBrowser
             selectedAsset={selectedAsset}
             onSelectAsset={setSelectedAsset}
           />

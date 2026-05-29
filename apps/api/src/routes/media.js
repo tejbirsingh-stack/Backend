@@ -5,6 +5,9 @@
  *   description: Media asset management endpoints
  */
 
+const { dir } = require("console");
+const { request } = require("http");
+
 /**
  * @swagger
  * /media:
@@ -257,24 +260,36 @@ module.exports = function (fastify, opts, done) {
     return path.join(__dirname, "../../uploads");
   }
 
-  /** Find stored filename on disk from id or display name */
+  /** Recursive function to get all files in nested directories */
+  function getAllFiles(dirPath, arrayOfFiles = []){
+    const files = fs.readdirSync(dirPath);                                        
+    files.forEach(function(file){
+      if(fs.statSync(dirPath + "/" + file).isDirectory()){
+        arrayOfFiles = getAllFiles(dirPath + "/" + file, arrayOfFiles);
+      } else {
+        arrayOfFiles.push(path.join(dirPath, "/", file));
+      }
+    });
+    return arrayOfFiles;
+  }
+
+  // Find stored file path on disk from id or display name ****
   function resolveMediaFilename(id) {
     const uploadsDir = getUploadsDir();
     if (!fs.existsSync(uploadsDir)) return null;
 
-    const files = fs.readdirSync(uploadsDir);
-    const matched = files.find((filename) => {
+    const files = getAllFiles(uploadsDir);
+    const matched = files.find((filepath) => {
+      const filename = path.basename(filepath);
       if (filename === id) return true;
       const originalName = filename.replace(/^\d+-/, "");
       return originalName === id;
     });
-    return matched || null;
+    return matched ? matched : null;
   }
 
   function resolveMediaFilePath(id) {
-    const filename = resolveMediaFilename(id);
-    if (!filename) return null;
-    return path.join(getUploadsDir(), filename);
+    return resolveMediaFilename(id);
   }
 
   /**
@@ -334,10 +349,10 @@ module.exports = function (fastify, opts, done) {
       let b2Assets = [];
 
       if ((source === "local" || source === "all") && fs.existsSync(uploadsDir)) {
-        const files = fs.readdirSync(uploadsDir);
-        localAssets = files.map((filename) => {
-          const filepath = path.join(uploadsDir, filename);
+        const filePaths = getAllFiles(uploadsDir);
+        localAssets = filePaths.map((filepath) => {
           const stats = fs.statSync(filepath);
+          const filename = path.basename(filepath);
           const originalName = filename.replace(/^\d+-/, ""); // Remove timestamp prefix
           const mimeType = inferMimeType(filename);
 
@@ -533,12 +548,12 @@ module.exports = function (fastify, opts, done) {
 
       // Local search (current parity phase)
       if ((source === "local" || source === "all") && fs.existsSync(uploadsDir)) {
-        const files = fs.readdirSync(uploadsDir);
+        const filePaths = getAllFiles(uploadsDir);
 
-        assets = files
-          .map((filename) => {
-            const filepath = path.join(uploadsDir, filename);
+        assets = filePaths
+          .map((filepath) => {
             const stats = fs.statSync(filepath);
+            const filename = path.basename(filepath);
             const mimeType = inferMimeType(filename);
             const originalName = filename.replace(/^\d+-/, "");
 
@@ -686,15 +701,25 @@ module.exports = function (fastify, opts, done) {
   });
 
   // Upload media asset
-  fastify.post("/upload", async (request, reply) => {
+  // fastify.post("/upload", async (request, reply) => {
+  fastify.post("/upload", { preHandler: [fastify.authenticate] }, async (request, reply) => {
     try {
       const fs = require("fs");
       const path = require("path");
       const util = require("util");
       const pipeline = util.promisify(require("stream").pipeline);
 
-      // Ensure uploads directory exists
-      const uploadsDir = path.join(__dirname, "../../uploads");
+      // Determine isolation tier based on User role
+      // request.user was injected by our fastify.authenticate middleware 
+      const role = (request.user && request.user.role) ? request.user.role : "member";
+      const isolationTier = (role === "admin" || role === "system_admin") ? "internal" : "external";
+
+      // Generate data-based subfolder (YYYY-MM-DD)
+      // This creates a string like "2026-05-28" which acts as our daily directory folder 
+      const today = new Date().toISOString().split("T")[0];
+
+      // Build a dynamic file path and ensure it exists
+      const uploadsDir = path.join(__dirname,"../../uploads",isolationTier,today);
       if (!fs.existsSync(uploadsDir)) {
         fs.mkdirSync(uploadsDir, { recursive: true });
       }
@@ -717,7 +742,8 @@ module.exports = function (fastify, opts, done) {
               size += chunk.length;
             });
             
-            const b2Key = `uploads/${filename}`;
+            // Also apply the isolation path structure to Cloud Storage (B2)
+            const b2Key = `uploads/${isolationTier}/${today}/${filename}`; 
             try {
               const b2Result = await b2Storage.uploadStream(part.file, b2Key, part.mimetype, {
                 originalName: part.filename,
@@ -779,7 +805,8 @@ module.exports = function (fastify, opts, done) {
 
         if (!file.isDirectB2 && (uploadOptions.destination === "b2" || uploadOptions.destination === "both") && b2Storage.isEnabled()) {
           try {
-            const b2Key = `uploads/${file.filename}`;
+            // Fallback path for Cloud Storage (B2)
+            const b2Key = `uploads/${isolationTier}/${today}/${file.filename}`;
             b2Result = await b2Storage.uploadFile(file.filepath, b2Key, {
               originalName: file.originalName,
             });
@@ -863,20 +890,35 @@ module.exports = function (fastify, opts, done) {
       let deletedFromB2 = false;
 
       // 1. Try deleting from local
-      const filePath = resolveMediaFilePath(filename);
-      if (filePath && fs.existsSync(filePath)) {
+      let filePath = resolveMediaFilePath(filename);
+      // Delete all local files with that name in case of duplicates across folders
+      while (filePath && fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
         deletedFromLocal = true;
+        
+        // Temporarily rename or mock so resolveMediaFilePath can find any other duplicates
+        // Actually, resolveMediaFilename will just return null if the file is deleted
+        filePath = resolveMediaFilePath(filename);
       }
 
       // 2. Try deleting from B2
       if (b2Storage.isEnabled()) {
         try {
-          // B2 keys usually start with 'uploads/'
-          const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
-          // Delete from B2
-          await b2Storage.deleteFile(cleanKey);
-          deletedFromB2 = true;
+          // B2 keys usually start with 'uploads/' and contain subfolders like 'internal/2026-05-28/'
+          // We need to search for the exact key
+          const b2Files = await b2Storage.searchFiles(filename);
+          const exactMatch = b2Files.find(f => path.basename(f.key) === filename || path.basename(f.key) === filename.replace(/^\d+-/, ""));
+          
+          if (exactMatch) {
+            await b2Storage.deleteFile(exactMatch.key);
+            deletedFromB2 = true;
+          } else {
+            // Fallback: try deleting the direct key
+            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+            await b2Storage.deleteFile(cleanKey);
+            // This might create a delete marker, but it's a fallback.
+            deletedFromB2 = true;
+          }
         } catch (b2Error) {
           console.warn(`Failed to delete key ${filename} from B2:`, b2Error.message);
         }
