@@ -9,7 +9,7 @@
     "packages/@noah/*"
   ],
   "scripts": {
-    "start:production": "cd apps/api && node src/enhanced-media-server.cjs",
+    "start:production": "cd apps/api && node dist/index.js",
     "dev": "turbo run dev",
     "build": "npm run db:generate && turbo run build",
     "build:packages": "turbo run build --filter=./packages/*",

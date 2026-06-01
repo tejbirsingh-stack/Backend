@@ -7,7 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "dev:simple": "tsx src/simple-api.ts",
     "build": "prisma generate && tsc",
-    "start": "node src/enhanced-media-server.cjs",
+    "start": "node dist/index.js",
     "start:dist": "node dist/index.js",
     "postinstall": "prisma generate",
     "test": "jest",
