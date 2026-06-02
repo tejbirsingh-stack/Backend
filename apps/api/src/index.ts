@@ -19,34 +19,49 @@ dotenv.config();
 // const PrismaClient = null;
 
 // Use real auth service instead of mock
-const authService = require('./services/auth-service.js');
+// @ts-ignore
+import authService from './services/auth-service.js';
 
 const mediaService = {};
 const compressionService = {};
 
 // Simplified utilities
 class Logger {
-  constructor(namespace) {
+  namespace: string;
+  constructor(namespace: string) {
     this.namespace = namespace;
   }
 
-  info(message, meta) {
+  info(message: string, meta?: any) {
     console.log(`[INFO] [${this.namespace}] ${message}`, meta || '');
   }
 
-  warn(message, meta) {
+  warn(message: string, meta?: any) {
     console.warn(`[WARN] [${this.namespace}] ${message}`, meta || '');
   }
 
-  error(message, meta) {
+  error(message: string, meta?: any) {
     console.error(`[ERROR] [${this.namespace}] ${message}`, meta || '');
   }
 }
 
 class MetricsCollector {
-  recordHttpRequest() { }
-  recordError() { }
+  recordHttpRequest(method?: string, url?: string, statusCode?: number, responseTime?: number) { }
+  recordError(errorName?: string) { }
   getMetrics() { return "# Metrics placeholder"; }
+}
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    prisma: PrismaClient;
+    redis: any;
+    logger: Logger;
+    metrics: MetricsCollector;
+    authService: any;
+    mediaService: any;
+    compressionService: any;
+    authenticate: any;
+  }
 }
 
 class HealthChecker {
@@ -188,14 +203,15 @@ async function setupServer() {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
   });
 
-  await fastify.register(rateLimit, {
+  await fastify.register(rateLimit as any, {
     max: config.RATE_LIMIT_MAX_REQUESTS,
     timeWindow: config.RATE_LIMIT_WINDOW_MS,
     redis: redis,
-    keyGenerator: (request) => {
-      return request.headers['x-forwarded-for'] || request.ip;
+    keyGenerator: (request: any) => {
+      const xForwardedFor = request.headers['x-forwarded-for'];
+      return (Array.isArray(xForwardedFor) ? xForwardedFor[0] : xForwardedFor) || request.ip;
     },
-    errorResponseBuilder: (request, context) => {
+    errorResponseBuilder: (request: any, context: any) => {
       return {
         code: 429,
         error: 'Rate limit exceeded',
@@ -216,7 +232,7 @@ async function setupServer() {
     }
   });
 
-  await fastify.register(jwt, {
+  await fastify.register(jwt as any, {
     secret: config.JWT_SECRET,
     sign: {
       expiresIn: config.JWT_EXPIRES_IN,
