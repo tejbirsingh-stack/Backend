@@ -15,7 +15,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Try to initialize real Auth Service with graceful fallback
-// Use Simple Auth for guaranteed authentication
+// Use Simple Auth for guaranteed authentication+
+// TEST
 const SimpleAuth = require("./simple-auth.cjs");
 const authService = new SimpleAuth();
 console.log("✅ Simple Auth Service loaded - No database required!");
