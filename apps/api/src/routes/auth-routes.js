@@ -107,7 +107,7 @@ async function routes(fastify, options) {
 
   // Register route
   fastify.post("/register", async (request, reply) => {
-    const { name, email, password, orgId } = request.body;
+    const { name, email, password, orgId, hubspotUtk , phone, jobTitle} = request.body;
 
     try {
       // Validate input
@@ -149,10 +149,61 @@ async function routes(fastify, options) {
           email,
           passwordHash,
           orgId,
-          role: "user", // Default role
+          role: "member", 
           status: "active",
+          phone : phone || null,
+          jobTitle : jobTitle || null,
+          hubspotUtk : hubspotUtk || null,
         },
       });
+
+      // --- ADD THIS HUBSPOT SYNC BLOCK ---
+      const portalId = process.env.HUBSPOT_PORTAL_ID;
+      const formId = process.env.HUBSPOT_FORM_ID;
+      const accessToken = process.env.HUBSPOT_ACCESS_TOKEN;
+      
+      if (portalId && formId && accessToken) {
+        // Split name into first and last name for HubSpot
+        const [firstname, ...lastnameParts] = name.split(" ");
+        const lastname = lastnameParts.join(" ") || "";
+        const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
+        // Call HubSpot API in the background so it doesn't block the user's response
+        fetch(hubspotEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            fields: [
+              { objectTypeId: "0-1", name: "email", value: email },
+              { objectTypeId: "0-1", name: "firstname", value: firstname },
+              { objectTypeId: "0-1", name: "lastname", value: lastname },
+              { objectTypeId: "0-1", name: "company", value: organization ? organization.name : "" },
+              { objectTypeId: "0-1", name: "phone", value: phone || "" },
+              { objectTypeId: "0-1", name: "jobtitle", value: jobTitle || "" },
+            ],
+            context: {
+              hutk: hubspotUtk,
+              pageUri: request.headers.referer || "",
+              pageName: "Register Page",
+              ipAddress: request.ip,
+            },
+            skipValidation: true,
+          }),
+        })
+          .then(async (res) => {
+            if (!res.ok) {
+              const errText = await res.text();
+              console.error("HubSpot Form submit failed response:", errText);
+            } else {
+              console.log("Successfully synced registration to HubSpot Form");
+            }
+          })
+          .catch((err) => {
+            console.error("HubSpot Form API Connection error:", err.message);
+          });
+      }
 
       // Create a session for the new user
       const session = await authService.createSession(
