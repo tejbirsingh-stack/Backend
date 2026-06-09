@@ -20,6 +20,7 @@
     "db:push": "cd packages/@noah/db && npx prisma db push",
     "db:migrate": "cd packages/@noah/db && npx prisma migrate dev",
     "db:studio": "cd packages/@noah/db && npx prisma studio",
+    "db:sync": "cp packages/@noah/db/prisma/schema.prisma apps/api/prisma/schema.prisma && npm run db:generate && cd apps/api && npx prisma generate",
     "setup": "npm install && npm run db:generate && npm run build:packages",
     "postinstall": "npm run db:generate",
     "start:api": "cd apps/api && npm run dev",

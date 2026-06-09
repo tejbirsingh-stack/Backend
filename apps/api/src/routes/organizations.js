@@ -1,7 +1,18 @@
 module.exports = function (fastify, opts, done) {
   // Get organizations
   fastify.get("/", async (request, reply) => {
-    reply.send({ message: "Organizations endpoints not yet implemented" });
+    try{
+      const orgs = await fastify.prisma.organization.findMany({
+        select : {
+          id: true,
+          name: true,
+        }
+      });
+      reply.send(orgs);
+    }catch (err){
+      fastify.log.error(err);
+      reply.status(500).send({ error: "Failed to fetch organizations" });
+    }
   });
 
   // Get single organization
