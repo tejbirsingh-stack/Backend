@@ -3,7 +3,7 @@ version: 0.2
 phases:
   build:
     commands:
-      - echo "Deploying Backend...."
+      - echo "Deploying frontend...."
 
       - |
         aws ssm send-command \
@@ -11,9 +11,9 @@ phases:
         --document-name "AWS-RunShellScript" \
         --parameters '{
           "commands":[
-            "cd /opt/noah-backend",
+            "cd /opt/noah-frontend",
             "git pull origin qa",
             "cd /opt/noah",
-            "docker compose up -d --build backend"
+            "docker compose up -d --build frontend"
           ]
         }'
