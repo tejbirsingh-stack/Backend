@@ -66,7 +66,7 @@
     "@fastify/rate-limit": "^10.0.0",
     "@fastify/static": "^8.2.0",
     "@fastify/websocket": "^11.2.0",
-    "canvas": "^3.1.2",
+    "canvas": "2.11.2",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "fastify": "^5.4.0",
