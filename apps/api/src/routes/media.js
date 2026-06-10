@@ -736,7 +736,7 @@ module.exports = function (fastify, opts, done) {
       const parts = request.parts();
       const tempFiles = [];
       const uploadOptions = {
-        destination: "both",
+        destination: b2Storage.isEnabled() ? "b2" : "local",
       };
 
       for await (const part of parts) {
@@ -787,16 +787,15 @@ module.exports = function (fastify, opts, done) {
           }
         } else {
           if (part.fieldname === "destination") {
-            // fastify-multipart gives the value on part.value, sometimes as an object if JSON
             let val = part.value;
             if (typeof val === 'object' && val !== null) {
                val = val.value || JSON.stringify(val);
             }
             const destination = String(val).toLowerCase().trim();
-            if (["local", "b2", "both"].includes(destination)) {
-              uploadOptions.destination = destination;
-              console.log(`Upload destination set to: ${destination}`);
-            }
+            // Force B2 if enabled, otherwise fallback to local
+            const resolvedDestination = b2Storage.isEnabled() ? "b2" : "local";
+            uploadOptions.destination = resolvedDestination;
+            console.log(`Upload destination forced to: ${resolvedDestination} (client requested: ${destination})`);
           }
         }
       }

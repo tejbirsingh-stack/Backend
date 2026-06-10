@@ -1110,8 +1110,8 @@ app.post("/api/media/upload", upload.single("file"), async (req, res) => {
   try {
     console.log("📤 POST /api/media/upload - File upload started");
     
-    // Get upload destination from request (local, b2, both)
-    const { destination = 'local' } = req.body;
+    // Force B2 if enabled, otherwise fallback to local
+    const destination = b2Storage.isEnabled() ? 'b2' : 'local';
 
     if (!req.file) {
       return res.status(400).json({
