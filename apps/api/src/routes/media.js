@@ -660,6 +660,153 @@ module.exports = function (fastify, opts, done) {
     }
   });
 
+  // List soft-deleted files (Trash)
+  fastify.get("/trash", async (request, reply) => {
+    try {
+      if (!b2Storage.isEnabled()) {
+        return reply.send({
+          success: true,
+          assets: [],
+          message: "B2 storage is disabled; Trash is only supported for cloud assets."
+        });
+      }
+
+      const trashFiles = await b2Storage.listTrashFiles("uploads/", 1000);
+      
+      // Transform files using the same structure as active files
+      const transformed = trashFiles.map(file => {
+        const mimeType = inferMimeType(file.name || "");
+        const normalizedType = normalizeAssetType(mimeType);
+        
+        return {
+          id: file.id,
+          name: file.name,
+          type: normalizedType,
+          size: file.size,
+          uploadDate: file.lastModified ? new Date(file.lastModified).toISOString() : new Date().toISOString(),
+          deletedAt: file.deletedAt ? new Date(file.deletedAt).toISOString() : new Date().toISOString(),
+          url: file.key ? `/api/media/${encodeURIComponent(file.id)}/stream` : null,
+          thumbnail: normalizedType === "image" ? `/api/media/${encodeURIComponent(file.id)}/stream` : null,
+          tags: [],
+          metadata: {},
+          compressionStatus: "completed",
+          storageLocation: "b2",
+          isTrash: true,
+          key: file.key,
+        };
+      });
+
+      return reply.send({
+        success: true,
+        assets: transformed,
+      });
+    } catch (error) {
+      console.error("Error retrieving trash assets:", error);
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to retrieve trash assets",
+        message: error.message,
+      });
+    }
+  });
+
+  // Restore a soft-deleted file
+  fastify.post("/:filename/restore", async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      
+      if (!b2Storage.isEnabled()) {
+        return reply.code(400).send({
+          success: false,
+          error: "B2 storage is disabled; cannot restore files."
+        });
+      }
+
+      const b2Files = await b2Storage.listTrashFiles("uploads/");
+      const exactMatch = b2Files.find(f => f.id === filename || f.name === filename || f.key.endsWith(filename));
+
+      if (!exactMatch) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found in Trash"
+        });
+      }
+
+      await b2Storage.restoreFile(exactMatch.key);
+
+      return reply.send({
+        success: true,
+        message: "File restored successfully"
+      });
+    } catch (error) {
+      console.error("Error restoring file:", error);
+      return reply.code(500).send({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Permanently delete a file from B2
+  fastify.delete("/:filename/permanent", async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      
+      let deletedFromLocal = false;
+      let deletedFromB2 = false;
+
+      // Try deleting local duplicates just in case
+      let filePath = resolveMediaFilePath(filename);
+      while (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        deletedFromLocal = true;
+        filePath = resolveMediaFilePath(filename);
+      }
+
+      if (b2Storage.isEnabled()) {
+        try {
+          const b2Files = await b2Storage.listTrashFiles("uploads/");
+          const activeFiles = await b2Storage.searchFiles(filename);
+          
+          const allB2Files = [...b2Files, ...activeFiles];
+          const exactMatch = allB2Files.find(f => f.id === filename || f.key === filename || f.key.endsWith(filename));
+
+          if (exactMatch) {
+            await b2Storage.permanentlyDeleteFile(exactMatch.key);
+            deletedFromB2 = true;
+          } else {
+            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+            await b2Storage.permanentlyDeleteFile(cleanKey);
+            deletedFromB2 = true;
+          }
+        } catch (b2Error) {
+          console.warn(`Failed to permanently delete key ${filename} from B2:`, b2Error.message);
+        }
+      }
+ 
+      if (!deletedFromLocal && !deletedFromB2) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found on local disk or B2 storage",
+        });
+      }
+
+      return reply.send({
+        success: true,
+        message: "File permanently deleted",
+        deletedFrom: {
+          local: deletedFromLocal,
+          b2: deletedFromB2,
+        }
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
   // GET /api/media/:filename — file bytes for players, or ?meta=true for JSON info
   fastify.get("/:filename", async (request, reply) => {
     try {

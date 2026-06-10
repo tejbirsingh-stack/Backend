@@ -1,4 +1,4 @@
-const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs');
 const path = require('path');
@@ -541,6 +541,156 @@ class B2StorageService {
     } catch (error) {
       console.error('❌ Error searching files:', error);
       return [];
+    }
+  }
+  
+
+  // List all soft-deleted files in B2 (files where the latest version is a delete marker)
+
+  async listTrashFiles(prefix = '', maxKeys = 1000) {
+    if (!this.enabled) return [];
+    
+    try {
+      const command = new ListObjectVersionsCommand({
+        Bucket: this.bucket,
+        Prefix: prefix,
+        MaxKeys: maxKeys,
+      });
+      
+      const response = await this.s3Client.send(command);
+      const trashItems = [];
+      
+      const deleteMarkers = response.DeleteMarkers || [];
+      const versions = response.Versions || [];
+      
+      // Find all delete markers that are the latest version (soft-deleted files)
+      const latestDeleteMarkers = deleteMarkers.filter(dm => dm.IsLatest === true);
+      
+      for (const dm of latestDeleteMarkers) {
+        // Find the latest actual version of this file to get size/metadata
+        const fileVersions = versions.filter(v => v.Key === dm.Key);
+        
+        // Sort by LastModified descending to get the most recent version
+        fileVersions.sort((a, b) => new Date(b.LastModified) - new Date(a.LastModified));
+        const activeVersion = fileVersions[0];
+        
+        trashItems.push({
+          id: path.basename(dm.Key),
+          name: path.basename(dm.Key).replace(/^\d+-/, ""),
+          key: dm.Key,
+          size: activeVersion ? activeVersion.Size : 0,
+          lastModified: activeVersion ? activeVersion.LastModified : dm.LastModified,
+          deletedAt: dm.LastModified,
+          type: this.getFileType(dm.Key),
+          storageLocation: 'b2',
+          bucket: this.bucket,
+          isFolder: false,
+          fullPath: dm.Key,
+          deleteMarkerVersionId: dm.VersionId,
+        });
+      }
+      return trashItems;
+      
+    } catch (error) {
+      console.error('Error listing trash files from B2:', error);
+      throw error;
+    }
+  }
+
+  // Restore a soft-deleted file by deleting its latest Delete Marker
+  async restoreFile(key) {
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+    
+    try {
+      const command = new ListObjectVersionsCommand({
+        Bucket: this.bucket,
+        Prefix: key,
+      });
+      
+      const response = await this.s3Client.send(command);
+      const deleteMarkers = response.DeleteMarkers || [];
+      
+      // Find the latest delete marker for this key
+      const activeDM = deleteMarkers.find(dm => dm.Key === key && dm.IsLatest === true);
+      
+      if (!activeDM) {
+        throw new Error(`No active delete marker found for file: ${key}`);
+      }
+      
+      // Delete the active delete marker version to restore the file
+      const deleteCommand = new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        VersionId: activeDM.VersionId,
+      });
+      
+      await this.s3Client.send(deleteCommand);
+      return true;
+      
+    } catch (error) {
+      console.error('Error restoring file from B2 Trash:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Permanently delete a file and all of its versions/delete markers
+   */
+  async permanentlyDeleteFile(key) {
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+    
+    try {
+      const listCommand = new ListObjectVersionsCommand({
+        Bucket: this.bucket,
+        Prefix: key,
+      });
+      
+      const response = await this.s3Client.send(listCommand);
+      const objectsToDelete = [];
+      
+      if (response.Versions) {
+        for (const version of response.Versions) {
+          if (version.Key === key) {
+            objectsToDelete.push({ Key: key, VersionId: version.VersionId });
+          }
+        }
+      }
+      
+      if (response.DeleteMarkers) {
+        for (const marker of response.DeleteMarkers) {
+          if (marker.Key === key) {
+            objectsToDelete.push({ Key: key, VersionId: marker.VersionId });
+          }
+        }
+      }
+      
+      if (objectsToDelete.length > 0) {
+        const deleteCommand = new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          Delete: {
+            Objects: objectsToDelete,
+            Quiet: true
+          }
+        });
+        await this.s3Client.send(deleteCommand);
+      } else {
+        // Fallback to standard delete if no versions are found
+        const command = new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+        });
+        await this.s3Client.send(command);
+      }
+      
+      return true;
+      
+    } catch (error) {
+      console.error('Error permanently deleting file from B2:', error);
+      throw error;
     }
   }
   
