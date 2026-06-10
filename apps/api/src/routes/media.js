@@ -210,6 +210,15 @@ module.exports = function (fastify, opts, done) {
     region: process.env.B2_REGION,
   });
 
+  function sanitizeB2ErrorMessage(message) {
+    if (!message) return "Unknown B2 error";
+    // Mask specific B2 key error format to prevent leaking key IDs
+    let sanitized = message.replace(/The key '[^']+' is not valid/gi, "The key is not valid");
+    // Mask any other potential 20-35 character key-like strings
+    sanitized = sanitized.replace(/\b[a-zA-Z0-9]{20,35}\b/g, "[MASKED]");
+    return sanitized;
+  }
+
   function normalizeAssetType(mimeType = "") {
     if (mimeType.startsWith("video/")) return "video";
     if (mimeType.startsWith("image/")) return "image";
@@ -759,7 +768,7 @@ module.exports = function (fastify, opts, done) {
               });
             } catch (err) {
               console.error("Direct B2 stream failed:", err);
-              throw new Error(`B2 upload failed: ${err.message}`);
+              throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
             }
           } else {
             // Save to local disk first
@@ -825,7 +834,7 @@ module.exports = function (fastify, opts, done) {
             if (uploadOptions.destination === "b2") {
               // Try to delete local file even on B2 failure if strictly B2? 
               // Usually we want to keep it or handle it, but let's throw.
-              throw new Error(`B2 upload failed: ${b2Error.message}`);
+              throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(b2Error.message)}`);
             }
           }
         }
