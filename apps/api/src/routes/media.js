@@ -348,6 +348,52 @@ module.exports = function (fastify, opts, done) {
     return reply.send(fs.createReadStream(filePath));
   }
 
+  async function handleMediaRedirectOrServe(request, reply, filename, download = false) {
+    // 1. Look up in DB first (by ID or filename)
+    let asset = null;
+    if (filename && filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      asset = await fastify.prisma.mediaAsset.findUnique({
+        where: { id: filename }
+      });
+    } else {
+      const allAssets = await fastify.prisma.mediaAsset.findMany({
+        where: { deletedAt: null }
+      });
+      asset = allAssets.find(a => 
+        a.fileName === filename || 
+        a.filePath === filename ||
+        a.filePath.endsWith('/' + filename) ||
+        (a.metadata && a.metadata.localFilename === filename)
+      );
+    }
+
+    if (asset) {
+      const storageLocation = asset.metadata?.storageLocation || asset.status;
+      const b2Key = asset.metadata?.b2Key || asset.filePath;
+      
+      // If B2 is configured and this file is on B2, redirect to a fresh signed URL!
+      if ((storageLocation === "b2" || storageLocation === "both") && b2Key && b2Storage.isEnabled()) {
+        const freshUrl = await b2Storage.getPresignedUrl(b2Key);
+        if (freshUrl) {
+          console.log(`Redirecting request for ${filename} to fresh B2 URL`);
+          return reply.code(307).redirect(freshUrl);
+        }
+      }
+    }
+
+    // 2. Fallback to local file serve
+    const filePath = await resolveMediaFilePath(filename);
+    if (!filePath || !fs.existsSync(filePath)) {
+      return reply.code(404).send({ success: false, error: "File not found" });
+    }
+
+    const displayName = filename.replace(/^\d+-/, "");
+    return serveMediaFile(request, reply, filePath, {
+      download,
+      displayName,
+    });
+  }
+
   // Get media assets - return real uploaded files
   fastify.get("/", { preValidation: [fastify.authenticate] }, async (request, reply) => {
     const {
@@ -401,7 +447,7 @@ module.exports = function (fastify, opts, done) {
       // 3. Map database records to the frontend asset shape
       const transformedAssets = dbAssets.map(asset => {
         const fileSize = Number(asset.fileSize);
-        const fileUrl = asset.cdnUrl || `/api/media/${encodeURIComponent(asset.id)}/stream`;
+        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
         const normalizedType = normalizeAssetType(asset.mimeType);
 
         return {
@@ -464,7 +510,7 @@ module.exports = function (fastify, opts, done) {
 
       const transformedAssets = dbAssets.map(asset => {
         const fileSize = Number(asset.fileSize);
-        const fileUrl = asset.cdnUrl || `/api/media/${encodeURIComponent(asset.id)}/stream`;
+        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
         const normalizedType = normalizeAssetType(asset.mimeType);
 
         return {
@@ -501,17 +547,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get("/:filename/stream", async (request, reply) => {
     try {
       const { filename } = request.params;
-      const filePath = await resolveMediaFilePath(filename);
-
-      if (!filePath || !fs.existsSync(filePath)) {
-        return reply.code(404).send({ success: false, error: "File not found" });
-      }
-
-      const displayName = filename.replace(/^\d+-/, "");
-      return serveMediaFile(request, reply, filePath, {
-        download: false,
-        displayName,
-      });
+      return await handleMediaRedirectOrServe(request, reply, filename, false);
     } catch (error) {
       return reply.code(500).send({
         success: false,
@@ -525,17 +561,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get("/:filename/download", async (request, reply) => {
     try {
       const { filename } = request.params;
-      const filePath = await resolveMediaFilePath(filename);
-
-      if (!filePath || !fs.existsSync(filePath)) {
-        return reply.code(404).send({ success: false, error: "File not found" });
-      }
-
-      const displayName = filename.replace(/^\d+-/, "");
-      return serveMediaFile(request, reply, filePath, {
-        download: true,
-        displayName,
-      });
+      return await handleMediaRedirectOrServe(request, reply, filename, true);
     } catch (error) {
       return reply.code(500).send({
         success: false,
@@ -564,7 +590,7 @@ module.exports = function (fastify, opts, done) {
       // Transform files using the same structure as active files
       const transformed = dbAssets.map(asset => {
         const fileSize = Number(asset.fileSize);
-        const fileUrl = asset.cdnUrl || `/api/media/${encodeURIComponent(asset.id)}/stream`;
+        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
         const normalizedType = normalizeAssetType(asset.mimeType);
         
         return {
@@ -734,7 +760,7 @@ module.exports = function (fastify, opts, done) {
 
         if (dbAsset) {
           const fileSize = Number(dbAsset.fileSize);
-          const fileUrl = dbAsset.cdnUrl || `/api/media/${encodeURIComponent(dbAsset.id)}/stream`;
+          const fileUrl = `/api/media/${encodeURIComponent(dbAsset.id)}/stream`;
           const normalizedType = normalizeAssetType(dbAsset.mimeType);
 
           return reply.send({
@@ -776,16 +802,7 @@ module.exports = function (fastify, opts, done) {
         return reply.send({ success: true, asset });
       }
 
-      const filePath = await resolveMediaFilePath(filename);
-      if (!filePath || !fs.existsSync(filePath)) {
-        return reply.code(404).send({ success: false, error: "File not found" });
-      }
-
-      const displayName = filename.replace(/^\d+-/, "");
-      return serveMediaFile(request, reply, filePath, {
-        download: false,
-        displayName,
-      });
+      return await handleMediaRedirectOrServe(request, reply, filename, false);
     } catch (error) {
       return reply.code(500).send({
         success: false,
@@ -958,8 +975,8 @@ module.exports = function (fastify, opts, done) {
           type: normalizeAssetType(dbAsset.mimeType),
           size: Number(dbAsset.fileSize),
           uploadDate: dbAsset.createdAt.toISOString(),
-          url: dbAsset.cdnUrl || `/api/media/${encodeURIComponent(dbAsset.id)}/stream`,
-          thumbnail: normalizeAssetType(dbAsset.mimeType) === "image" ? (dbAsset.cdnUrl || `/api/media/${encodeURIComponent(dbAsset.id)}/stream`) : null,
+          url: `/api/media/${encodeURIComponent(dbAsset.id)}/stream`,
+          thumbnail: normalizeAssetType(dbAsset.mimeType) === "image" ? `/api/media/${encodeURIComponent(dbAsset.id)}/stream` : null,
           tags: [],
           metadata: dbAsset.metadata || {},
           compressionStatus: "completed",

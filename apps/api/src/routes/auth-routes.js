@@ -89,7 +89,7 @@ async function routes(fastify, options) {
           name: user.name,
           role: user.role,
           orgId: user.orgId,
-          organization: { id: user.orgId, name: '', slug: '' }
+          organization: user.organization
         },
         accessToken: session.token,
         refreshToken: session.token,

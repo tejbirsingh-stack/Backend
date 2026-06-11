@@ -93,6 +93,13 @@ class AuthService {
         mfaSecret: true,
         mfaEnabled: true,
         status: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true
+          }
+        }
       },
     });
   }
@@ -161,6 +168,13 @@ class AuthService {
             orgId: true,
             role: true,
             status: true,
+            organization: {
+              select: {
+                id: true,
+                name: true,
+                slug: true
+              }
+            }
           },
         },
       },
