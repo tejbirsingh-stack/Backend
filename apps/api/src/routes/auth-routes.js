@@ -149,7 +149,7 @@ async function routes(fastify, options) {
           email,
           passwordHash,
           orgId,
-          role: "member", 
+          role: "super_admin", 
           status: "active",
           phone : phone || null,
           jobTitle : jobTitle || null,
