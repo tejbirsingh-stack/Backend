@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -6,13 +7,10 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
-import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import path from 'path';
 
-// Load environment variables
-dotenv.config();
 
 // Mock Redis and Prisma for development
 // const Redis = null;
@@ -21,6 +19,8 @@ dotenv.config();
 // Use real auth service instead of mock
 // @ts-ignore
 import authService from './services/auth-service.js';
+
+import emailService from './services/email-service.js';
 
 const mediaService = {};
 const compressionService = {};
@@ -61,6 +61,7 @@ declare module 'fastify' {
     mediaService: any;
     compressionService: any;
     authenticate: any;
+    emailService: any;
   }
 }
 
@@ -175,6 +176,7 @@ fastify.decorate('metrics', metrics);
 fastify.decorate('authService', authService);
 fastify.decorate('mediaService', mediaService);
 fastify.decorate('compressionService', compressionService);
+fastify.decorate('emailService',emailService);
 
 // Main setup function to avoid top-level await
 async function setupServer() {

@@ -432,7 +432,7 @@ async function routes(fastify, options) {
       console.log(`Password reset email for ${user.email}: ${resetUrl}`);
 
       // In production, you would use:
-      // await fastify.emailService.sendPasswordReset(user.email, user.name, resetUrl);
+      await fastify.emailService.sendPasswordReset(user.email, user.name, resetUrl);
 
       return {
         success: true,
