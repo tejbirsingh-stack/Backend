@@ -1,0 +1,793 @@
+// Media Controller code
+
+const fs = require("fs");
+const path = require("path");
+const B2StorageService = require("../b2-storage.cjs");
+
+const b2Storage = new B2StorageService({
+  keyId: process.env.B2_KEY_ID,
+  applicationKey: process.env.B2_APPLICATION_KEY,
+  bucketName: process.env.B2_BUCKET_NAME,
+  endpoint: process.env.B2_ENDPOINT,
+  region: process.env.B2_REGION,
+});
+
+function sanitizeB2ErrorMessage(message) {
+  if (!message) return "Unknown B2 error";
+  let sanitized = message.replace(/The key '[^']+' is not valid/gi, "The key is not valid");
+  sanitized = sanitized.replace(/\b[a-zA-Z0-9]{20,35}\b/g, "[MASKED]");
+  return sanitized;
+}
+
+// 1. Move any utility functions needed by the routes here
+function normalizeAssetType(mimeType = "") {
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("audio/")) return "audio";
+  return "document";
+}
+
+function inferMimeType(filename = "") {
+  const ext = filename.toLowerCase();
+  if (ext.endsWith(".mp4") || ext.endsWith(".mov") || ext.endsWith(".avi") || ext.endsWith(".webm")) return "video/mp4";
+  if (ext.endsWith(".png")) return "image/png";
+  if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
+  if (ext.endsWith(".gif")) return "image/gif";
+  if (ext.endsWith(".mp3") || ext.endsWith(".wav") || ext.endsWith(".m4a")) return "audio/mpeg";
+  if (ext.endsWith(".pdf")) return "application/pdf";
+  return "application/octet-stream";
+}
+
+function toFrontendAssetShape(asset) {
+  const mimeType = asset.mimeType || inferMimeType(asset.name || "");
+  const normalizedType = normalizeAssetType(mimeType);
+  const uploadDate = asset.uploadDate || asset.createdAt || new Date().toISOString();
+  const streamUrl =
+    asset.url || (asset.id ? `/api/media/${encodeURIComponent(asset.id)}/stream` : null);
+  const thumbnail =
+    normalizedType === "image"
+      ? streamUrl
+      : asset.thumbnail || null;
+
+  return {
+    id: asset.id,
+    name: asset.name,
+    type: normalizedType,
+    size: asset.size,
+    uploadDate,
+    url: streamUrl,
+    thumbnail,
+    tags: asset.tags || [],
+    metadata: asset.metadata || {},
+    compressionStatus: asset.compressionStatus || "completed",
+  };
+}
+
+function getUploadsDir() {
+  return path.join(__dirname, "../../uploads");
+}
+
+function getAllFiles(dirPath, arrayOfFiles = []){
+  const files = fs.readdirSync(dirPath);                                        
+  files.forEach(function(file){
+    if(fs.statSync(dirPath + "/" + file).isDirectory()){
+      arrayOfFiles = getAllFiles(dirPath + "/" + file, arrayOfFiles);
+    } else {
+      arrayOfFiles.push(path.join(dirPath, "/", file));
+    }
+  });
+  return arrayOfFiles;
+}
+
+function resolveMediaFilename(id) {
+  const uploadsDir = getUploadsDir();
+  if (!fs.existsSync(uploadsDir)) return null;
+
+  const files = getAllFiles(uploadsDir);
+  const matched = files.find((filepath) => {
+    const filename = path.basename(filepath);
+    if (filename === id) return true;
+    const originalName = filename.replace(/^\d+-/, "");
+    return originalName === id;
+  });
+  return matched ? matched : null;
+}
+
+async function resolveMediaFilePath(request, id) {
+  if (id && id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+    try {
+      const asset = await request.server.prisma.mediaAsset.findUnique({
+        where: { id }
+      });
+      if (asset && asset.metadata && asset.metadata.localFilename) {
+        return resolveMediaFilename(asset.metadata.localFilename);
+      }
+    } catch (err) {
+      console.error("Error looking up asset in resolveMediaFilePath:", err.message);
+    }
+  }
+  return resolveMediaFilename(id);
+}
+
+async function serveMediaFile(request, reply, filePath, options = {}) {
+  const { download = false, displayName } = options;
+  const stat = fs.statSync(filePath);
+  const fileSize = stat.size;
+  const mimeType = inferMimeType(path.basename(filePath));
+  const name = displayName || path.basename(filePath);
+
+  reply.header("Accept-Ranges", "bytes");
+  reply.header(
+    "Content-Disposition",
+    download ? `attachment; filename="${name}"` : "inline"
+  );
+  reply.type(mimeType);
+
+  const range = request.headers.range;
+  if (range) {
+    const parts = range.replace(/bytes=/, "").split("-");
+    const start = parseInt(parts[0], 10);
+    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    const chunkSize = end - start + 1;
+
+    reply.code(206);
+    reply.header("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+    reply.header("Content-Length", chunkSize);
+    return reply.send(fs.createReadStream(filePath, { start, end }));
+  }
+
+  reply.header("Content-Length", fileSize);
+  return reply.send(fs.createReadStream(filePath));
+}
+
+async function handleMediaRedirectOrServe(request, reply, filename, download = false) {
+  let asset = null;
+  if (filename && filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+    asset = await request.server.prisma.mediaAsset.findUnique({
+      where: { id: filename }
+    });
+  } else {
+    const allAssets = await request.server.prisma.mediaAsset.findMany({
+      where: { deletedAt: null }
+    });
+    asset = allAssets.find(a => 
+      a.fileName === filename || 
+      a.filePath === filename ||
+      a.filePath.endsWith('/' + filename) ||
+      (a.metadata && a.metadata.localFilename === filename)
+    );
+  }
+
+  if (asset) {
+    const storageLocation = asset.metadata?.storageLocation || asset.status;
+    const b2Key = asset.metadata?.b2Key || asset.filePath;
+    
+    if ((storageLocation === "b2" || storageLocation === "both") && b2Key && b2Storage.isEnabled()) {
+      const freshUrl = await b2Storage.getPresignedUrl(b2Key);
+      if (freshUrl) {
+        console.log(`Redirecting request for ${filename} to fresh B2 URL`);
+        return reply.code(307).redirect(freshUrl);
+      }
+    }
+  }
+
+  const filePath = await resolveMediaFilePath(request, filename);
+  if (!filePath || !fs.existsSync(filePath)) {
+    return reply.code(404).send({ success: false, error: "File not found" });
+  }
+
+  const displayName = filename.replace(/^\d+-/, "");
+  return serveMediaFile(request, reply, filePath, {
+    download,
+    displayName,
+  });
+}
+
+
+//2. Get media assets - return real uploaded files
+module.exports.getMediaAssets = async (request, reply) => {
+    const {
+      query,
+      type,
+      sortBy,
+      sortOrder,
+      limit = 20,
+      offset = 0,
+    } = request.query;
+
+    try {
+      const userId = request.user.id;
+      const orgId = request.user.orgId;
+
+      // a. Build database filter query
+      const where = {
+        deletedAt: null,
+        uploadedByUserId: userId,
+      };
+
+      if (query) {
+        where.fileName = {
+          contains: query,
+          mode: 'insensitive'
+        };
+      }
+
+      if (type && type !== "All") {
+        if (type === "Video") {
+          where.mimeType = { startsWith: "video/" };
+        } else if (type === "Images") {
+          where.mimeType = { startsWith: "image/" };
+        } else if (type === "Audio") {
+          where.mimeType = { startsWith: "audio/" };
+        } else if (type === "Document") {
+          where.mimeType = { contains: "pdf" };
+        }
+      }
+
+      // b. Fetch scoped media assets from PostgreSQL database
+      const dbAssets = await request.server.prisma.mediaAsset.findMany({
+        where,
+        orderBy: {
+          createdAt: sortOrder === 'asc' ? 'asc' : 'desc'
+        },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+      });
+
+      // c. Map database records to the frontend asset shape
+      const transformedAssets = dbAssets.map(asset => {
+        const fileSize = Number(asset.fileSize);
+        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+        const normalizedType = normalizeAssetType(asset.mimeType);
+
+        return {
+          id: asset.id,
+          name: asset.fileName,
+          type: normalizedType,
+          size: fileSize,
+          uploadDate: asset.createdAt.toISOString(),
+          url: fileUrl,
+          thumbnail: normalizedType === "image" ? fileUrl : null,
+          tags: asset.metadata?.tags || [],
+          metadata: asset.metadata || {},
+          compressionStatus: asset.transcodingStatus || "completed",
+        };
+      });
+
+      reply.send({
+        success: true,
+        assets: transformedAssets,
+        folders: [],
+      });
+    } catch (error) {
+      console.error("Error reading media assets from database:", error);
+      reply.code(500).send({
+        success: false,
+        error: "Failed to retrieve media assets",
+        message: error.message,
+      });
+    }
+};
+
+//3. Search media assets
+module.exports.searchMediaAssets = async (request, reply) => {
+    try {
+      const { q: query = "" } = request.query;
+      const userId = request.user.id;
+
+      if (!query || !String(query).trim()) {
+        return reply.code(400).send({
+          success: false,
+          error: "Search query is required",
+          assets: [],
+        });
+      }
+
+      // Query database for assets matching the search string, scoped to the logged-in user
+      const dbAssets = await request.server.prisma.mediaAsset.findMany({
+        where: {
+          uploadedByUserId: userId,
+          deletedAt: null,
+          fileName: {
+            contains: String(query),
+            mode: 'insensitive'
+          }
+        },
+        orderBy: {
+          createdAt: 'desc'
+        }
+      });
+
+      const transformedAssets = dbAssets.map(asset => {
+        const fileSize = Number(asset.fileSize);
+        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+        const normalizedType = normalizeAssetType(asset.mimeType);
+
+        return {
+          id: asset.id,
+          name: asset.fileName,
+          type: normalizedType,
+          size: fileSize,
+          uploadDate: asset.createdAt.toISOString(),
+          url: fileUrl,
+          thumbnail: normalizedType === "image" ? fileUrl : null,
+          tags: asset.metadata?.tags || [],
+          metadata: asset.metadata || {},
+          compressionStatus: asset.transcodingStatus || "completed",
+        };
+      });
+
+      return reply.send({
+        success: true,
+        assets: transformedAssets,
+        query: String(query),
+        count: transformedAssets.length,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: error.message,
+        assets: [],
+      });
+    }
+};
+
+//4. Stream file for preview/playback (video player uses this URL)
+module.exports.fileStreamPreview = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      return await handleMediaRedirectOrServe(request, reply, filename, false);
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to stream file",
+        message: error.message,
+      });
+    }
+};
+
+//5. Download file (browser saves to disk)
+module.exports.downloadFile = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      return await handleMediaRedirectOrServe(request, reply, filename, true);
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to download file",
+        message: error.message,
+      });
+    }
+};
+
+//6. List soft-deleted files (Trash)
+module.exports.softDelete = async (request, reply) => {
+    try {
+      const userId = request.user.id;
+
+      // Fetch soft-deleted assets from PostgreSQL database
+      const dbAssets = await request.server.prisma.mediaAsset.findMany({
+        where: {
+          uploadedByUserId: userId,
+          deletedAt: { not: null },
+        },
+        orderBy: {
+          deletedAt: 'desc'
+        }
+      });
+      
+      // Transform files using the same structure as active files
+      const transformed = dbAssets.map(asset => {
+        const fileSize = Number(asset.fileSize);
+        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+        const normalizedType = normalizeAssetType(asset.mimeType);
+        
+        return {
+          id: asset.id,
+          name: asset.fileName,
+          type: normalizedType,
+          size: fileSize,
+          uploadDate: asset.createdAt.toISOString(),
+          deletedAt: asset.deletedAt ? asset.deletedAt.toISOString() : new Date().toISOString(),
+          url: fileUrl,
+          thumbnail: normalizedType === "image" ? fileUrl : null,
+          tags: asset.metadata?.tags || [],
+          metadata: asset.metadata || {},
+          compressionStatus: asset.transcodingStatus || "completed",
+          storageLocation: asset.metadata?.storageLocation || "local",
+          isTrash: true,
+        };
+      });
+
+      return reply.send({
+        success: true,
+        assets: transformed,
+      });
+    } catch (error) {
+      console.error("Error retrieving trash assets:", error);
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to retrieve trash assets",
+        message: error.message,
+      });
+    }
+};
+
+//7. Restore a soft-deleted file
+module.exports.restoreSoftDelete = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      
+      let restoredFromDb = false;
+
+      // 1. If it's a database UUID, restore in PostgreSQL database
+      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        try {
+          await request.server.prisma.mediaAsset.update({
+            where: { id: filename },
+            data: { deletedAt: null }
+          });
+          restoredFromDb = true;
+        } catch (dbErr) {
+          console.warn("Could not restore asset in database:", dbErr.message);
+        }
+      }
+
+      // 2. Also try restoring from B2 if B2 is enabled
+      if (b2Storage.isEnabled()) {
+        try {
+          const b2Files = await b2Storage.listTrashFiles("uploads/");
+          const exactMatch = b2Files.find(f => f.id === filename || f.name === filename || f.key.endsWith(filename));
+
+          if (exactMatch) {
+            await b2Storage.restoreFile(exactMatch.key);
+          }
+        } catch (b2Error) {
+          console.warn("Could not restore file from B2:", b2Error.message);
+        }
+      }
+
+      return reply.send({
+        success: true,
+        message: restoredFromDb ? "File restored successfully" : "File restore attempted"
+      });
+    } catch (error) {
+      console.error("Error restoring file:", error);
+      return reply.code(500).send({
+        success: false,
+        error: error.message
+      });
+    }
+}
+
+//8. Permanently delete a file from B2
+module.exports.deletePermanently = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      
+      let deletedFromLocal = false;
+      let deletedFromB2 = false;
+
+      // Try deleting local duplicates just in case
+      let filePath = await resolveMediaFilePath(request, filename);
+      while (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        deletedFromLocal = true;
+        filePath = await resolveMediaFilePath(request, filename);
+      }
+
+      if (b2Storage.isEnabled()) {
+        try {
+          const b2Files = await b2Storage.listTrashFiles("uploads/");
+          const activeFiles = await b2Storage.searchFiles(filename);
+          
+          const allB2Files = [...b2Files, ...activeFiles];
+          const exactMatch = allB2Files.find(f => f.id === filename || f.key === filename || f.key.endsWith(filename));
+
+          if (exactMatch) {
+            await b2Storage.permanentlyDeleteFile(exactMatch.key);
+            deletedFromB2 = true;
+          } else {
+            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+            await b2Storage.permanentlyDeleteFile(cleanKey);
+            deletedFromB2 = true;
+          }
+        } catch (b2Error) {
+          console.warn(`Failed to permanently delete key ${filename} from B2:`, b2Error.message);
+        }
+      }
+ 
+      if (!deletedFromLocal && !deletedFromB2) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found on local disk or B2 storage",
+        });
+      }
+
+      // Also delete from database if it's a UUID
+      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        try {
+          await request.server.prisma.mediaAsset.delete({
+            where: { id: filename }
+          });
+        } catch (dbErr) {
+          console.warn("Could not delete asset from database during permanent delete:", dbErr.message);
+        }
+      }
+
+      return reply.send({
+        success: true,
+        message: "File permanently deleted",
+        deletedFrom: {
+          local: deletedFromLocal,
+          b2: deletedFromB2,
+        }
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: error.message,
+      });
+    }
+}
+
+//9. GET /api/media/:filename — file bytes for players
+module.exports.getMediaFile = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      const wantsMeta =
+        request.query.meta === "true" || request.query.meta === "1";
+
+      if (wantsMeta) {
+        // Look up by UUID first
+        let dbAsset;
+        if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+          dbAsset = await request.server.prisma.mediaAsset.findUnique({
+            where: { id: filename }
+          });
+        }
+
+        if (dbAsset) {
+          const fileSize = Number(dbAsset.fileSize);
+          const fileUrl = `/api/media/${encodeURIComponent(dbAsset.id)}/stream`;
+          const normalizedType = normalizeAssetType(dbAsset.mimeType);
+
+          return reply.send({
+            success: true,
+            asset: {
+              id: dbAsset.id,
+              name: dbAsset.fileName,
+              type: normalizedType,
+              size: fileSize,
+              uploadDate: dbAsset.createdAt.toISOString(),
+              url: fileUrl,
+              thumbnail: normalizedType === "image" ? fileUrl : null,
+              tags: dbAsset.metadata?.tags || [],
+              metadata: dbAsset.metadata || {},
+              compressionStatus: dbAsset.transcodingStatus || "completed",
+            }
+          });
+        }
+
+        const storedName = resolveMediaFilename(filename);
+        const filePath = await resolveMediaFilePath(request, filename);
+        if (!filePath || !fs.existsSync(filePath)) {
+          return reply.code(404).send({ success: false, error: "File not found" });
+        }
+
+        const stats = fs.statSync(filePath);
+        const mimeType = inferMimeType(storedName || filename);
+        const asset = toFrontendAssetShape({
+          id: storedName || filename,
+          name: (storedName || filename).replace(/^\d+-/, ""),
+          mimeType,
+          size: stats.size,
+          uploadDate: stats.mtime.toISOString(),
+          tags: [],
+          metadata: {},
+          compressionStatus: "completed",
+        });
+
+        return reply.send({ success: true, asset });
+      }
+
+      return await handleMediaRedirectOrServe(request, reply, filename, false);
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: "Failed to serve file",
+        message: error.message,
+      });
+    }
+};
+
+//10. Upload media asset
+module.exports.uploadMediaFile = async (request, reply) => {
+    try {
+      if (!b2Storage.isEnabled()) {
+        return reply.code(500).send({
+          success: false,
+          message: "Cloud storage is not configured. Local storage is disabled.",
+        });
+      }
+
+      const role = (request.user && request.user.role) ? request.user.role : "member";
+      const isolationTier = (role === "super_admin" || role === "admin" || role === "system_admin") ? "internal" : "external";
+      
+      // Generate data-based subfolder (YYYY-MM-DD)
+      const today = new Date().toISOString().split("T")[0];
+
+      const parts = request.parts();
+      const uploadedFiles = [];
+
+      for await (const part of parts) {
+        if (part.file) {
+          const filename = `${Date.now()}-${part.filename}`;
+          const b2Key = `uploads/${isolationTier}/${today}/${filename}`; 
+          
+          console.log(`Streaming directly to B2: ${filename}`);
+          
+          let size = 0;
+          part.file.on('data', (chunk) => {
+            size += chunk.length;
+          });
+          
+          let b2Result;
+          try {
+            b2Result = await b2Storage.uploadStream(part.file, b2Key, part.mimetype, {
+              originalName: part.filename,
+            });
+          } catch (err) {
+            console.error("Direct B2 stream failed:", err);
+            throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
+          }
+
+          const b2Url = b2Result?.url || null;
+          const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
+
+          // Write the media asset to PostgreSQL database
+          const dbAsset = await request.server.prisma.mediaAsset.create({
+            data: {
+              orgId: request.user.orgId,
+              fileName: part.filename,
+              filePath: b2Key,
+              fileSize: BigInt(size),
+              originalSize: BigInt(size),
+              mimeType: part.mimetype,
+              b2FileId: b2Result?.fileId || null,
+              cdnUrl: fileUrl,
+              uploadedByUserId: request.user.id,
+              status: "ready",
+              metadata: {
+                tags: [],
+                storageLocation: "b2",
+                b2Url,
+                b2Key,
+              }
+            }
+          });
+
+          const fileInfo = {
+            id: dbAsset.id,
+            name: dbAsset.fileName,
+            type: normalizeAssetType(dbAsset.mimeType),
+            size: Number(dbAsset.fileSize),
+            uploadDate: dbAsset.createdAt.toISOString(),
+            url: `/api/media/${encodeURIComponent(dbAsset.id)}/stream`,
+            thumbnail: normalizeAssetType(dbAsset.mimeType) === "image" ? `/api/media/${encodeURIComponent(dbAsset.id)}/stream` : null,
+            tags: [],
+            metadata: dbAsset.metadata || {},
+            compressionStatus: "completed",
+            storageLocation: "b2",
+          };
+
+          uploadedFiles.push(fileInfo);
+          console.log(`File streamed directly to B2 and saved to DB: ${part.filename} (${size} bytes)`);
+        }
+      }
+
+      if (uploadedFiles.length === 0) {
+        return reply.code(400).send({
+          success: false,
+          message: "No files uploaded",
+        });
+      }
+
+      reply.send({
+        success: true,
+        message: "Files uploaded directly to cloud successfully",
+        asset: uploadedFiles[0],
+        files: uploadedFiles,
+        uploadedTo: {
+          local: false,
+          b2: true,
+        },
+      });
+    } catch (error) {
+      console.error("Upload error:", error);
+      reply.code(500).send({
+        success: false,
+        message: "Upload failed",
+        error: error.message,
+      });
+    }
+}
+
+//11. Delete media asset
+module.exports.deleteMediaFile = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      
+      let deletedFromLocal = false;
+      let deletedFromB2 = false;
+
+      // If it's a database UUID, soft-delete it in the database
+      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        try {
+          await request.server.prisma.mediaAsset.update({
+            where: { id: filename },
+            data: { deletedAt: new Date() }
+          });
+        } catch (dbErr) {
+          console.warn("Could not soft delete asset in database:", dbErr.message);
+        }
+      }
+
+      // 1. Try deleting from local
+      let filePath = await resolveMediaFilePath(request, filename);
+      // Delete all local files with that name in case of duplicates across folders
+      while (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        deletedFromLocal = true;
+        
+        // Temporarily rename or mock so resolveMediaFilePath can find any other duplicates
+        // Actually, resolveMediaFilename will just return null if the file is deleted
+        filePath = await resolveMediaFilePath(request, filename);
+      }
+
+      // 2. Try deleting from B2
+      if (b2Storage.isEnabled()) {
+        try {
+          // B2 keys usually start with 'uploads/' and contain subfolders like 'internal/2026-05-28/'
+          // We need to search for the exact key
+          const b2Files = await b2Storage.searchFiles(filename);
+          const exactMatch = b2Files.find(f => path.basename(f.key) === filename || path.basename(f.key) === filename.replace(/^\d+-/, ""));
+          
+          if (exactMatch) {
+            await b2Storage.deleteFile(exactMatch.key);
+            deletedFromB2 = true;
+          } else {
+            // Fallback: try deleting the direct key
+            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+            await b2Storage.deleteFile(cleanKey);
+            // This might create a delete marker, but it's a fallback.
+            deletedFromB2 = true;
+          }
+        } catch (b2Error) {
+          console.warn(`Failed to delete key ${filename} from B2:`, b2Error.message);
+        }
+      }
+
+      if (!deletedFromLocal && !deletedFromB2) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found on local disk or B2 storage",
+        });
+      }
+
+      return reply.send({
+        success: true,
+        message: "File deleted successfully",
+        deletedFrom: {
+          local: deletedFromLocal,
+          b2: deletedFromB2,
+        }
+      });
+    } catch (error) {
+      return reply.code(500).send({
+        success: false,
+        error: error.message,
+      });
+    }
+};

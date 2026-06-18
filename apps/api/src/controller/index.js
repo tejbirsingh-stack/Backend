@@ -4,9 +4,11 @@ const authController = require('./authController');
 const collectionController = require('./collectionController');
 const compressionController = require('./compressionController');
 const healthController = require('./healthController');
+const mediaController = require('./mediaController');
 const organizationController = require('./organizationsController');
 const realtimeController = require('./realtimeController');
 const userController = require('./userController');
+
 
 module.exports = {
   ...annotationController,
@@ -18,4 +20,5 @@ module.exports = {
   ...organizationController,
   ...realtimeController,
   ...userController,
+  ...mediaController,
 };
