@@ -1,20 +1,14 @@
+const { getUsers, getSingleUser, createUser } = require("../controller");
+
 module.exports = function (fastify, opts, done) {
-  // Get users
-  fastify.get("/", async (request, reply) => {
-    reply.send({ message: "Users endpoints not yet implemented" });
-  });
+  // 1. Get all users
+  fastify.get("/", getUsers);
 
-  // Get single user
-  fastify.get("/:id", async (request, reply) => {
-    reply.send({
-      message: `User ${request.params.id} endpoint not yet implemented`,
-    });
-  });
+  // 2. Get single user
+  fastify.get("/:id", getSingleUser);
 
-  // Create user
-  fastify.post("/", async (request, reply) => {
-    reply.send({ message: "User creation endpoint not yet implemented" });
-  });
+  // 3. Create user
+  fastify.post("/", createUser);
 
   done();
 };

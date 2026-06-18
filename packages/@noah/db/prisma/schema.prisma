@@ -27,6 +27,7 @@ model Organization {
   collections  Collection[]
   tags         Tag[]
   shareLinks   ShareLink[]
+  annotations  Annotation[]
 
   @@map("organizations")
 }
@@ -52,6 +53,7 @@ model User {
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
+  annotations  Annotation[]
   uploadedMediaAssets MediaAsset[] @relation("UploadedBy")
   createdCollections  Collection[] @relation("CreatedBy")
   addedToCollections  CollectionAsset[]
@@ -143,6 +145,7 @@ model MediaAsset {
   updatedAt         DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
   deletedAt         DateTime?  @db.Timestamptz(6)
 
+  annotations  Annotation[]
   collectionAssets CollectionAsset[]
   assetVersions    AssetVersion[]
   assetTags        AssetTag[]
@@ -303,4 +306,34 @@ model AnalyticsEvent {
   @@id([id, createdAt]) // TimescaleDB requires composite primary key on time column
   @@index([orgId, createdAt(sort: Desc)])
   @@map("analytics_events")
+}
+
+// Annotation model
+model Annotation {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String       @db.Uuid
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assetId         String       @db.Uuid
+  mediaAsset      MediaAsset   @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  userId          String       @db.Uuid
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The type of annotation: e.g., 'comment', 'drawing', 'shape', 'stamp', 'group'
+  type            String       @db.VarChar(50)
+
+  // JSON payload containing tool-specific data (e.g. coordinates, strokes, text, color, replies)
+  data            Json         @default("{}") @db.JsonB
+
+  // Helper columns for fast querying and indexing
+  videoTimestamp  Decimal?     @db.Decimal(10, 3)
+  resolved        Boolean      @default(false)
+
+  createdAt       DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([orgId])
+  @@index([assetId])
+  @@index([userId])
+  @@index([type])
+  @@map("annotations")
 }

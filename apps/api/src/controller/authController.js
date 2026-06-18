@@ -1,0 +1,475 @@
+const authService = require("../services/auth-service");
+
+// 1. Login Handler
+module.exports.login = async (request, reply) =>{
+    const { email, password, mfaCode } = request.body;
+
+    try {
+      // Validate input
+      if (!email || !password) {
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: "Email and password are required",
+        });
+      }
+
+      // Find the user
+      const user = await authService.findUserByEmail(email);
+
+      // Check if user exists and password is valid
+      if (
+        !user ||
+        !(await authService.verifyPassword(user.passwordHash, password))
+      ) {
+        return reply.status(401).send({
+          success: false,
+          error: "Unauthorized",
+          message: "Invalid email or password",
+        });
+      }
+
+      // Check user status
+      if (user.status !== "active") {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Account is not active",
+        });
+      }
+
+      // Check if MFA is enabled and verify the code
+      if (user.mfaEnabled) {
+        if (!mfaCode) {
+          return reply.status(400).send({
+            success: false,
+            error: "MFA Required",
+            message: "Multi-factor authentication code is required",
+            requiresMfa: true,
+          });
+        }
+
+        if (!authService.verifyTotp(mfaCode, user.mfaSecret)) {
+          return reply.status(401).send({
+            success: false,
+            error: "Unauthorized",
+            message: "Invalid authentication code",
+            requiresMfa: true,
+          });
+        }
+      }
+
+      // Create a new session
+      const session = await authService.createSession(
+        user.id,
+        request.headers["user-agent"],
+        request.ip
+      );
+      return {
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          orgId: user.orgId,
+          organization: user.organization
+        },
+        accessToken: session.token,
+        refreshToken: session.token,
+        expiresAt: session.expiresAt,
+      };
+    } catch (error) {
+      console.error("Login error:", error);
+      return reply.status(500).send({
+        success: false,
+        error: "Internal Server Error",
+        message: "Failed to process login",
+      });
+    }
+};
+
+// 2. Register Handler
+module.exports.register = async (request, reply) =>{
+    const { name, email, password, orgId, hubspotUtk , phone, jobTitle} = request.body;
+
+    try {
+      // Validate input
+      if (!name || !email || !password || !orgId) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Name, email, password, and organization ID are required",
+        });
+      }
+
+      // Check if user already exists
+      const existingUser = await authService.findUserByEmail(email);
+      if (existingUser) {
+        return reply.status(409).send({
+          error: "Conflict",
+          message: "Email is already registered",
+        });
+      }
+
+      // Check if organization exists
+      const organization = await request.server.prisma.organization.findUnique({
+        where: { id: orgId },
+      });
+
+      if (!organization) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Invalid organization ID",
+        });
+      }
+
+      // Hash the password
+      const passwordHash = await authService.hashPassword(password);
+
+      // Create the user
+      const user = await request.server.prisma.user.create({
+        data: {
+          name,
+          email,
+          passwordHash,
+          orgId,
+          role: "admin", 
+          status: "active",
+          phone : phone || null,
+          jobTitle : jobTitle || null,
+          hubspotUtk : hubspotUtk || null,
+        },
+      });
+
+      // --- ADD THIS HUBSPOT SYNC BLOCK ---
+      const portalId = process.env.HUBSPOT_PORTAL_ID;
+      const formId = process.env.HUBSPOT_FORM_ID;
+      const accessToken = process.env.HUBSPOT_ACCESS_TOKEN;
+      
+      if (portalId && formId && accessToken) {
+        const nameParts = name.trim().split(" ").filter(Boolean);
+        const firstname = nameParts[0] || "";
+        const lastname = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
+        const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
+        // Call HubSpot API in the background so it doesn't block the user's response
+        fetch(hubspotEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            fields: [
+              { objectTypeId: "0-1", name: "email", value: email },
+              { objectTypeId: "0-1", name: "firstname", value: firstname },
+              { objectTypeId: "0-1", name: "lastname", value: lastname },
+              { objectTypeId: "0-1", name: "company", value: organization ? organization.name : "" },
+              { objectTypeId: "0-1", name: "phone", value: phone || "" },
+              { objectTypeId: "0-1", name: "jobtitle", value: jobTitle || "" },
+            ],
+            context: {
+              hutk: hubspotUtk,
+              pageUri: request.headers.referer || "",
+              pageName: "Register Page",
+              ipAddress: request.ip,
+            },
+            skipValidation: true,
+          }),
+        })
+          .then(async (res) => {
+            if (!res.ok) {
+              const errText = await res.text();
+              console.error("HubSpot Form submit failed response:", errText);
+            } else {
+              console.log("Successfully synced registration to HubSpot Form");
+            }
+          })
+          .catch((err) => {
+            console.error("HubSpot Form API Connection error:", err.message);
+          });
+      }
+
+      // Create a session for the new user
+      const session = await authService.createSession(
+        user.id,
+        request.headers["user-agent"],
+        request.ip
+      );
+
+      // Return the user info and session token
+      return {
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: user.role,
+          orgId: user.orgId,
+        },
+        token: session.token,
+        expiresAt: session.expiresAt,
+      };
+    } catch (error) {
+      console.error("Registration error:", error);
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Failed to process registration",
+      });
+    }
+};
+
+// 3. Logout Handler
+module.exports.logout = async (request, reply) =>{
+    try {
+        // Get token from the request (it's guaranteed to be valid due to the authenticate preHandler)
+        const authHeader = request.headers.authorization;
+        const token = authHeader.replace("Bearer ", "");
+
+        // Revoke the session
+        await authService.revokeSession(token);
+
+        return {
+          success: true,
+          message: "Logged out successfully",
+        };
+      } catch (error) {
+        console.error("Logout error:", error);
+        return reply.status(500).send({
+          success: false,
+          error: "Internal Server Error",
+          message: "Failed to process logout",
+        });
+      }
+};
+
+// 4. Setup MFA Handler
+module.exports.setupMfa = async (request, reply) =>{
+    try {
+        const userId = request.user.id;
+
+        // Generate a new TOTP secret
+        const secret = authService.generateTotpSecret();
+
+        // Store the secret but don't enable MFA yet (will be enabled after verification)
+        await request.server.prisma.user.update({
+          where: { id: userId },
+          data: {
+            mfaSecret: secret,
+            mfaEnabled: false,
+          },
+        });
+
+        // Generate the OTP URI for QR code generation
+        const otpUri = authService.generateTotpUri(request.user.email, secret);
+
+        return {
+          secret,
+          otpUri,
+        };
+      } catch (error) {
+        console.error("MFA setup error:", error);
+        return reply.status(500).send({
+          error: "Internal Server Error",
+          message: "Failed to setup MFA",
+        });
+      }
+};
+
+// 5. Enable MFA Handler
+module.exports.enableMfa = async (request, reply) =>{
+    const { code } = request.body;
+
+      try {
+        // Validate input
+        if (!code) {
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: "Verification code is required",
+          });
+        }
+
+        // Get the user with MFA secret
+        const user = await request.server.prisma.user.findUnique({
+          where: { id: request.user.id },
+          select: { id: true, mfaSecret: true },
+        });
+
+        // Check if the user has a secret
+        if (!user.mfaSecret) {
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: "MFA has not been setup",
+          });
+        }
+
+        // Verify the code
+        if (!authService.verifyTotp(code, user.mfaSecret)) {
+          return reply.status(400).send({
+            error: "Bad Request",
+            message: "Invalid verification code",
+          });
+        }
+
+        // Enable MFA
+        await request.server.prisma.user.update({
+          where: { id: user.id },
+          data: { mfaEnabled: true },
+        });
+
+        return { message: "MFA enabled successfully" };
+      } catch (error) {
+        console.error("MFA enable error:", error);
+        return reply.status(500).send({
+          error: "Internal Server Error",
+          message: "Failed to enable MFA",
+        });
+      }
+};
+
+// 6. Disable MFA Handler
+module.exports.disableMfa = async (request, reply) =>{
+    try {
+        // Update the user
+        await request.server.prisma.user.update({
+          where: { id: request.user.id },
+          data: {
+            mfaSecret: null,
+            mfaEnabled: false,
+          },
+        });
+
+        return { message: "MFA disabled successfully" };
+      } catch (error) {
+        console.error("MFA disable error:", error);
+        return reply.status(500).send({
+          error: "Internal Server Error",
+          message: "Failed to disable MFA",
+        });
+      }
+};
+
+// 7. Get Me Currenlt User Info
+module.exports.getMe = async (request, reply) =>{
+    return {
+      success: true,
+      user: request.user,
+    };
+};
+
+// 8. Forgot Password Handler
+module.exports.forgotPassword = async (request, reply) => {
+    const { email } = request.body;
+
+    try {
+      // Validate input
+      if (!email) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Email is required",
+        });
+      }
+
+      // Find the user
+      const user = await authService.findUserByEmail(email);
+
+      // If user doesn't exist, still return success to prevent email enumeration
+      if (!user) {
+        return {
+          success: true,
+          message:
+            "If an account exists for this email, a password reset link has been sent",
+        };
+      }
+
+      // Check user status
+      if (user.status !== "active") {
+        return {
+          success: true,
+          message:
+            "If an account exists for this email, a password reset link has been sent",
+        };
+      }
+
+      // Generate token
+      const resetToken = await authService.createPasswordResetToken(user.id);
+
+      // Send email with reset link
+      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+
+      // Use the email service to send the email
+      // This is a placeholder - you'll need to implement email sending
+      console.log(`Password reset email for ${user.email}: ${resetUrl}`);
+
+      // In production, you would use:
+      await request.server.emailService.sendPasswordReset(user.email, user.name, resetUrl);
+
+      return {
+        success: true,
+        message:
+          "If an account exists for this email, a password reset link has been sent",
+      };
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Failed to process password reset request",
+      });
+    }
+}
+
+// 9. Reset Password Handle
+module.exports.resetPassword = async (request, reply) => {
+    const { token, newPassword } = request.body;
+
+    try {
+      // Validate input
+      if (!token || !newPassword) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Token and new password are required",
+        });
+      }
+
+      // Verify token and get user ID
+      const userId = await authService.verifyPasswordResetToken(token);
+
+      if (!userId) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "Invalid or expired token",
+        });
+      }
+
+      // Get the user
+      const user = await request.server.prisma.user.findUnique({
+        where: { id: userId },
+      });
+
+      if (!user) {
+        return reply.status(400).send({
+          error: "Bad Request",
+          message: "User not found",
+        });
+      }
+
+      // Hash the new password
+      const passwordHash = await authService.hashPassword(newPassword);
+
+      // Update the user's password
+      await request.server.prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash },
+      });
+
+      // Revoke all active sessions for security
+      await authService.revokeAllUserSessions(userId);
+
+      // Return success
+      return { success: true, message: "Password successfully reset" };
+    } catch (error) {
+      console.error("Reset password error:", error);
+      return reply.status(500).send({
+        error: "Internal Server Error",
+        message: "Failed to reset password",
+      });
+    }
+}

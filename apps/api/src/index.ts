@@ -344,37 +344,23 @@ async function setupServer() {
     });
   });
 
-  // Health check endpoint
-  fastify.get('/health', async (request: any, reply: any) => {
-    const health = await healthChecker.check({
-      database: prisma,
-      redis: redis,
-      authService: fastify.authService
-    });
-
-    const statusCode = health.status === 'healthy' ? 200 : 503;
-    reply.code(statusCode).send(health);
-  });
-
   // Metrics endpoint for Prometheus
   fastify.get('/metrics', async (request: any, reply: any) => {
     const metrics = await fastify.metrics.getMetrics();
     reply.type('text/plain').send(metrics);
   });
-
   try {
     // API Routes - using plain require to avoid top-level await
-    // These are placeholder routes for development - create empty files to test
+    fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
+    fastify.register(require('./routes/annotations'), { prefix: '/api/annotations' });
     fastify.register(require('./routes/auth-routes'), { prefix: '/api/auth' });
-    fastify.register(require('./routes/media'), { prefix: '/api/media' });
     fastify.register(require('./routes/collections'), { prefix: '/api/collections' });
     fastify.register(require('./routes/compression'), { prefix: '/api/compression' });
+    fastify.register(require('./routes/health-route.js'));
+    fastify.register(require('./routes/media'), { prefix: '/api/media' });
     fastify.register(require('./routes/organizations'), { prefix: '/api/organizations' });
+    fastify.register(require('./routes/realtime'), { prefix: '/ws' });    // WebSocket routes for real-time features
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
-    fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
-
-    // WebSocket routes for real-time features
-    fastify.register(require('./routes/realtime'), { prefix: '/ws' });
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });
   }
