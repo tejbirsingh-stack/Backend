@@ -47,6 +47,21 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
             return reply.code(400).send({ success: false, error: "Type is Required!" });
         }
 
+        // Handle PAGE_STATE upsert to allow frontend to easily sync everything at once
+        if (type === 'PAGE_STATE') {
+            const existing = await request.server.prisma.annotation.findFirst({
+                where: { assetId: mediaId, userId, type: 'PAGE_STATE' }
+            });
+            
+            if (existing) {
+                const update = await request.server.prisma.annotation.update({
+                    where: { id: existing.id },
+                    data: { data: data || {}, videoTimestamp: videoTimestamp !== undefined ? videoTimestamp : null }
+                });
+                return reply.code(200).send({ success: true, annotations: update });
+            }
+        }
+
         const newAnnotation = await request.server.prisma.annotation.create({
             data: {
                 orgId,
