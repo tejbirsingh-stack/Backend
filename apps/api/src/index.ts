@@ -21,35 +21,14 @@ import path from 'path';
 import authService from './services/auth-service.js';
 
 import emailService from './services/email-service.js';
+import { Logger } from './utils/logger.js';
+import { MetricsCollector } from './utils/metrics.js';
+import { HealthChecker } from './utils/health.js';
 
 const mediaService = {};
 const compressionService = {};
 
-// Simplified utilities
-class Logger {
-  namespace: string;
-  constructor(namespace: string) {
-    this.namespace = namespace;
-  }
-
-  info(message: string, meta?: any) {
-    console.log(`[INFO] [${this.namespace}] ${message}`, meta || '');
-  }
-
-  warn(message: string, meta?: any) {
-    console.warn(`[WARN] [${this.namespace}] ${message}`, meta || '');
-  }
-
-  error(message: string, meta?: any) {
-    console.error(`[ERROR] [${this.namespace}] ${message}`, meta || '');
-  }
-}
-
-class MetricsCollector {
-  recordHttpRequest(method?: string, url?: string, statusCode?: number, responseTime?: number) { }
-  recordError(errorName?: string) { }
-  getMetrics() { return "# Metrics placeholder"; }
-}
+// Utilities imported from ./utils
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -65,33 +44,7 @@ declare module 'fastify' {
   }
 }
 
-class HealthChecker {
-  async check(services: any = {}) {
-    // Check services passed as parameters
-    const serviceStatus: Record<string, string> = {};
 
-    // Add auth service status if provided
-    if (services.authService) {
-      try {
-        const authStatus = await services.authService.healthCheck();
-        serviceStatus.auth = authStatus ? 'ok' : 'error';
-      } catch (error) {
-        serviceStatus.auth = 'error';
-      }
-    }
-
-    // Overall status is healthy if no services are in error state
-    const hasErrors = Object.values(serviceStatus).some(status => status === 'error');
-
-    return {
-      status: hasErrors ? 'unhealthy' : 'healthy',
-      timestamp: new Date().toISOString(),
-      services: serviceStatus,
-      version: process.env.VERSION || '1.0.0',
-      environment: process.env.NODE_ENV
-    };
-  }
-}
 
 // Configuration
 const config = {
