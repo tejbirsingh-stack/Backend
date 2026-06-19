@@ -194,7 +194,7 @@ class B2StorageService {
   /**
    * Upload stream to B2 (for direct uploads)
    */
-  async uploadStream(stream, key, contentType, metadata = {}) {
+  async uploadStream(stream, key, contentType, metadata = {}, onB2Progress) {
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
@@ -233,17 +233,19 @@ class B2StorageService {
       },
     },
 
-  // Upload each part in 100 MB chunks
-  partSize: 100 * 1024 * 1024,
+  // Upload each part in 5 MB chunks
+  partSize: 5 * 1024 * 1024,
 
   // Upload up to 5 parts concurrently
-  queueSize: 5,
+  queueSize: 100,
 
   // Clean up uploaded parts if an error occurs
   leavePartsOnError: false,
 });
 
-
+if (onB2Progress) {
+  upload.on("httpUploadProgress", onB2Progress);
+}
 
 await upload.done();
       

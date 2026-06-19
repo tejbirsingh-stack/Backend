@@ -638,6 +638,26 @@ module.exports.uploadMediaFile = async (request, reply) => {
         });
       }
 
+      const totalFileSize = Number(request.query.fileSize) || Number(request.headers['x-file-size']) || 0;
+
+      // Write headers for NDJSON streaming immediately to flush them to the browser
+      reply.raw.writeHead(200, {
+        "Content-Type": "application/x-ndjson",
+        "Transfer-Encoding": "chunked",
+        "X-Content-Type-Options": "nosniff",
+        "Access-Control-Allow-Origin": request.headers.origin || "*",
+        "Access-Control-Allow-Credentials": "true",
+      });
+
+      const sendProgress = (loaded, total) => {
+        if (!reply.raw.writableEnded) {
+          reply.raw.write(JSON.stringify({ type: "progress", loaded, total }) + "\n");
+        }
+      };
+
+      // Send initial progress immediately to flush the stream connection
+      sendProgress(0, totalFileSize);
+
       const role = (request.user && request.user.role) ? request.user.role : "member";
       const isolationTier = (role === "super_admin" || role === "admin" || role === "system_admin") ? "internal" : "external";
       
@@ -647,12 +667,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
       const parts = request.parts();
       const uploadedFiles = [];
 
-      
-   
-
       for await (const part of parts) {
-        
-
         if (part.file) {
           const filename = `${Date.now()}-${part.filename}`;
           const b2Key = `uploads/${isolationTier}/${today}/${filename}`; 
@@ -666,12 +681,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
           
           let b2Result;
           try {
-              b2Result = await b2Storage.uploadStream(
+            b2Result = await b2Storage.uploadStream(
               part.file,
               b2Key,
               part.mimetype,
               {
                 originalName: part.filename,
+              },
+              (progress) => {
+                console.log(`[B2 Upload Progress] ${part.filename}: ${progress.loaded} / ${totalFileSize || size}`);
+                sendProgress(progress.loaded, totalFileSize || progress.total || size || 0);
               }
             );
           } catch (err) {
@@ -724,29 +743,39 @@ module.exports.uploadMediaFile = async (request, reply) => {
       }
 
       if (uploadedFiles.length === 0) {
-        return reply.code(400).send({
-          success: false,
-          message: "No files uploaded",
-        });
+        if (!reply.raw.writableEnded) {
+          reply.raw.write(JSON.stringify({ type: "error", message: "No files uploaded" }) + "\n");
+          reply.raw.end();
+        }
+        reply.sent = true;
+        return;
       }
 
-      reply.send({
-        success: true,
-        message: "Files uploaded directly to cloud successfully",
-        asset: uploadedFiles[0],
-        files: uploadedFiles,
-        uploadedTo: {
-          local: false,
-          b2: true,
-        },
-      });
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(JSON.stringify({
+          type: "complete",
+          asset: uploadedFiles[0],
+          files: uploadedFiles,
+          uploadedTo: {
+            local: false,
+            b2: true,
+          },
+        }) + "\n");
+        reply.raw.end();
+      }
+      reply.sent = true;
+
     } catch (error) {
       console.error("Upload error:", error);
-      reply.code(500).send({
-        success: false,
-        message: "Upload failed",
-        error: error.message,
-      });
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(JSON.stringify({
+          type: "error",
+          message: "Upload failed",
+          error: error.message,
+        }) + "\n");
+        reply.raw.end();
+      }
+      reply.sent = true;
     }
 }
 
