@@ -186,87 +186,113 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
 
 //2. Get media assets - return real uploaded files
 module.exports.getMediaAssets = async (request, reply) => {
+  console.log("getMediaAssets called");
+
+  try {
     const {
       query,
       type,
-      sortBy,
       sortOrder,
       limit = 20,
       offset = 0,
+      orgId,
     } = request.query;
 
-    try {
-      const userId = request.user.id;
-      const orgId = request.user.orgId;
+   
 
-      // a. Build database filter query
-      const where = {
-        deletedAt: null,
-        uploadedByUserId: userId,
+    // Build where condition
+    const where = {
+      orgId: orgId,
+      deletedAt: null,
+    };
+
+
+    if (query) {
+      where.fileName = {
+        contains: query,
+        mode: "insensitive",
       };
-
-      if (query) {
-        where.fileName = {
-          contains: query,
-          mode: 'insensitive'
-        };
-      }
-
-      if (type && type !== "All") {
-        if (type === "Video") {
-          where.mimeType = { startsWith: "video/" };
-        } else if (type === "Images") {
-          where.mimeType = { startsWith: "image/" };
-        } else if (type === "Audio") {
-          where.mimeType = { startsWith: "audio/" };
-        } else if (type === "Document") {
-          where.mimeType = { contains: "pdf" };
-        }
-      }
-
-      // b. Fetch scoped media assets from PostgreSQL database
-      const dbAssets = await request.server.prisma.mediaAsset.findMany({
-        where,
-        orderBy: {
-          createdAt: sortOrder === 'asc' ? 'asc' : 'desc'
-        },
-        take: parseInt(limit),
-        skip: parseInt(offset),
-      });
-
-      // c. Map database records to the frontend asset shape
-      const transformedAssets = dbAssets.map(asset => {
-        const fileSize = Number(asset.fileSize);
-        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
-        const normalizedType = normalizeAssetType(asset.mimeType);
-
-        return {
-          id: asset.id,
-          name: asset.fileName,
-          type: normalizedType,
-          size: fileSize,
-          uploadDate: asset.createdAt.toISOString(),
-          url: fileUrl,
-          thumbnail: normalizedType === "image" ? fileUrl : null,
-          tags: asset.metadata?.tags || [],
-          metadata: asset.metadata || {},
-          compressionStatus: asset.transcodingStatus || "completed",
-        };
-      });
-
-      reply.send({
-        success: true,
-        assets: transformedAssets,
-        folders: [],
-      });
-    } catch (error) {
-      console.error("Error reading media assets from database:", error);
-      reply.code(500).send({
-        success: false,
-        error: "Failed to retrieve media assets",
-        message: error.message,
-      });
     }
+
+
+    if (type && type !== "All") {
+      if (type === "Video") {
+        where.mimeType = {
+          startsWith: "video/",
+        };
+      } else if (type === "Images") {
+        where.mimeType = {
+          startsWith: "image/",
+        };
+      } else if (type === "Audio") {
+        where.mimeType = {
+          startsWith: "audio/",
+        };
+      } else if (type === "Document") {
+        where.mimeType = {
+          contains: "pdf",
+        };
+      }
+    }
+
+
+    // Fetch data based on orgId
+    const dbAssets = await request.server.prisma.mediaAsset.findMany({
+      where,
+      orderBy: {
+        createdAt: sortOrder === "asc" ? "asc" : "desc",
+      },
+      take: Number(limit),
+      skip: Number(offset),
+      select: {
+        id: true,
+        fileName: true,
+        filePath: true,
+        mimeType: true,
+        fileSize: true,
+        createdAt: true,
+        metadata: true,
+      },
+    });
+
+
+    const transformedAssets = dbAssets.map((asset) => {
+
+      const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+
+      return {
+        id: asset.id,
+        name: asset.fileName,
+        path: asset.filePath,
+        type: normalizeAssetType(asset.mimeType),
+        size: Number(asset.fileSize),
+        uploadDate: asset.createdAt.toISOString(),
+        url: fileUrl,
+        thumbnail: asset.mimeType.startsWith("image/")
+          ? fileUrl
+          : null,
+        metadata: asset.metadata || {},
+      };
+    });
+
+
+    return reply.send({
+      success: true,
+      orgId,
+      total: transformedAssets.length,
+      assets: transformedAssets,
+    });
+
+
+  } catch (error) {
+    console.error("Error reading media assets:", error);
+
+    return reply.code(500).send({
+      success: false,
+      error: "Failed to retrieve media assets",
+      message: error.message,
+    });
+  }
 };
 
 //3. Search media assets
@@ -621,7 +647,12 @@ module.exports.uploadMediaFile = async (request, reply) => {
       const parts = request.parts();
       const uploadedFiles = [];
 
+      
+   
+
       for await (const part of parts) {
+        
+
         if (part.file) {
           const filename = `${Date.now()}-${part.filename}`;
           const b2Key = `uploads/${isolationTier}/${today}/${filename}`; 
@@ -635,9 +666,14 @@ module.exports.uploadMediaFile = async (request, reply) => {
           
           let b2Result;
           try {
-            b2Result = await b2Storage.uploadStream(part.file, b2Key, part.mimetype, {
-              originalName: part.filename,
-            });
+              b2Result = await b2Storage.uploadStream(
+              part.file,
+              b2Key,
+              part.mimetype,
+              {
+                originalName: part.filename,
+              }
+            );
           } catch (err) {
             console.error("Direct B2 stream failed:", err);
             throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
@@ -713,6 +749,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
       });
     }
 }
+
+
 
 //11. Delete media asset
 module.exports.deleteMediaFile = async (request, reply) => {

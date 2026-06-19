@@ -6,7 +6,7 @@
  */
 
 const { dir } = require("console");
-const { request } = require("http");
+const { request, get } = require("http");
 
 /**
  * @swagger
@@ -199,12 +199,23 @@ const { request } = require("http");
  *               $ref: '#/components/schemas/Error'
  */
 
-const { getMediaAssets, searchMediaAssets, fileStreamPreview, downloadFile, softDelete, restoreSoftDelete, deletePermanently, getMediaFile, uploadMediaFile, deleteMediaFile} = require('../controller');
+const { 
+  getMediaAssets, 
+  searchMediaAssets, 
+  fileStreamPreview, 
+  downloadFile, 
+  softDelete, 
+  restoreSoftDelete, 
+  deletePermanently, 
+  getMediaFile, 
+  uploadMediaFile, 
+  deleteMediaFile
+} = require('../controller');
 
 module.exports = function (fastify, opts, done) {
 
   //2. Get media assets - return real uploaded files
-  fastify.get("/", { preValidation: [fastify.authenticate] }, getMediaAssets);
+  fastify.get("/getmediaassets", { preValidation: [fastify.authenticate]} , getMediaAssets);
 
   //3. Search media assets
   fastify.get("/search", { preValidation: [fastify.authenticate] },searchMediaAssets);
@@ -229,6 +240,7 @@ module.exports = function (fastify, opts, done) {
 
   //10. Upload media asset
   fastify.post("/upload", { preHandler: [fastify.authenticate] }, uploadMediaFile);
+
 
   //11. Delete media asset
   fastify.delete("/:filename", { preValidation: [fastify.authenticate] }, deleteMediaFile);

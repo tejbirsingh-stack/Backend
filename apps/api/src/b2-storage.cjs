@@ -1,4 +1,5 @@
 const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
+
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs');
 const path = require('path');
@@ -203,21 +204,48 @@ class B2StorageService {
       // without needing to know the content-length or hashing upfront
       const { Upload } = require('@aws-sdk/lib-storage');
 
-      const upload = new Upload({
-        client: this.s3Client,
-        params: {
-          Bucket: this.bucket,
-          Key: key,
-          Body: stream,
-          ContentType: contentType,
-          Metadata: {
-            ...metadata,
-            uploadedAt: new Date().toISOString(),
-          },
-        },
-      });
+      // const upload = new Upload({
+      //   client: this.s3Client,
+      //   params: {
+      //     Bucket: this.bucket,
+      //     Key: key,
+      //     Body: stream,
+      //     ContentType: contentType,
+      //     Metadata: {
+      //       ...metadata,
+      //       uploadedAt: new Date().toISOString(),
+      //     },
+      //   },
+      // });
       
-      await upload.done();
+      // await upload.done();
+      const upload = new Upload({
+      client: this.s3Client,
+
+      params: {
+      Bucket: this.bucket,
+      Key: key,
+      Body: stream,
+      ContentType: contentType,
+      Metadata: {
+        ...metadata,
+        uploadedAt: new Date().toISOString(),
+      },
+    },
+
+  // Upload each part in 100 MB chunks
+  partSize: 100 * 1024 * 1024,
+
+  // Upload up to 5 parts concurrently
+  queueSize: 5,
+
+  // Clean up uploaded parts if an error occurs
+  leavePartsOnError: false,
+});
+
+
+
+await upload.done();
       
       console.log(`✅ Stream uploaded to B2: ${key}`);
       
