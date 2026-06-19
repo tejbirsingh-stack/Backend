@@ -1,5 +1,7 @@
 const authService = require("../services/auth-service");
 const { OAuth2Client } = require('google-auth-library');
+const crypto = require("crypto");
+
 
 // 1. Login Handler
 module.exports.login = async (request, reply) =>{
@@ -504,17 +506,77 @@ module.exports.googleLogin = async (request, reply) => {
 
     // b. Extract user info from verified token
     let user = await authService.findUserByEmail(email);
-    // Since app requires an `orgId` to register, reject the login if they don't have an account
+    
+    //c. Since app requires an `orgId` to register, auto-generate them  
     if(!user){
-      return reply.status(401).send({
-        success : false,
-        error : "Unauthorized",
-        message : "No account found for this email. Please sign up first.",
+      const orgName = `${name || "User"}'s Workspace`;
+      const orgSlug = `workspace-${crypto.randomBytes(4).toString("hex")}`;
+      
+      // Create Organization
+      const organization = await request.server.prisma.organization.create({
+        data: {
+          name: orgName,
+          slug: orgSlug,
+          planType: "free"
+        }
       });
+      // Create User
+      user = await request.server.prisma.user.create({
+        data: {
+          email: email,
+          name: name || email.split('@')[0],
+          orgId: organization.id,
+          role: "admin",
+          status: "active"
+        }
+      });
+      
+      // Attach organization to user object for the response payload
+      user.organization = {
+        id: organization.id,
+        name: organization.name,
+        slug: organization.slug
+      };
+      // HubSpot Sync for Auto-provisioned user
+      const portalId = process.env.HUBSPOT_PORTAL_ID;
+      const formId = process.env.HUBSPOT_FORM_ID;
+      const hubspotToken = process.env.HUBSPOT_ACCESS_TOKEN;
+      if (portalId && formId && hubspotToken) {
+        const fallbackName = name || email.split('@')[0];
+        const nameParts = fallbackName.trim().split(" ").filter(Boolean);
+        const firstname = nameParts[0] || "";
+        const lastname = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
+        const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
+        
+        // Run in background
+        fetch(hubspotEndpoint, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${hubspotToken}`,
+          },
+          body: JSON.stringify({
+            fields: [
+              { objectTypeId: "0-1", name: "email", value: email },
+              { objectTypeId: "0-1", name: "firstname", value: firstname },
+              { objectTypeId: "0-1", name: "lastname", value: lastname },
+              { objectTypeId: "0-1", name: "company", value: orgName },
+              { objectTypeId: "0-1", name: "phone", value: "" },
+              { objectTypeId: "0-1", name: "jobtitle", value: "" },
+            ],
+            context: {
+              pageName: "Google Auto-Signup",
+            },
+            skipValidation: true,
+          }),
+        })
+        .then(res => res.ok ? console.log("Google Signup synced to HubSpot") : console.error("HubSpot Sync Failed"))
+        .catch(err => console.error("HubSpot Sync error:", err.message));
+      }
     }
 
-    // c. Check if Account is active
-     if (user.status !== "active") {
+    // d. Check if Account is active
+    if (user.status !== "active") {
         return reply.status(403).send({
            success: false,
            error: "Forbidden",
@@ -522,14 +584,14 @@ module.exports.googleLogin = async (request, reply) => {
         });
     }
 
-    // d. Create a session exactly how normal login does
+    // e. Create a session exactly how normal login does
     const session = await authService.createSession(
       user.id,
       request.headers["user-agent"],
       request.ip
     );
 
-    // e. Return the standard auth response
+    // f. Return the standard auth response
     return {
       success : true,
       user : {
