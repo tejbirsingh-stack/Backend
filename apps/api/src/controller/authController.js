@@ -1,4 +1,5 @@
 const authService = require("../services/auth-service");
+const { OAuth2Client } = require('google-auth-library');
 
 // 1. Login Handler
 module.exports.login = async (request, reply) =>{
@@ -472,4 +473,83 @@ module.exports.resetPassword = async (request, reply) => {
         message: "Failed to reset password",
       });
     }
+}
+
+//10. Google Login Hander
+module.exports.googleLogin = async (request, reply) => {
+  const { idToken } = request.body;
+  const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+  try{
+    if (!idToken) {
+      return reply.status(400).send({
+        success : false,
+        error : "Bad Request",
+        message : "Google idToken is required",
+      });
+    }
+
+    // a. Verify the access token by fetching the user's profile from Google
+    const googleResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${idToken}` }
+    });
+
+    if (!googleResponse.ok) {
+      throw new Error("Failed to verify token with Google");
+    }
+
+    // extract the email from the response payload
+    const payload = await googleResponse.json();
+    const { email, name } = payload;
+
+    // b. Extract user info from verified token
+    let user = await authService.findUserByEmail(email);
+    // Since app requires an `orgId` to register, reject the login if they don't have an account
+    if(!user){
+      return reply.status(401).send({
+        success : false,
+        error : "Unauthorized",
+        message : "No account found for this email. Please sign up first.",
+      });
+    }
+
+    // c. Check if Account is active
+     if (user.status !== "active") {
+        return reply.status(403).send({
+           success: false,
+           error: "Forbidden",
+           message: "Account is not active",
+        });
+    }
+
+    // d. Create a session exactly how normal login does
+    const session = await authService.createSession(
+      user.id,
+      request.headers["user-agent"],
+      request.ip
+    );
+
+    // e. Return the standard auth response
+    return {
+      success : true,
+      user : {
+       id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        orgId: user.orgId,
+        organization: user.organization
+      },
+      accessToken: session.token,
+      refreshToken: session.token,
+      expiresAt: session.expiresAt,
+    };
+  }catch(error){
+    console.error("Google Login error:", error);
+    return reply.status(401).send({
+      success: false,
+      error: "Unauthorized",
+      message: "Invalid or expired Google token",
+    });
+  }
 }
