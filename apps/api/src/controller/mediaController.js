@@ -2,6 +2,22 @@
 
 const fs = require("fs");
 const path = require("path");
+
+const { Queue } = require("bullmq");
+const Redis = require("ioredis");
+
+// Initialize Redis connection for the Queue
+const queueRedisConnection = new Redis({
+  host: process.env.REDIS_HOST || "localhost",
+  port: parseInt(process.env.REDIS_PORT || "6379", 10),
+  password: process.env.REDIS_PASSWORD || undefined,
+});
+
+// Initialize the BullMQ queue
+const compressionQueue = new Queue("compression-jobs", { 
+  connection: queueRedisConnection 
+});
+
 const B2StorageService = require("../b2-storage.cjs");
 
 const b2Storage = new B2StorageService({
@@ -701,6 +717,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
           const b2Url = b2Result?.url || null;
           const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
 
+                    const isVideo = part.mimetype.startsWith("video/");
+
           // Write the media asset to PostgreSQL database
           const dbAsset = await request.server.prisma.mediaAsset.create({
             data: {
@@ -713,7 +731,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
               b2FileId: b2Result?.fileId || null,
               cdnUrl: fileUrl,
               uploadedByUserId: request.user.id,
-              status: "ready",
+              // If it's a video, mark it as processing/queued
+              status: isVideo ? "processing" : "ready",
+              transcodingStatus: isVideo ? "queued" : null,
               metadata: {
                 tags: [],
                 storageLocation: "b2",
@@ -722,6 +742,20 @@ module.exports.uploadMediaFile = async (request, reply) => {
               }
             }
           });
+
+          // If it's a video, queue a compression job in Redis
+          if (isVideo) {
+            try {
+              await compressionQueue.add("compress", {
+                mediaAssetId: dbAsset.id,
+                key: b2Key,
+                preset: "medium", // Default to balanced H.264
+              });
+              console.log(`[Queue] Added video compression job for asset ${dbAsset.id}`);
+            } catch (queueErr) {
+              console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
+            }
+          }
 
           const fileInfo = {
             id: dbAsset.id,
@@ -733,9 +767,11 @@ module.exports.uploadMediaFile = async (request, reply) => {
             thumbnail: normalizeAssetType(dbAsset.mimeType) === "image" ? `/api/media/${encodeURIComponent(dbAsset.id)}/stream` : null,
             tags: [],
             metadata: dbAsset.metadata || {},
-            compressionStatus: "completed",
+            // Report correct status to the frontend
+            compressionStatus: isVideo ? "queued" : "completed",
             storageLocation: "b2",
           };
+
 
           uploadedFiles.push(fileInfo);
           console.log(`File streamed directly to B2 and saved to DB: ${part.filename} (${size} bytes)`);

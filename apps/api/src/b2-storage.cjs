@@ -134,10 +134,45 @@ class B2StorageService {
       return url;
       
     } catch (error) {
-      console.error('❌ Error generating presigned URL:', error);
+      console.error('Error generating presigned URL:', error);
       return null;
     }
   }
+
+  //Download a file from B2 to a local destination path *****
+  async downloadFile(key, downloadPath){
+    if(!this.enabled){
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      const command = new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      });
+
+      const response = await this.s3Client.send(command);
+
+      // Ensure the destination directory exists
+      const dir = path.dirname(downloadPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      const writer = fs.createWriteStream(downloadPath);
+
+      return new Promise((resolve, reject) => {
+        response.Body.pipe(writer);
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+
+    }catch (error){
+      console.error(`❌ Error downloading file from B2 (${key}):`, error);
+      throw error;
+    }
+  }
+  // *****
   
   /**
    * Upload file to B2
