@@ -151,6 +151,28 @@ class B2StorageService {
     }
   }
 
+  /**
+   * Get presigned URL for uploading a specific multipart chunk
+   */
+  async getPresignedPartUrl(key, uploadId, partNumber, expiresIn = 3600) {
+    if (!this.enabled) return null;
+    
+    try {
+      const command = new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber, 
+      });
+      
+      const url = await getSignedUrl(this.s3Client, command, { expiresIn });
+      return url;
+    } catch (error) {
+      console.error('Error generating presigned part URL:', error);
+      throw error;
+    }
+  }
+
   //Download a file from B2 to a local destination path *****
   async downloadFile(key, downloadPath){
     if(!this.enabled){

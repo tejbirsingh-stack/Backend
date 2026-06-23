@@ -18,6 +18,11 @@ const compressionQueue = new Queue("compression-jobs", {
   connection: queueRedisConnection 
 });
 
+// Initialize "Heavy" Queue for massive 5GB+ files
+const heavyCompressionQueue = new Queue("compression-jobs-heavy", { 
+  connection: queueRedisConnection,
+});
+
 // Dedicated Redis Client for resumable upload sessions *****
 const redisClient = new Redis({
   host: process.env.REDIS_HOST || "localhost",
@@ -725,7 +730,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
           const b2Url = b2Result?.url || null;
           const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
 
-                    const isVideo = part.mimetype.startsWith("video/");
+          const isVideo = part.mimetype.startsWith("video/");
 
           // Write the media asset to PostgreSQL database
           const dbAsset = await request.server.prisma.mediaAsset.create({
@@ -754,12 +759,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
           // If it's a video, queue a compression job in Redis
           if (isVideo) {
             try {
-              await compressionQueue.add("compress", {
+              // 5GB threshold for heavy queue
+              const fiveGB = 5 * 1024 * 1024 * 1024;
+              const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+              
+              await queueToUse.add("compress", {
                 mediaAssetId: dbAsset.id,
                 key: b2Key,
                 preset: "medium", // Default to balanced H.264
               });
-              console.log(`[Queue] Added video compression job for asset ${dbAsset.id}`);
+              console.log(`[Queue] Added video compression job for asset ${dbAsset.id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
             } catch (queueErr) {
               console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
             }
@@ -986,6 +995,32 @@ module.exports.initiateResumableUpload = async (request, reply) => {
   }
 }
 
+//13b. Get Presigned URL for chunk upload (Direct to B2)
+module.exports.getChunkUploadUrl = async (request, reply) => {
+  const { sessionId } = request.query;
+  const partNumber = parseInt(request.query.partNumber, 10);
+
+  if (!sessionId || isNaN(partNumber)) {
+    return reply.status(400).send({ message: "sessionId and valid partNumber query parameters are required" });
+  }
+
+  try {
+    const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
+    if (!sessionRaw) {
+      return reply.status(404).send({ message: "Upload session not found or expired" });
+    }
+    const session = JSON.parse(sessionRaw);
+
+    // Get Presigned URL for this chunk directly to B2
+    const presignedUrl = await b2Storage.getPresignedPartUrl(session.key, session.uploadId, partNumber);
+
+    return { success: true, partNumber, presignedUrl };
+  } catch (error) {
+    console.error(`Failed to generate upload URL for chunk ${partNumber}:`, error);
+    return reply.status(500).send({ message: `Failed to generate upload URL for chunk ${partNumber}`, error: error.message });
+  }
+}
+
 //14. Check which chunks have been successfully uploaded
 module.exports.getUploadStatus = async (request, reply) => {
   const { sessionId } = request.params;
@@ -1010,7 +1045,7 @@ module.exports.getUploadStatus = async (request, reply) => {
 
 //15. Complete Multipart Upload Session and Create Database Record
 module.exports.completeResumableUpload = async (request, reply) => {
-  const { sessionId } = request.body || {};
+  const { sessionId, parts } = request.body || {};
   if (!sessionId) {
     return reply.status(400).send({ message: "sessionId is required" })
   }
@@ -1023,10 +1058,13 @@ module.exports.completeResumableUpload = async (request, reply) => {
 
     const session = JSON.parse(sessionRaw);
 
+    // Use parts sent from frontend if available, otherwise fallback to session parts
+    const finalParts = parts && parts.length > 0 ? parts : session.parts;
+
     // Complete the multipart upload on B2
     console.log(`Completing multipart upload in B2 for key ${session.key}...`);
 
-    await b2Storage.completeMultipartUpload(session.key, session.uploadId, session.parts);
+    await b2Storage.completeMultipartUpload(session.key, session.uploadId, finalParts);
 
     const isVideo = session.mimeType.startsWith("video/");
     const cdnUrl = `/api/media/${session.key}/stream`;
@@ -1056,12 +1094,14 @@ module.exports.completeResumableUpload = async (request, reply) => {
     // Queue compression if it's a video
     if (isVideo) {
       try {
-        await compressionQueue.add("compress", {
+        const fiveGB = BigInt(5 * 1024 * 1024 * 1024);
+        const queueToUse = dbAsset.fileSize >= fiveGB ? heavyCompressionQueue : compressionQueue;
+        await queueToUse.add("compress", {
           mediaAssetId: dbAsset.id,
           key: session.key,
           preset: "medium",
         });
-        console.log(`[Queue] Added video compression job for asset ${dbAsset.id}`);
+        console.log(`[Queue] Added video compression job for asset ${dbAsset.id} to ${dbAsset.fileSize >= fiveGB ? 'heavy' : 'fast'} queue`);
       } catch (queueErr) {
         console.error(`[Queue] Failed to queue job for asset ${dbAsset.id}:`, queueErr.message);
       }

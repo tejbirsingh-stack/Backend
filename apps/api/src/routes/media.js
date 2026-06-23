@@ -212,6 +212,7 @@ const {
   deleteMediaFile,
   initiateResumableUpload,
   uploadChunk,
+  getChunkUploadUrl,
   getUploadStatus,
   completeResumableUpload,
   abortResumableUpload
@@ -259,6 +260,9 @@ module.exports = function (fastify, opts, done) {
 
   //13.  Upload an individual raw binary chunk
   fastify.put("/upload/chunk", { preHandler: [fastify.authenticate] }, uploadChunk);
+
+  //13b. Get Presigned URL for chunk upload
+  fastify.get("/upload/chunk-url", { preHandler: [fastify.authenticate] }, getChunkUploadUrl);
 
   //14. Check which chunks have been successfully uploaded
   fastify.get("/upload/status/:sessionId", { preHandler: [fastify.authenticate] }, getUploadStatus);
