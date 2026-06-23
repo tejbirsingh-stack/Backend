@@ -1,4 +1,16 @@
-const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
+const { 
+  S3Client, 
+  ListObjectsV2Command, 
+  GetObjectCommand, 
+  PutObjectCommand, 
+  DeleteObjectCommand, 
+  ListObjectVersionsCommand, 
+  DeleteObjectsCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand
+} = require('@aws-sdk/client-s3');
 
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs');
@@ -759,6 +771,103 @@ await upload.done();
     }
   }
   
+  // Initialize a multipart upload session in B2
+  async initiateMultipartUpload(key, contentType){
+    if(!this.enabled){
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      const command = new CreateMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentType: contentType,
+      });
+      const response = await this.s3Client.send(command);
+      return {
+        uploadId: response.UploadId,
+        key: response.Key,
+      };
+    } catch (error){
+      console.error('Error initiating multipart upload B2:', error);
+      throw error;
+    }
+  }
+
+  // Upload an individual part/chunk of multipart upload
+  async uploadPart(key, uploadId, partNumber, body){
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+    try{
+      const command = new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+        Body: body, // Buffer chunk
+      });
+
+      const response = await this.s3Client.send(command);
+      return {
+        PartNumber: partNumber,
+        ETag: response.ETag,
+      };
+
+    }catch(error) {
+      console.error(`Error uploading part ${partNumber} for upload ${uploadId}:`, error);
+      throw error;
+    }
+  }
+
+  // Complete a multipart Upload session
+  async completeMultipartUpload(key, uploadId, parts){
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      // Sort parts by PartNumber (S3/B2 requires parts list to be sorted ascending)
+      const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
+
+      const command = new CompleteMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: sortedParts,
+        },
+      });
+
+      const response = await this.s3Client.send(command);
+      return response;
+
+    } catch (error) {
+      console.error(`❌ Error completing multipart upload ${uploadId}:`, error);
+      throw error;
+    }
+  }
+
+  // Abort a multipart upload session to free temporay storage
+  async abortMultipartUpload (key, uploadId){
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      const command = new AbortMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+      });
+      await this.s3Client.send(command);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error aborting multipart upload ${uploadId}:`, error);
+      throw error;
+    }
+  }
+
   /**
    * Format file size for display
    */

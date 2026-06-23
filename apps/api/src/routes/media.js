@@ -209,10 +209,20 @@ const {
   deletePermanently, 
   getMediaFile, 
   uploadMediaFile, 
-  deleteMediaFile
+  deleteMediaFile,
+  initiateResumableUpload,
+  uploadChunk,
+  getUploadStatus,
+  completeResumableUpload,
+  abortResumableUpload
 } = require('../controller');
 
 module.exports = function (fastify, opts, done) {
+
+  // Register parser for raw binary upload chunks
+  fastify.addContentTypeParser('application/octet-stream', (req, payload, done) => {
+    done(null, payload);
+  });
 
   //2. Get media assets - return real uploaded files
   fastify.get("/getmediaassets", { preValidation: [fastify.authenticate]} , getMediaAssets);
@@ -241,10 +251,23 @@ module.exports = function (fastify, opts, done) {
   //10. Upload media asset
   fastify.post("/upload", { preHandler: [fastify.authenticate] }, uploadMediaFile);
 
-
   //11. Delete media asset
   fastify.delete("/:filename", { preValidation: [fastify.authenticate] }, deleteMediaFile);
 
+  //12. Initialize a Resumable Multipart Upload Session
+  fastify.post("/upload/init", { preHandler: [fastify.authenticate] }, initiateResumableUpload);
+
+  //13.  Upload an individual raw binary chunk
+  fastify.put("/upload/chunk", { preHandler: [fastify.authenticate] }, uploadChunk);
+
+  //14. Check which chunks have been successfully uploaded
+  fastify.get("/upload/status/:sessionId", { preHandler: [fastify.authenticate] }, getUploadStatus);
+
+  //15. Complete Multipart Upload Session and Create Database Record
+  fastify.post("/upload/complete", { preHandler: [fastify.authenticate] }, completeResumableUpload);
+
+  //16. Abort Multipart Upload Session
+  fastify.delete("/upload/abort/:sessionId", { preHandler: [fastify.authenticate] }, abortResumableUpload);
 
   done();
 };

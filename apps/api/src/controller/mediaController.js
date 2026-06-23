@@ -18,6 +18,14 @@ const compressionQueue = new Queue("compression-jobs", {
   connection: queueRedisConnection 
 });
 
+// Dedicated Redis Client for resumable upload sessions *****
+const redisClient = new Redis({
+  host: process.env.REDIS_HOST || "localhost",
+  port: parseInt(process.env.REDIS_PORT || "6379", 10),
+  password: process.env.REDIS_PASSWORD || undefined,
+});
+// *****
+
 const B2StorageService = require("../b2-storage.cjs");
 
 const b2Storage = new B2StorageService({
@@ -815,8 +823,6 @@ module.exports.uploadMediaFile = async (request, reply) => {
     }
 }
 
-
-
 //11. Delete media asset
 module.exports.deleteMediaFile = async (request, reply) => {
     try {
@@ -894,3 +900,228 @@ module.exports.deleteMediaFile = async (request, reply) => {
       });
     }
 };
+
+
+//12. Initialize a Resumable Multipart Upload Session
+module.exports.initiateResumableUpload = async (request, reply) => {
+  const { fileName, fileSize, mimeType } = request.body || {};
+  if (!fileName || !fileSize || !mimeType) {
+    return reply.status(400).send({ message: "fileName, fileSize, and mimeType are required" });
+  }
+
+  try{
+    const sessionId = require("uuid").v4();
+    const dateStr = new Date().toISOString().split("T")[0];
+    const timestamp = Date.now();
+    const b2Key = `uploads/internal/${dateStr}/${timestamp}-${fileName}`;
+
+    // Initiate upload session with Backblaze B2 S3
+    const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
+
+    const sessionData = {
+      sessionId,
+      uploadId,
+      key: b2Key,
+      fileName,
+      fileSize: Number(fileSize),
+      mimeType,
+      parts: [],
+    };
+
+    // Save session in Redis with 24 hours TTL
+    await redisClient.setex(`upload:session:${sessionId}`, 86400, JSON.stringify(sessionData));
+    return { sessionId, uploadId, key: b2Key };
+
+  } catch(error) {
+    console.error("Failed to initiate resumable upload:", error);
+    return reply.status(500).send({ message: "Failed to initiate upload session", error: error.message });
+  }
+}
+
+//13.  Upload an individual raw binary chunk
+ module.exports.uploadChunk = async (request, reply) => {
+  const { sessionId } = request.query;
+  
+  const partNumber = parseInt(request.query.partNumber, 10);
+
+  if (!sessionId || isNaN(partNumber)) {
+    return reply.status(400).send({ message: "sessionId and valid partNumber query parameters are required" });
+  }
+
+  try {
+    const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
+    if (!sessionRaw) {
+      return reply.status(404).send({ message: "Upload session not found or expired" });
+    }
+    const session = JSON.parse(sessionRaw);
+
+    // Read raw binary body from the request stream
+    const chunks = [];
+    const stream = request.body || request.raw;
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+
+    const chunkBuffer = Buffer.concat(chunks);
+
+    if (chunkBuffer.length === 0) {
+      return reply.status(400).send({ message: "Empty chunk payload received" });
+    }
+
+    // Upload chunk to B2
+    const partResult = await b2Storage.uploadPart(session.key, session.uploadId, partNumber, chunkBuffer);
+
+    // Add ETag to session parts
+    session.parts = session.parts.filter(p => p.PartNumber !== partNumber);
+    session.parts.push({ PartNumber: partNumber, ETag: partResult.ETag });
+      
+    // Save updated session to Redis
+    await redisClient.setex(`upload:session:${sessionId}`, 86400, JSON.stringify(session));
+
+    return { success: true, partNumber, etag: partResult.ETag };
+    
+  } catch (error) {
+    console.error(`Failed to upload chunk ${partNumber}:`, error);
+    return reply.status(500).send({ message: `Failed to upload chunk ${partNumber}`, error: error.message });
+  }
+}
+
+//14. Check which chunks have been successfully uploaded
+module.exports.getUploadStatus = async (request, reply) => {
+  const { sessionId } = request.params;
+  try{
+     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
+    if (!sessionRaw) {
+      return reply.status(404).send({ message: "Upload session not found" });
+    }
+    const session = JSON.parse(sessionRaw);
+
+    return {
+      sessionId: session.sessionId,
+      fileName: session.fileName,
+      fileSize: session.fileSize,
+      parts: session.parts,
+    };
+  } catch (error) {
+    console.error("❌ Failed to fetch upload status:", error);
+    return reply.status(500).send({ message: "Failed to get upload status" });
+  }
+}
+
+//15. Complete Multipart Upload Session and Create Database Record
+module.exports.completeResumableUpload = async (request, reply) => {
+  const { sessionId } = request.body || {};
+  if (!sessionId) {
+    return reply.status(400).send({ message: "sessionId is required" })
+  }
+
+  try {
+    const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
+    if (!sessionRaw) {
+      return reply.status(404).send({ message: "Upload session not found or expired" });
+    }
+
+    const session = JSON.parse(sessionRaw);
+
+    // Complete the multipart upload on B2
+    console.log(`Completing multipart upload in B2 for key ${session.key}...`);
+
+    await b2Storage.completeMultipartUpload(session.key, session.uploadId, session.parts);
+
+    const isVideo = session.mimeType.startsWith("video/");
+    const cdnUrl = `/api/media/${session.key}/stream`;
+
+    // Save the asset metadata in PostgreSQL via Prisma
+    const dbAsset = await request.server.prisma.mediaAsset.create({
+      data: {
+        orgId: request.user.orgId,
+        fileName: session.fileName,
+        filePath: session.key,
+        fileSize: BigInt(session.fileSize),
+        originalSize: BigInt(session.fileSize),
+        mimeType: session.mimeType,
+        b2FileId: null, // S3 multipart does not give a single B2 File ID upfront
+        cdnUrl: cdnUrl,
+        uploadedByUserId: request.user.id,
+        status: isVideo ? "processing" : "ready",
+        transcodingStatus: isVideo ? "queued" : null,
+        metadata: {
+          tags: [],
+          storageLocation: "b2",
+          b2Key: session.key,
+        }
+      }
+    });
+
+    // Queue compression if it's a video
+    if (isVideo) {
+      try {
+        await compressionQueue.add("compress", {
+          mediaAssetId: dbAsset.id,
+          key: session.key,
+          preset: "medium",
+        });
+        console.log(`[Queue] Added video compression job for asset ${dbAsset.id}`);
+      } catch (queueErr) {
+        console.error(`[Queue] Failed to queue job for asset ${dbAsset.id}:`, queueErr.message);
+      }
+    }
+
+    // Clean up Redis Sessions
+    await redisClient.del(`upload:session:${sessionId}`);
+
+    const fileInfo = {
+      id: dbAsset.id,
+      name: dbAsset.fileName,
+      type: isVideo ? "video" : "document",
+      size: Number(dbAsset.fileSize),
+      uploadDate: dbAsset.createdAt.toISOString(),
+      url: `/api/media/${encodeURIComponent(dbAsset.id)}/stream`,
+      thumbnail: null,
+      tags: [],
+      metadata: dbAsset.metadata || {},
+      compressionStatus: isVideo ? "queued" : "completed",
+      storageLocation: "b2",
+    };
+
+    return { success: true, asset: fileInfo };
+
+  } catch (error) {
+    console.error("❌ Failed to complete resumable upload:", error);
+    return reply.status(500).send({ message: "Failed to complete upload session", error: error.message });
+  }
+}
+
+//16. Abort Multipart Upload Session and clear chunks from B2
+module.exports.abortResumableUpload = async (request, reply) => {
+  const { sessionId } = request.params;
+
+  if (!sessionId) {
+    return reply.status(400).send({ message: "sessionId parameter is required" });
+  }
+
+  try {
+    const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
+    
+    if (sessionRaw) {
+      const session = JSON.parse(sessionRaw);
+      
+      // Tell B2 to delete the partial uploaded chunks
+      try {
+        await b2Storage.abortMultipartUpload(session.key, session.uploadId);
+        console.log(`[Upload Aborted] Cleaned up B2 chunks for key: ${session.key}`);
+      } catch (b2Err) {
+        console.error(`[Upload Aborted] Failed to clean up B2 chunks:`, b2Err.message);
+        // Continue anyway to clean up Redis
+      }
+
+      // Clean up Redis Session
+      await redisClient.del(`upload:session:${sessionId}`);
+    }
+
+    return { success: true, message: "Upload session aborted and cleaned up successfully" };
+  } catch (error) {
+    console.error("❌ Failed to abort resumable upload:", error);
+    return reply.status(500).send({ message: "Failed to abort upload session", error: error.message });
+  }
+}
