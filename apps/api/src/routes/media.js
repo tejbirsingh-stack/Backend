@@ -215,7 +215,8 @@ const {
   getChunkUploadUrl,
   getUploadStatus,
   completeResumableUpload,
-  abortResumableUpload
+  abortResumableUpload,
+  handleCoconutWebhook
 } = require('../controller');
 
 module.exports = function (fastify, opts, done) {
@@ -272,6 +273,9 @@ module.exports = function (fastify, opts, done) {
 
   //16. Abort Multipart Upload Session
   fastify.delete("/upload/abort/:sessionId", { preHandler: [fastify.authenticate] }, abortResumableUpload);
+
+  //17. Coconut Webhook (No auth, Coconut calls this)
+  fastify.post("/webhooks/coconut", handleCoconutWebhook);
 
   done();
 };

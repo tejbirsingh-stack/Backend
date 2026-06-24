@@ -5,7 +5,6 @@ import { PrismaClient } from '@prisma/client';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import ffmpeg from 'fluent-ffmpeg';
 // @ts-ignore
 import B2StorageService from './b2-storage.cjs';
 
@@ -32,7 +31,7 @@ console.log('🚀 Noah Media Compression Worker is starting...');
 // 2. Define the unified job processor function
 const processCompressionJob = async (job: Job) => {
   const { mediaAssetId, key, preset } = job.data;
-  console.log(`[Job ${job.id}] Starting compression for asset: ${mediaAssetId}, key: ${key}`);
+  console.log(`[Job ${job.id}] Submitting compression job to Coconut for asset: ${mediaAssetId}, key: ${key}`);
 
   // Update database status to "in_progress"
   await prisma.mediaAsset.update({
@@ -40,102 +39,71 @@ const processCompressionJob = async (job: Job) => {
     data: { transcodingStatus: 'in_progress' },
   });
 
-  // Use OS temp directory to avoid polluting project directories
-  const tempDir = os.tmpdir();
-  const inputPath = path.join(tempDir, `noah-raw-${mediaAssetId}${path.extname(key)}`);
-  const outputPath = path.join(tempDir, `noah-compressed-${mediaAssetId}.mp4`);
-
   try {
-    // Step A: Download the raw file from Backblaze B2
-    console.log(`[Job ${job.id}] Downloading raw file from B2 to ${inputPath}...`);
-    await b2Storage.downloadFile(key, inputPath);
-
-    // Step B: Run FFmpeg compression locally on the worker machine
-    console.log(`[Job ${job.id}] Transcoding video...`);
-    await new Promise<void>((resolve, reject) => {
-      let command = ffmpeg(inputPath);
-
-      // Apply quality presets
-      if (preset === 'high') {
-        command = command.videoCodec('libx265').outputOptions(['-crf 27', '-preset veryfast']).audioCodec('aac').audioBitrate('128k');
-      } else if (preset === 'low') {
-        command = command.videoCodec('libx264').outputOptions(['-crf 32', '-preset superfast']).audioCodec('aac').audioBitrate('96k');
-      } else {
-        command = command.videoCodec('libx264').outputOptions(['-crf 29', '-preset veryfast']).audioCodec('aac').audioBitrate('128k');
-      }
-
-      command
-        .on('end', () => {
-          console.log(`[Job ${job.id}] Compression completed successfully`);
-          resolve();
-        })
-        .on('error', (err) => {
-          console.error(`[Job ${job.id}] FFmpeg transcoding error:`, err);
-          reject(err);
-        })
-        .save(outputPath);
-    });
-
-    // Step C: Permanently delete the original raw file and its versions from B2 to prevent storage bloat
-    console.log(`[Job ${job.id}] Permanently deleting original raw file versions of ${key} from B2...`);
-    try {
-      await b2Storage.permanentlyDeleteFile(key);
-    } catch (delErr: any) {
-      console.warn(`[Job ${job.id}] Non-critical: Failed to permanently delete raw B2 file versions:`, delErr.message);
+    const coconutApiKey = process.env.COCONUT_API_KEY || '';
+    if (!coconutApiKey) {
+      throw new Error("COCONUT_API_KEY is not set in the .env file!");
     }
 
-    // Step C2: Upload the compressed file to B2
-    console.log(`[Job ${job.id}] Uploading compressed file to B2 as ${key}...`);
-    await b2Storage.uploadFile(outputPath, key);
+    // Generate a Presigned GET URL so Coconut can read the raw file
+    const sourceUrl = await b2Storage.getPresignedUrl(key, 86400); // URL valid for 24 hours
 
-    // Step D: Calculate compression metrics
-    const originalStats = fs.statSync(inputPath);
-    const compressedStats = fs.statSync(outputPath);
-    const ratio = originalStats.size / compressedStats.size;
+    // Generate a Presigned PUT URL for the output so Coconut can directly upload it
+    const outputUrl = await b2Storage.getPresignedPutUrl(key, 86400); // URL valid for 24 hours
 
-    console.log(`[Job ${job.id}] Original size: ${originalStats.size} bytes. Compressed size: ${compressedStats.size} bytes. Ratio: ${ratio.toFixed(2)}x`);
+    // Pass the webhook URL so Coconut tells us when it's done
+    const webhookHost = process.env.WEBHOOK_HOST || 'https://562546aa1bd524.lhr.life';
+    const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?assetId=${mediaAssetId}`;
 
-    // Step E: Update DB record
-    await prisma.mediaAsset.update({
-      where: { id: mediaAssetId },
-      data: {
-        fileSize: compressedStats.size,
-        compressionRatio: ratio,
-        transcodingStatus: 'completed',
-        status: 'ready',
+    // Send API request to Coconut v2 using standard fetch to avoid SDK silent errors
+    const response = await fetch('https://api.coconut.co/v2/jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${Buffer.from(coconutApiKey + ':').toString('base64')}`
       },
+      body: JSON.stringify({
+        input: { url: sourceUrl },
+        outputs: {
+          'mp4:1080p': {
+            url: outputUrl
+          }
+        },
+        notification: {
+          type: 'http',
+          url: webhookUrl
+        }
+      })
     });
 
-    console.log(`[Job ${job.id}] Original file successfully replaced with compressed version in B2 and DB.`);
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Coconut API failed with status ${response.status}: ${errText}`);
+    }
 
-  } catch (error) {
-    console.error(`[Job ${job.id}] Error in worker execution:`, error);
-    
+    const jobData = await response.json();
+    console.log(`[Job ${job.id}] Successfully submitted to Coconut. Coconut Job ID: ${jobData.id}. Worker is now free!`);
+
+  } catch (error: any) {
+    console.error(`[Job ${job.id}] Error submitting to Coconut:`, error.message);
+
     await prisma.mediaAsset.update({
       where: { id: mediaAssetId },
       data: { transcodingStatus: 'failed', status: 'failed' },
     }).catch((dbErr) => console.error('Failed to write failure status to DB:', dbErr));
 
     throw error;
-  } finally {
-    // Step G: Clean up local temporary files
-    if (fs.existsSync(inputPath)) {
-      try { fs.unlinkSync(inputPath); } catch {}
-    }
-    if (fs.existsSync(outputPath)) {
-      try { fs.unlinkSync(outputPath); } catch {}
-    }
   }
 };
 
 // 3. Initialize the "Fast" Queue Worker
-const fastWorker = new Worker('compression-jobs', processCompressionJob, { 
+const fastWorker = new Worker('compression-jobs', processCompressionJob, {
   connection: redisConnection,
   concurrency: 5 // Can process 5 small videos simultaneously
 });
 
 // 4. Initialize the "Heavy" Queue Worker
-const heavyWorker = new Worker('compression-jobs-heavy', processCompressionJob, { 
+const heavyWorker = new Worker('compression-jobs-heavy', processCompressionJob, {
   connection: redisConnection,
   concurrency: 1 // Can only process 1 massive video at a time to prevent crashing
 });

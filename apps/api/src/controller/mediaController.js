@@ -88,7 +88,8 @@ function toFrontendAssetShape(asset) {
     thumbnail,
     tags: asset.tags || [],
     metadata: asset.metadata || {},
-    compressionStatus: asset.compressionStatus || "completed",
+    transcodingStatus: asset.transcodingStatus || "completed",
+    transcodingProgress: asset.customMetadata?.transcodingProgress || null,
   };
 }
 
@@ -1164,4 +1165,71 @@ module.exports.abortResumableUpload = async (request, reply) => {
     console.error("❌ Failed to abort resumable upload:", error);
     return reply.status(500).send({ message: "Failed to abort upload session", error: error.message });
   }
+}
+
+//17. Handle Coconut Webhook
+module.exports.handleCoconutWebhook = async (request, reply) => {
+  const { assetId } = request.query;
+  const event = request.body;
+
+  console.log(`[Webhook] Received Coconut webhook for asset ${assetId}:`, event?.event);
+
+  // Coconut sends event="job.completed"
+  if (event && event.event === 'job.completed') {
+    try {
+      // Update the database to mark it as ready!
+      await request.server.prisma.mediaAsset.update({
+        where: { id: assetId },
+        data: {
+          transcodingStatus: 'completed',
+          status: 'ready'
+        }
+      });
+      console.log(`[Webhook] Asset ${assetId} successfully marked as ready.`);
+    } catch (err) {
+      console.error(`[Webhook] Failed to update DB for asset ${assetId}:`, err);
+    }
+  } else if (event && event.event === 'job.progress') {
+    try {
+      // Fetch the current asset to update its customMetadata safely
+      const asset = await request.server.prisma.mediaAsset.findUnique({
+        where: { id: assetId },
+        select: { customMetadata: true }
+      });
+      
+      if (asset) {
+        const updatedMetadata = {
+          ...(typeof asset.customMetadata === 'object' ? asset.customMetadata : {}),
+          transcodingProgress: event.progress // e.g., "45%"
+        };
+
+        await request.server.prisma.mediaAsset.update({
+          where: { id: assetId },
+          data: {
+            transcodingStatus: 'processing',
+            customMetadata: updatedMetadata
+          }
+        });
+        console.log(`[Webhook] Asset ${assetId} transcoding progress: ${event.progress}`);
+      }
+    } catch (err) {
+      console.error(`[Webhook] Failed to update progress for asset ${assetId}:`, err);
+    }
+  } else if (event && event.event === 'job.failed') {
+    try {
+      await request.server.prisma.mediaAsset.update({
+        where: { id: assetId },
+        data: {
+          transcodingStatus: 'failed',
+          status: 'failed'
+        }
+      });
+      console.log(`[Webhook] Asset ${assetId} marked as failed.`);
+    } catch (err) {
+      console.error(`[Webhook] Failed to update DB for asset ${assetId}:`, err);
+    }
+  }
+
+  // Always reply 200 OK to Coconut so it doesn't retry
+  return reply.status(200).send("OK");
 }
