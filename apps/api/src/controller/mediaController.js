@@ -470,7 +470,7 @@ module.exports.softDelete = async (request, reply) => {
     }
 };
 
-//7. Restore a soft-deleted file
+//7. Restore a soft-deleted file------used for restoring soft deleted files
 module.exports.restoreSoftDelete = async (request, reply) => {
     try {
       const { filename } = request.params;
@@ -482,7 +482,11 @@ module.exports.restoreSoftDelete = async (request, reply) => {
         try {
           await request.server.prisma.mediaAsset.update({
             where: { id: filename },
-            data: { deletedAt: null }
+            data: { 
+            deletedAt: null,
+            status: "ready"
+          }
+
           });
           restoredFromDb = true;
         } catch (dbErr) {
@@ -833,76 +837,40 @@ module.exports.uploadMediaFile = async (request, reply) => {
     }
 }
 
+
 //11. Delete media asset
 module.exports.deleteMediaFile = async (request, reply) => {
     try {
       const { filename } = request.params;
       
-      let deletedFromLocal = false;
-      let deletedFromB2 = false;
-
       // If it's a database UUID, soft-delete it in the database
       if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
         try {
           await request.server.prisma.mediaAsset.update({
             where: { id: filename },
-            data: { deletedAt: new Date() }
+            data: { 
+              status: "softdelete",
+              deletedAt: new Date() 
+            }
+          });
+          
+          return reply.send({
+            success: true,
+            message: "File deleted successfully",
           });
         } catch (dbErr) {
           console.warn("Could not soft delete asset in database:", dbErr.message);
+          return reply.code(500).send({
+            success: false,
+            error: "Failed to soft delete asset in database",
+          });
         }
-      }
-
-      // 1. Try deleting from local
-      let filePath = await resolveMediaFilePath(request, filename);
-      // Delete all local files with that name in case of duplicates across folders
-      while (filePath && fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        deletedFromLocal = true;
-        
-        // Temporarily rename or mock so resolveMediaFilePath can find any other duplicates
-        // Actually, resolveMediaFilename will just return null if the file is deleted
-        filePath = await resolveMediaFilePath(request, filename);
-      }
-
-      // 2. Try deleting from B2
-      if (b2Storage.isEnabled()) {
-        try {
-          // B2 keys usually start with 'uploads/' and contain subfolders like 'internal/2026-05-28/'
-          // We need to search for the exact key
-          const b2Files = await b2Storage.searchFiles(filename);
-          const exactMatch = b2Files.find(f => path.basename(f.key) === filename || path.basename(f.key) === filename.replace(/^\d+-/, ""));
-          
-          if (exactMatch) {
-            await b2Storage.deleteFile(exactMatch.key);
-            deletedFromB2 = true;
-          } else {
-            // Fallback: try deleting the direct key
-            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
-            await b2Storage.deleteFile(cleanKey);
-            // This might create a delete marker, but it's a fallback.
-            deletedFromB2 = true;
-          }
-        } catch (b2Error) {
-          console.warn(`Failed to delete key ${filename} from B2:`, b2Error.message);
-        }
-      }
-
-      if (!deletedFromLocal && !deletedFromB2) {
-        return reply.code(404).send({
+      } else {
+        return reply.code(400).send({
           success: false,
-          error: "File not found on local disk or B2 storage",
+          error: "Invalid file ID for soft delete",
         });
       }
-
-      return reply.send({
-        success: true,
-        message: "File deleted successfully",
-        deletedFrom: {
-          local: deletedFromLocal,
-          b2: deletedFromB2,
-        }
-      });
     } catch (error) {
       return reply.code(500).send({
         success: false,
@@ -910,6 +878,7 @@ module.exports.deleteMediaFile = async (request, reply) => {
       });
     }
 };
+
 
 
 //12. Initialize a Resumable Multipart Upload Session
