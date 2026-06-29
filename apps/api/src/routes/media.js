@@ -215,7 +215,9 @@ const {
   getChunkUploadUrl,
   getUploadStatus,
   completeResumableUpload,
-  abortResumableUpload
+  abortResumableUpload,
+  handleCoconutWebhook,
+  checkDuplicateMediaFile
 } = require('../controller');
 
 module.exports = function (fastify, opts, done) {
@@ -224,6 +226,9 @@ module.exports = function (fastify, opts, done) {
   fastify.addContentTypeParser('application/octet-stream', (req, payload, done) => {
     done(null, payload);
   });
+
+  // Early Duplicate Check Endpoint
+  fastify.post("/upload/check-duplicate", { preHandler: [fastify.authenticate] }, checkDuplicateMediaFile);
 
   //2. Get media assets - return real uploaded files
   fastify.get("/getmediaassets", { preValidation: [fastify.authenticate]} , getMediaAssets);
@@ -272,6 +277,9 @@ module.exports = function (fastify, opts, done) {
 
   //16. Abort Multipart Upload Session
   fastify.delete("/upload/abort/:sessionId", { preHandler: [fastify.authenticate] }, abortResumableUpload);
+
+  //17. Coconut Webhook (No auth, Coconut calls this)
+  fastify.post("/webhooks/coconut", handleCoconutWebhook);
 
   done();
 };

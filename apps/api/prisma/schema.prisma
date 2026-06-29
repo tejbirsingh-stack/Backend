@@ -145,6 +145,7 @@ model MediaAsset {
   updatedAt         DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
   deletedAt         DateTime?  @db.Timestamptz(6)
 
+  videoFrameHashes VideoFrameHash[]
   annotations  Annotation[]
   collectionAssets CollectionAsset[]
   assetVersions    AssetVersion[]
@@ -336,4 +337,15 @@ model Annotation {
   @@index([userId])
   @@index([type])
   @@map("annotations")
+}
+
+model VideoFrameHash {
+  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId     String     @db.Uuid
+  asset       MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  frameIndex  Int
+  hashValue   String     @db.VarChar(64) // 64-bit binary string
+
+  @@index([assetId])
+  @@map("video_frame_hashes")
 }

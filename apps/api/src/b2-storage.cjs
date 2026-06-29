@@ -122,7 +122,7 @@ class B2StorageService {
       return items;
       
     } catch (error) {
-      console.error('❌ Error listing B2 files:', error);
+      console.error(' Error listing B2 files:', error);
       return [];
     }
   }
@@ -147,6 +147,30 @@ class B2StorageService {
       
     } catch (error) {
       console.error('Error generating presigned URL:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get presigned URL for uploading a file (PUT)
+   */
+  async getPresignedPutUrl(key, expiresIn = 3600) {
+    if (!this.enabled) return null;
+    
+    try {
+      const command = new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      });
+      
+      const url = await getSignedUrl(this.s3Client, command, { 
+        expiresIn 
+      });
+      
+      return url;
+      
+    } catch (error) {
+      console.error('Error generating presigned PUT URL:', error);
       return null;
     }
   }
