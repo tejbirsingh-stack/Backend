@@ -26,7 +26,7 @@ const b2Storage = new B2StorageService({
   region: process.env.B2_REGION,
 });
 
-console.log('🚀 Noah Media Compression Worker is starting...');
+console.log(' Noah Media Compression Worker is starting...');
 
 // 2. Define the unified job processor function
 const processCompressionJob = async (job: Job) => {
@@ -48,8 +48,13 @@ const processCompressionJob = async (job: Job) => {
     // Generate a Presigned GET URL so Coconut can read the raw file
     const sourceUrl = await b2Storage.getPresignedUrl(key, 86400); // URL valid for 24 hours
 
-    // Generate a Presigned PUT URL for the output so Coconut can directly upload it
-    const outputUrl = await b2Storage.getPresignedPutUrl(key, 86400); // URL valid for 24 hours
+    // Generate Presigned PUT URLs for the video AND the 5 storyboard thumbnails
+    const outputUrl = await b2Storage.getPresignedPutUrl(key, 86400); 
+    const thumbUrl1 = await b2Storage.getPresignedPutUrl(`${key}_thumb1.jpg`, 86400);
+    const thumbUrl2 = await b2Storage.getPresignedPutUrl(`${key}_thumb2.jpg`, 86400);
+    const thumbUrl3 = await b2Storage.getPresignedPutUrl(`${key}_thumb3.jpg`, 86400);
+    const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${key}_thumb4.jpg`, 86400);
+    const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${key}_thumb5.jpg`, 86400);
 
     // Pass the webhook URL so Coconut tells us when it's done
     const webhookHost = process.env.WEBHOOK_HOST || 'https://562546aa1bd524.lhr.life';
@@ -64,10 +69,13 @@ const processCompressionJob = async (job: Job) => {
       },
       body: JSON.stringify({
         input: { url: sourceUrl },
-        outputs: {
-          'mp4:1080p': {
-            url: outputUrl
-          }
+         outputs: {
+          'mp4:1080p': { url: outputUrl },
+          'jpg:300x#10%': { url: thumbUrl1 },
+          'jpg:300x#30%': { url: thumbUrl2 },
+          'jpg:300x#50%': { url: thumbUrl3 },
+          'jpg:300x#70%': { url: thumbUrl4 },
+          'jpg:300x#90%': { url: thumbUrl5 }
         },
         notification: {
           type: 'http',

@@ -216,7 +216,8 @@ const {
   getUploadStatus,
   completeResumableUpload,
   abortResumableUpload,
-  handleCoconutWebhook
+  handleCoconutWebhook,
+  checkDuplicateMediaFile
 } = require('../controller');
 
 module.exports = function (fastify, opts, done) {
@@ -225,6 +226,9 @@ module.exports = function (fastify, opts, done) {
   fastify.addContentTypeParser('application/octet-stream', (req, payload, done) => {
     done(null, payload);
   });
+
+  // Early Duplicate Check Endpoint
+  fastify.post("/upload/check-duplicate", { preHandler: [fastify.authenticate] }, checkDuplicateMediaFile);
 
   //2. Get media assets - return real uploaded files
   fastify.get("/getmediaassets", { preValidation: [fastify.authenticate]} , getMediaAssets);

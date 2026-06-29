@@ -122,7 +122,7 @@ class B2StorageService {
       return items;
       
     } catch (error) {
-      console.error('❌ Error listing B2 files:', error);
+      console.error(' Error listing B2 files:', error);
       return [];
     }
   }
