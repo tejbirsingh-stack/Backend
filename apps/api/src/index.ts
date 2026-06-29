@@ -153,7 +153,7 @@ async function setupServer() {
   });
 
   await fastify.register(cors, {
-    origin: config.API_CORS_ORIGIN.split(','),
+    origin: true,
     credentials: config.CORS_CREDENTIALS,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -314,6 +314,7 @@ async function setupServer() {
     fastify.register(require('./routes/media'), { prefix: '/api/media' });
     fastify.register(require('./routes/organizations'), { prefix: '/api/organizations' });
     fastify.register(require('./routes/realtime'), { prefix: '/ws' });    // WebSocket routes for real-time video features
+    fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });

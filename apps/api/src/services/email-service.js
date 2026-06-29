@@ -11,15 +11,18 @@ class EmailService {
   }
 
   get apiKey() {
-    return process.env.SENDGRID_API_KEY;
+    const raw = process.env.SENDGRID_API_KEY;
+    return raw ? raw.replace(/^["']|["']$/g, "") : null;
   }
 
   get fromEmail() {
-    return process.env.SMTP_FROM_EMAIL || "noreply@noah-dev.local";
+    const raw = process.env.SMTP_FROM_EMAIL || process.env.EMAIL_FROM || "noreply@noah-dev.local";
+    return raw.replace(/^["']|["']$/g, "");
   }
 
   get fromName() {
-    return process.env.SMTP_FROM_NAME || "Noah Platform";
+    const raw = process.env.SMTP_FROM_NAME || "Noah Platform";
+    return raw.replace(/^["']|["']$/g, "");
   }
 
   /**

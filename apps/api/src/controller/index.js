@@ -8,6 +8,7 @@ const mediaController = require('./mediaController');
 const organizationController = require('./organizationsController');
 const realtimeController = require('./realtimeController');
 const userController = require('./userController');
+const roomController = require('./roomController');
 
 
 module.exports = {
@@ -21,4 +22,5 @@ module.exports = {
   ...realtimeController,
   ...userController,
   ...mediaController,
+  ...roomController,
 };
