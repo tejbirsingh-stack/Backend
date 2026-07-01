@@ -106,132 +106,166 @@ async function routes(fastify, options) {
   });
 
   // Register route
-  fastify.post("/register", async (request, reply) => {
-    const { name, email, password, orgId, hubspotUtk , phone, jobTitle} = request.body;
+fastify.post("/register", async (request, reply) => {
+  const { name, email, password, orgId, orgName, phone, jobTitle, hubspotUtk } = request.body;
 
-    try {
-      // Validate input
-      if (!name || !email || !password || !orgId) {
+  try {
+    // Validate required fields
+    if (!name || !email || !password) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Name, email, and password are required",
+      });
+    }
+
+    // Check if email already exists
+    const existingUser = await authService.findUserByEmail(email);
+
+    if (existingUser) {
+      return reply.status(409).send({
+        error: "Conflict",
+        message: "Email is already registered",
+      });
+    }
+
+    let finalOrgId = orgId;
+    let organization = null;
+
+    // If orgId is provided, validate and check if it exists
+    if (finalOrgId) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(finalOrgId)) {
         return reply.status(400).send({
           error: "Bad Request",
-          message: "Name, email, password, and organization ID are required",
+          message: "Invalid organization ID format. Must be a valid 36-character UUID string.",
         });
       }
 
-      // Check if user already exists
-      const existingUser = await authService.findUserByEmail(email);
-      if (existingUser) {
-        return reply.status(409).send({
-          error: "Conflict",
-          message: "Email is already registered",
-        });
-      }
-
-      // Check if organization exists
-      const organization = await fastify.prisma.organization.findUnique({
-        where: { id: orgId },
+      organization = await fastify.prisma.organization.findUnique({
+        where: { id: finalOrgId },
       });
 
       if (!organization) {
         return reply.status(400).send({
           error: "Bad Request",
-          message: "Invalid organization ID",
+          message: "Invalid organization ID: Organization not found",
         });
       }
-
-      // Hash the password
-      const passwordHash = await authService.hashPassword(password);
-
-      // Create the user
-      const user = await fastify.prisma.user.create({
+    } else {
+      // Auto-generate a new Organization if orgId was not provided
+      const slugBase = email.split('@')[0].replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      organization = await fastify.prisma.organization.create({
         data: {
-          name,
-          email,
-          passwordHash,
-          orgId,
-          role: "member", 
-          status: "active",
-          phone : phone || null,
-          jobTitle : jobTitle || null,
-          hubspotUtk : hubspotUtk || null,
+          name: orgName || `${name}'s Workspace`,
+          slug: `${slugBase}-${Date.now()}`,
+          planType: "free",
         },
       });
+      finalOrgId = organization.id;
+    }
 
-      // --- ADD THIS HUBSPOT SYNC BLOCK ---
-      const portalId = process.env.HUBSPOT_PORTAL_ID;
-      const formId = process.env.HUBSPOT_FORM_ID;
-      const accessToken = process.env.HUBSPOT_ACCESS_TOKEN;
-      
-      if (portalId && formId && accessToken) {
-        // Split name into first and last name for HubSpot
-        const [firstname, ...lastnameParts] = name.split(" ");
-        const lastname = lastnameParts.join(" ") || "";
-        const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
-        // Call HubSpot API in the background so it doesn't block the user's response
-        fetch(hubspotEndpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            fields: [
-              { objectTypeId: "0-1", name: "email", value: email },
-              { objectTypeId: "0-1", name: "firstname", value: firstname },
-              { objectTypeId: "0-1", name: "lastname", value: lastname },
-              { objectTypeId: "0-1", name: "company", value: organization ? organization.name : "" },
-              { objectTypeId: "0-1", name: "phone", value: phone || "" },
-              { objectTypeId: "0-1", name: "jobtitle", value: jobTitle || "" },
-            ],
-            context: {
-              hutk: hubspotUtk,
-              pageUri: request.headers.referer || "",
-              pageName: "Register Page",
-              ipAddress: request.ip,
-            },
-            skipValidation: true,
-          }),
-        })
-          .then(async (res) => {
-            if (!res.ok) {
-              const errText = await res.text();
-              console.error("HubSpot Form submit failed response:", errText);
-            } else {
-              console.log("Successfully synced registration to HubSpot Form");
-            }
-          })
-          .catch((err) => {
-            console.error("HubSpot Form API Connection error:", err.message);
-          });
+    // Hash password
+    const passwordHash = await authService.hashPassword(password);
+
+    // Store user in database
+    const user = await fastify.prisma.user.create({
+      data: {
+        name,
+        email: email.toLowerCase().trim(),
+        passwordHash,
+        orgId: finalOrgId,
+        role: "admin", // use lowercase for consistency with backend checks
+        phone: phone || null,
+        jobTitle: jobTitle || null,
+        hubspotUtk: hubspotUtk || null,
+        status: "active",
+        failedLoginAttempts: 0,
+      },
+    });
+
+    // --- HUBSPOT BACKGROUND SYNC BLOCK ---
+    const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
+    const formId = process.env.HUBSPOT_FORM_ID?.trim();
+    const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
+
+    if (portalId && formId) {
+      // Split name into first and last name for HubSpot
+      const [firstname, ...lastnameParts] = name.split(" ");
+      const lastname = lastnameParts.join(" ") || "";
+      const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formId}`;
+
+      const headers = { "Content-Type": "application/json" };
+      if (accessToken) {
+        headers["Authorization"] = `Bearer ${accessToken}`;
       }
 
-      // Create a session for the new user
-      const session = await authService.createSession(
-        user.id,
-        request.headers["user-agent"],
-        request.ip
-      );
-
-      // Return the user info and session token
-      return {
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          orgId: user.orgId,
-        },
-        token: session.token,
-        expiresAt: session.expiresAt,
-      };
-    } catch (error) {
-      console.error("Registration error:", error);
-      return reply.status(500).send({
-        error: "Internal Server Error",
-        message: "Failed to process registration",
-      });
+      // Call HubSpot API in the background so it doesn't block the user's response
+      fetch(hubspotEndpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          fields: [
+            { objectTypeId: "0-1", name: "email", value: email },
+            { objectTypeId: "0-1", name: "firstname", value: firstname },
+            { objectTypeId: "0-1", name: "lastname", value: lastname },
+            { objectTypeId: "0-1", name: "company", value: organization ? organization.name : "" },
+            { objectTypeId: "0-1", name: "phone", value: phone || "" },
+            { objectTypeId: "0-1", name: "jobtitle", value: jobTitle || "" },
+          ],
+          context: {
+            ...(hubspotUtk && typeof hubspotUtk === "string" && hubspotUtk.trim().length > 0
+              ? { hutk: hubspotUtk.trim() }
+              : {}),
+            pageUri: request.headers.referer || "",
+            pageName: "Register Page",
+            ipAddress: request.ip,
+          },
+        }),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const errText = await res.text();
+            console.error("HubSpot Form submit failed response:", errText);
+          } else {
+            console.log("Successfully synced registration to HubSpot Form");
+          }
+        })
+        .catch((err) => {
+          console.error("HubSpot Form API Connection error:", err.message);
+        });
     }
-  });
+
+    // Create a session for the new user
+    const session = await authService.createSession(
+      user.id,
+      request.headers["user-agent"],
+      request.ip
+    );
+
+    return reply.status(201).send({
+      message: "User registered successfully",
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        orgId: user.orgId,
+        role: user.role,
+        status: user.status,
+        phone: user.phone,
+        jobTitle: user.jobTitle,
+      },
+      token: session.token,
+      expiresAt: session.expiresAt,
+    });
+  } catch (error) {
+    console.error("Registration Error:", error);
+
+    return reply.status(500).send({
+      error: "Internal Server Error",
+      message: "Failed to register user",
+    });
+  }
+});
 
   // Logout route (requires authentication)
   fastify.post(
