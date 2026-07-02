@@ -522,32 +522,69 @@ module.exports.resetPassword = async (request, reply) => {
 //10. Google Login Hander
 module.exports.googleLogin = async (request, reply) => {
   const { idToken } = request.body;
-  const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+  const clientId = process.env.GOOGLE_CLIENT_ID || "967923512322-0oullb620hh9se1ff0prs8stvbspi829.apps.googleusercontent.com";
+  const googleClient = new OAuth2Client(clientId);
 
-  try{
-    if (!idToken) {
-      return reply.status(400).send({
-        success : false,
-        error : "Bad Request",
-        message : "Google idToken is required",
-      });
-    }
-
-    // a. Verify the access token by fetching the user's profile from Google
-    const googleResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${idToken}` }
+  if (!idToken) {
+    return reply.status(400).send({
+      success : false,
+      error : "Bad Request",
+      message : "Google idToken is required",
     });
+  }
 
-    if (!googleResponse.ok) {
-      throw new Error("Failed to verify token with Google");
+  let email, name;
+
+  try {
+    // Check if token is a JWT ID token or OAuth access token
+    if (idToken.startsWith('eyJ') || idToken.split('.').length === 3) {
+      try {
+        const ticket = await googleClient.verifyIdToken({
+          idToken: idToken,
+          audience: clientId,
+        });
+        const payload = ticket.getPayload();
+        email = payload.email;
+        name = payload.name;
+      } catch (jwtErr) {
+        console.warn("verifyIdToken failed, falling back to userinfo API:", jwtErr.message);
+      }
     }
 
-    // extract the email from the response payload
-    const payload = await googleResponse.json();
-    const { email, name } = payload;
+    // If email is still not extracted, try the userinfo endpoint (for access tokens)
+    if (!email) {
+      const googleResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${idToken}` }
+      });
+
+      if (!googleResponse.ok) {
+        throw new Error("INVALID_TOKEN: Failed to verify token with Google");
+      }
+
+      const payload = await googleResponse.json();
+      email = payload?.email;
+      name = payload?.name;
+    }
+
+    if (!email) {
+      throw new Error("INVALID_TOKEN: Could not extract email from Google token");
+    }
+  } catch (authError) {
+    console.error("Google Token Verification Error:", authError);
+    return reply.status(401).send({
+      success: false,
+      error: "Unauthorized",
+      message: "Invalid or expired Google token",
+      details: authError.message
+    });
+  }
+
+  try {
+    // Normalize email
+    const normalizedEmail = email.toLowerCase().trim();
 
     // b. Extract user info from verified token
-    let user = await authService.findUserByEmail(email);
+    let user = await authService.findUserByEmail(normalizedEmail);
     
     //c. Since app requires an `orgId` to register, auto-generate them  
     if(!user){
@@ -565,8 +602,8 @@ module.exports.googleLogin = async (request, reply) => {
       // Create User
       user = await request.server.prisma.user.create({
         data: {
-          email: email,
-          name: name || email.split('@')[0],
+          email: normalizedEmail,
+          name: name || normalizedEmail.split('@')[0],
           orgId: organization.id,
           role: "admin",
           status: "active"
@@ -584,7 +621,7 @@ module.exports.googleLogin = async (request, reply) => {
       const formId = process.env.HUBSPOT_FORM_ID;
       const hubspotToken = process.env.HUBSPOT_ACCESS_TOKEN;
       if (portalId && formId && hubspotToken) {
-        const fallbackName = name || email.split('@')[0];
+        const fallbackName = name || normalizedEmail.split('@')[0];
         const nameParts = fallbackName.trim().split(" ").filter(Boolean);
         const firstname = nameParts[0] || "";
         const lastname = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
@@ -599,7 +636,7 @@ module.exports.googleLogin = async (request, reply) => {
           },
           body: JSON.stringify({
             fields: [
-              { objectTypeId: "0-1", name: "email", value: email },
+              { objectTypeId: "0-1", name: "email", value: normalizedEmail },
               { objectTypeId: "0-1", name: "firstname", value: firstname },
               { objectTypeId: "0-1", name: "lastname", value: lastname },
               { objectTypeId: "0-1", name: "company", value: orgName },
@@ -642,18 +679,19 @@ module.exports.googleLogin = async (request, reply) => {
         name: user.name,
         role: user.role,
         orgId: user.orgId,
-        organization: user.organization
+        organization: user.organization || null
       },
       accessToken: session.token,
       refreshToken: session.token,
       expiresAt: session.expiresAt,
     };
-  }catch(error){
-    console.error("Google Login error:", error);
-    return reply.status(401).send({
+  } catch(error) {
+    console.error("Google Login Database/Session error:", error);
+    return reply.status(500).send({
       success: false,
-      error: "Unauthorized",
-      message: "Invalid or expired Google token",
+      error: "Internal Server Error",
+      message: "Failed to complete Google login process",
+      details: error.message
     });
   }
 }
