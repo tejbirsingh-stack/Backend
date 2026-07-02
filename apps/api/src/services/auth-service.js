@@ -1,5 +1,6 @@
 // Authentication service with JWT, password hashing, and session management
-const argon2 = require("argon2");
+// const argon2 = require("argon2");
+const bcrypt = require("bcryptjs");
 const { authenticator } = require("otplib");
 const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
@@ -8,12 +9,9 @@ const prisma = new PrismaClient();
 
 // Configure authentication options
 const AUTH_OPTIONS = {
-  // Password hashing options
-  argon2: {
-    timeCost: 3, // Number of iterations
-    memoryCost: 65536, // Memory usage in KiB (64 MB)
-    parallelism: 4, // Degree of parallelism
-    type: argon2.argon2id, // Use argon2id variant
+  // Password hashing options (bcrypt)
+  bcrypt: {
+    saltRounds: 10,
   },
 
   // JWT options
@@ -38,11 +36,12 @@ class AuthService {
   // Verify a password against a stored hash
   async verifyPassword(hashedPassword, plainPassword) {
     try {
-      return await argon2.verify(
-        hashedPassword,
-        plainPassword,
-        AUTH_OPTIONS.argon2
-      );
+      // Handle both argon2 (legacy) and bcrypt hashes
+      if (hashedPassword.startsWith('$argon2')) {
+        const argon2 = require("argon2");
+        return await argon2.verify(hashedPassword, plainPassword);
+      }
+      return await bcrypt.compare(plainPassword, hashedPassword);
     } catch (error) {
       console.error("Password verification error:", error);
       return false;
@@ -52,7 +51,7 @@ class AuthService {
   // Hash a password for storage
   async hashPassword(password) {
     try {
-      return await argon2.hash(password, AUTH_OPTIONS.argon2);
+      return await bcrypt.hash(password, AUTH_OPTIONS.bcrypt.saltRounds);
     } catch (error) {
       console.error("Password hashing error:", error);
       throw new Error("Failed to hash password");

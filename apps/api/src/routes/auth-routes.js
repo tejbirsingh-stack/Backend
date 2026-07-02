@@ -200,39 +200,43 @@ fastify.post("/register", async (request, reply) => {
       }
 
       // Call HubSpot API in the background so it doesn't block the user's response
-      fetch(hubspotEndpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          fields: [
-            { objectTypeId: "0-1", name: "email", value: email },
-            { objectTypeId: "0-1", name: "firstname", value: firstname },
-            { objectTypeId: "0-1", name: "lastname", value: lastname },
-            { objectTypeId: "0-1", name: "company", value: organization ? organization.name : "" },
-            { objectTypeId: "0-1", name: "phone", value: phone || "" },
-            { objectTypeId: "0-1", name: "jobtitle", value: jobTitle || "" },
-          ],
-          context: {
-            ...(hubspotUtk && typeof hubspotUtk === "string" && hubspotUtk.trim().length > 0
-              ? { hutk: hubspotUtk.trim() }
-              : {}),
-            pageUri: request.headers.referer || "",
-            pageName: "Register Page",
-            ipAddress: request.ip,
-          },
-        }),
-      })
-        .then(async (res) => {
-          if (!res.ok) {
-            const errText = await res.text();
-            console.error("HubSpot Form submit failed response:", errText);
-          } else {
-            console.log("Successfully synced registration to HubSpot Form");
-          }
+      if (typeof fetch !== 'undefined') {
+        fetch(hubspotEndpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            fields: [
+              { objectTypeId: "0-1", name: "email", value: email },
+              { objectTypeId: "0-1", name: "firstname", value: firstname },
+              { objectTypeId: "0-1", name: "lastname", value: lastname },
+              { objectTypeId: "0-1", name: "company", value: organization ? organization.name : "" },
+              { objectTypeId: "0-1", name: "phone", value: phone || "" },
+              { objectTypeId: "0-1", name: "jobtitle", value: jobTitle || "" },
+            ],
+            context: {
+              ...(hubspotUtk && typeof hubspotUtk === "string" && hubspotUtk.trim().length > 0
+                ? { hutk: hubspotUtk.trim() }
+                : {}),
+              pageUri: request.headers.referer || "",
+              pageName: "Register Page",
+              ipAddress: request.ip,
+            },
+          }),
         })
-        .catch((err) => {
-          console.error("HubSpot Form API Connection error:", err.message);
-        });
+          .then(async (res) => {
+            if (!res.ok) {
+              const errText = await res.text();
+              console.error("HubSpot Form submit failed response:", errText);
+            } else {
+              console.log("Successfully synced registration to HubSpot Form");
+            }
+          })
+          .catch((err) => {
+            console.error("HubSpot Form API Connection error:", err.message);
+          });
+      } else {
+        console.warn("fetch is not defined, skipping HubSpot background sync.");
+      }
     }
 
     // Create a session for the new user
