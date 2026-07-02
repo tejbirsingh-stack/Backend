@@ -87,6 +87,13 @@ class AuthService {
         mfaSecret: true,
         mfaEnabled: true,
         status: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true
+          }
+        }
       },
     });
   }
@@ -108,6 +115,41 @@ class AuthService {
 
   // Create a new session for a user
   async createSession(userId, userAgent, ipAddress) {
+    // 1. Clean up expired sessions for this user
+    await prisma.userSession.deleteMany({
+      where: {
+        userId,
+        expiresAt: {
+          lt: new Date(),
+        },
+      },
+    });
+
+    // 2. Enforce max active sessions limit
+    const activeSessions = await prisma.userSession.findMany({
+      where: {
+        userId,
+      },
+      orderBy: {
+        lastActiveAt: 'asc', // oldest first
+      },
+      select: { id: true },
+    });
+
+    if (activeSessions.length >= AUTH_OPTIONS.session.maxActiveSessions) {
+      // Calculate how many to delete to make room for the new one
+      const numToDelete = activeSessions.length - AUTH_OPTIONS.session.maxActiveSessions + 1;
+      const sessionIdsToDelete = activeSessions.slice(0, numToDelete).map(s => s.id);
+
+      await prisma.userSession.deleteMany({
+        where: {
+          id: {
+            in: sessionIdsToDelete,
+          },
+        },
+      });
+    }
+
     // Generate a random token
     const token = crypto.randomBytes(64).toString("hex");
 
@@ -155,6 +197,13 @@ class AuthService {
             orgId: true,
             role: true,
             status: true,
+            organization: {
+              select: {
+                id: true,
+                name: true,
+                slug: true
+              }
+            }
           },
         },
       },

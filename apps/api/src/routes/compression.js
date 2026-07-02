@@ -1,15 +1,11 @@
-module.exports = function (fastify, opts, done) {
-  // Compression request
-  fastify.post("/request", async (request, reply) => {
-    reply.send({ message: "Compression request endpoint not yet implemented" });
-  });
+const { compress , compressStatus } = require('../controller');
 
-  // Compression status
-  fastify.get("/status/:id", async (request, reply) => {
-    reply.send({
-      message: `Compression status endpoint for ${request.params.id} not yet implemented`,
-    });
-  });
+module.exports = function (fastify, opts, done) {
+  //1. Compression request
+  fastify.post("/request",compress);
+
+  //2. Compression status
+  fastify.get("/status/:id", compressStatus);
 
   done();
 };

@@ -1,15 +1,8 @@
+const { handleWebSocket } = require("../controller");
+
 module.exports = function (fastify, opts, done) {
-  // WebSocket connection handler
-  fastify.get("/", { websocket: true }, (connection, req) => {
-    connection.socket.on("message", (message) => {
-      connection.socket.send(
-        JSON.stringify({
-          message: "WebSocket connections not yet fully implemented",
-          received: message.toString(),
-        })
-      );
-    });
-  });
+  // WebSocket connection handler using controller
+  fastify.get("/", { websocket: true }, handleWebSocket);
 
   done();
 };

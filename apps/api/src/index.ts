@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -6,13 +7,10 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
-import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import path from 'path';
 
-// Load environment variables
-dotenv.config();
 
 // Mock Redis and Prisma for development
 // const Redis = null;
@@ -22,34 +20,15 @@ dotenv.config();
 // @ts-ignore
 import authService from './services/auth-service.js';
 
+import emailService from './services/email-service.js';
+import { Logger } from './utils/logger.js';
+import { MetricsCollector } from './utils/metrics.js';
+import { HealthChecker } from './utils/health.js';
+
 const mediaService = {};
 const compressionService = {};
 
-// Simplified utilities
-class Logger {
-  namespace: string;
-  constructor(namespace: string) {
-    this.namespace = namespace;
-  }
-
-  info(message: string, meta?: any) {
-    console.log(`[INFO] [${this.namespace}] ${message}`, meta || '');
-  }
-
-  warn(message: string, meta?: any) {
-    console.warn(`[WARN] [${this.namespace}] ${message}`, meta || '');
-  }
-
-  error(message: string, meta?: any) {
-    console.error(`[ERROR] [${this.namespace}] ${message}`, meta || '');
-  }
-}
-
-class MetricsCollector {
-  recordHttpRequest(method?: string, url?: string, statusCode?: number, responseTime?: number) { }
-  recordError(errorName?: string) { }
-  getMetrics() { return "# Metrics placeholder"; }
-}
+// Utilities imported from ./utils
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -61,36 +40,11 @@ declare module 'fastify' {
     mediaService: any;
     compressionService: any;
     authenticate: any;
+    emailService: any;
   }
 }
 
-class HealthChecker {
-  async check(services: any = {}) {
-    // Check services passed as parameters
-    const serviceStatus: Record<string, string> = {};
 
-    // Add auth service status if provided
-    if (services.authService) {
-      try {
-        const authStatus = await services.authService.healthCheck();
-        serviceStatus.auth = authStatus ? 'ok' : 'error';
-      } catch (error) {
-        serviceStatus.auth = 'error';
-      }
-    }
-
-    // Overall status is healthy if no services are in error state
-    const hasErrors = Object.values(serviceStatus).some(status => status === 'error');
-
-    return {
-      status: hasErrors ? 'unhealthy' : 'healthy',
-      timestamp: new Date().toISOString(),
-      services: serviceStatus,
-      version: process.env.VERSION || '1.0.0',
-      environment: process.env.NODE_ENV
-    };
-  }
-}
 
 // Configuration
 const config = {
@@ -175,6 +129,7 @@ fastify.decorate('metrics', metrics);
 fastify.decorate('authService', authService);
 fastify.decorate('mediaService', mediaService);
 fastify.decorate('compressionService', compressionService);
+fastify.decorate('emailService',emailService);
 
 // Main setup function to avoid top-level await
 async function setupServer() {
@@ -189,14 +144,16 @@ async function setupServer() {
         connectSrc: ["'self'", "ws:", "wss:"],
         fontSrc: ["'self'"],
         objectSrc: ["'none'"],
-        mediaSrc: ["'self'"],
+        mediaSrc: ["'self'", "https:", "blob:"],
         frameSrc: ["'none'"],
       }
     },
-    crossOriginEmbedderPolicy: false
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" }
   });
 
   await fastify.register(cors, {
+<<<<<<< HEAD
     origin: (origin, cb) => {
       if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('192.168.')) {
         cb(null, true);
@@ -205,6 +162,9 @@ async function setupServer() {
       const allowed = config.API_CORS_ORIGIN.split(',').map((s: string) => s.trim());
       cb(null, allowed.includes(origin));
     },
+=======
+    origin: true,
+>>>>>>> 7dd83984d28eaf5c16bf434b7ce986e70fcab5a4
     credentials: config.CORS_CREDENTIALS,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -349,37 +309,24 @@ async function setupServer() {
     });
   });
 
-  // Health check endpoint
-  fastify.get('/health', async (request: any, reply: any) => {
-    const health = await healthChecker.check({
-      database: prisma,
-      redis: redis,
-      authService: fastify.authService
-    });
-
-    const statusCode = health.status === 'healthy' ? 200 : 503;
-    reply.code(statusCode).send(health);
-  });
-
   // Metrics endpoint for Prometheus
   fastify.get('/metrics', async (request: any, reply: any) => {
     const metrics = await fastify.metrics.getMetrics();
     reply.type('text/plain').send(metrics);
   });
-
   try {
     // API Routes - using plain require to avoid top-level await
-    // These are placeholder routes for development - create empty files to test
+    fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
+    fastify.register(require('./routes/annotations'), { prefix: '/api/annotations' });
     fastify.register(require('./routes/auth-routes'), { prefix: '/api/auth' });
-    fastify.register(require('./routes/media'), { prefix: '/api/media' });
     fastify.register(require('./routes/collections'), { prefix: '/api/collections' });
     fastify.register(require('./routes/compression'), { prefix: '/api/compression' });
+    fastify.register(require('./routes/health-route.js'));
+    fastify.register(require('./routes/media'), { prefix: '/api/media' });
     fastify.register(require('./routes/organizations'), { prefix: '/api/organizations' });
+    fastify.register(require('./routes/realtime'), { prefix: '/ws' });    // WebSocket routes for real-time video features
+    fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
-    fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
-
-    // WebSocket routes for real-time features
-    fastify.register(require('./routes/realtime'), { prefix: '/ws' });
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });
   }

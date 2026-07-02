@@ -6,7 +6,7 @@
  */
 
 const { dir } = require("console");
-const { request } = require("http");
+const { request, get } = require("http");
 
 /**
  * @swagger
@@ -199,763 +199,87 @@ const { request } = require("http");
  *               $ref: '#/components/schemas/Error'
  */
 
+const { 
+  getMediaAssets, 
+  searchMediaAssets, 
+  fileStreamPreview, 
+  downloadFile, 
+  softDelete, 
+  restoreSoftDelete, 
+  deletePermanently, 
+  getMediaFile, 
+  uploadMediaFile, 
+  deleteMediaFile,
+  initiateResumableUpload,
+  uploadChunk,
+  getChunkUploadUrl,
+  getUploadStatus,
+  completeResumableUpload,
+  abortResumableUpload,
+  handleCoconutWebhook,
+  checkDuplicateMediaFile
+} = require('../controller');
+
 module.exports = function (fastify, opts, done) {
-  const B2StorageService = require("../b2-storage.cjs");
 
-  const b2Storage = new B2StorageService({
-    keyId: process.env.B2_KEY_ID,
-    applicationKey: process.env.B2_APPLICATION_KEY,
-    bucketName: process.env.B2_BUCKET_NAME,
-    endpoint: process.env.B2_ENDPOINT,
-    region: process.env.B2_REGION,
+  // Register parser for raw binary upload chunks
+  fastify.addContentTypeParser('application/octet-stream', (req, payload, done) => {
+    done(null, payload);
   });
 
-  function sanitizeB2ErrorMessage(message) {
-    if (!message) return "Unknown B2 error";
-    // Mask specific B2 key error format to prevent leaking key IDs
-    let sanitized = message.replace(/The key '[^']+' is not valid/gi, "The key is not valid");
-    // Mask any other potential 20-35 character key-like strings
-    sanitized = sanitized.replace(/\b[a-zA-Z0-9]{20,35}\b/g, "[MASKED]");
-    return sanitized;
-  }
+  // Early Duplicate Check Endpoint
+  fastify.post("/upload/check-duplicate", { preHandler: [fastify.authenticate] }, checkDuplicateMediaFile);
 
-  function normalizeAssetType(mimeType = "") {
-    if (mimeType.startsWith("video/")) return "video";
-    if (mimeType.startsWith("image/")) return "image";
-    if (mimeType.startsWith("audio/")) return "audio";
-    return "document";
-  }
+  //2. Get media assets - return real uploaded files
+  fastify.get("/getmediaassets", { preValidation: [fastify.authenticate]} , getMediaAssets);
 
-  function inferMimeType(filename = "") {
-    const ext = filename.toLowerCase();
-    if (ext.endsWith(".mp4") || ext.endsWith(".mov") || ext.endsWith(".avi") || ext.endsWith(".webm")) return "video/mp4";
-    if (ext.endsWith(".png")) return "image/png";
-    if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
-    if (ext.endsWith(".gif")) return "image/gif";
-    if (ext.endsWith(".mp3") || ext.endsWith(".wav") || ext.endsWith(".m4a")) return "audio/mpeg";
-    if (ext.endsWith(".pdf")) return "application/pdf";
-    return "application/octet-stream";
-  }
+  //3. Search media assets
+  fastify.get("/search", { preValidation: [fastify.authenticate] },searchMediaAssets);
 
-  function toFrontendAssetShape(asset) {
-    const mimeType = asset.mimeType || inferMimeType(asset.name || "");
-    const normalizedType = normalizeAssetType(mimeType);
-    const uploadDate = asset.uploadDate || asset.createdAt || new Date().toISOString();
-    const streamUrl =
-      asset.url || (asset.id ? `/api/media/${encodeURIComponent(asset.id)}/stream` : null);
-    const thumbnail =
-      normalizedType === "image"
-        ? streamUrl
-        : asset.thumbnail || null;
+  //4. Stream file for preview/playback (video player uses this URL)
+  fastify.get("/:filename/stream",fileStreamPreview);
 
-    return {
-      id: asset.id,
-      name: asset.name,
-      type: normalizedType,
-      size: asset.size,
-      uploadDate,
-      url: streamUrl,
-      thumbnail,
-      tags: asset.tags || [],
-      metadata: asset.metadata || {},
-      compressionStatus: asset.compressionStatus || "completed",
-    };
-  }
+  //5. Download file (browser saves to disk)
+  fastify.get("/:filename/download", downloadFile);
 
-  const fs = require("fs");
-  const path = require("path");
+  //6. List soft-deleted files (Trash)
+  fastify.get("/trash", { preValidation: [fastify.authenticate] }, softDelete);
 
-  function getUploadsDir() {
-    return path.join(__dirname, "../../uploads");
-  }
+  //7. Restore a soft-deleted file
+  fastify.post("/:filename/restore", { preValidation: [fastify.authenticate] }, restoreSoftDelete);
 
-  /** Recursive function to get all files in nested directories */
-  function getAllFiles(dirPath, arrayOfFiles = []){
-    const files = fs.readdirSync(dirPath);                                        
-    files.forEach(function(file){
-      if(fs.statSync(dirPath + "/" + file).isDirectory()){
-        arrayOfFiles = getAllFiles(dirPath + "/" + file, arrayOfFiles);
-      } else {
-        arrayOfFiles.push(path.join(dirPath, "/", file));
-      }
-    });
-    return arrayOfFiles;
-  }
+  //8. Permanently delete a file from B2
+  fastify.delete("/:filename/permanent",deletePermanently);
 
-  // Find stored file path on disk from id or display name ****
-  function resolveMediaFilename(id) {
-    const uploadsDir = getUploadsDir();
-    if (!fs.existsSync(uploadsDir)) return null;
+  //9. GET /api/media/:filename — file bytes for players
+  fastify.get("/:filename", getMediaFile);
 
-    const files = getAllFiles(uploadsDir);
-    const matched = files.find((filepath) => {
-      const filename = path.basename(filepath);
-      if (filename === id) return true;
-      const originalName = filename.replace(/^\d+-/, "");
-      return originalName === id;
-    });
-    return matched ? matched : null;
-  }
+  //10. Upload media asset
+  fastify.post("/upload", { preHandler: [fastify.authenticate] }, uploadMediaFile);
 
-  function resolveMediaFilePath(id) {
-    return resolveMediaFilename(id);
-  }
+  //11. Delete media asset
+  fastify.delete("/:filename", { preValidation: [fastify.authenticate] }, deleteMediaFile);
 
-  /**
-   * Stream a file to the client (used by video/audio players).
-   * Supports HTTP Range requests so the browser can seek in long videos.
-   */
-  async function serveMediaFile(request, reply, filePath, options = {}) {
-    const { download = false, displayName } = options;
-    const stat = fs.statSync(filePath);
-    const fileSize = stat.size;
-    const mimeType = inferMimeType(path.basename(filePath));
-    const name = displayName || path.basename(filePath);
+  //12. Initialize a Resumable Multipart Upload Session
+  fastify.post("/upload/init", { preHandler: [fastify.authenticate] }, initiateResumableUpload);
 
-    reply.header("Accept-Ranges", "bytes");
-    reply.header(
-      "Content-Disposition",
-      download ? `attachment; filename="${name}"` : "inline"
-    );
-    reply.type(mimeType);
+  //13.  Upload an individual raw binary chunk
+  fastify.put("/upload/chunk", { preHandler: [fastify.authenticate] }, uploadChunk);
 
-    const range = request.headers.range;
-    if (range) {
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunkSize = end - start + 1;
+  //13b. Get Presigned URL for chunk upload
+  fastify.get("/upload/chunk-url", { preHandler: [fastify.authenticate] }, getChunkUploadUrl);
 
-      reply.code(206);
-      reply.header("Content-Range", `bytes ${start}-${end}/${fileSize}`);
-      reply.header("Content-Length", chunkSize);
-      return reply.send(fs.createReadStream(filePath, { start, end }));
-    }
+  //14. Check which chunks have been successfully uploaded
+  fastify.get("/upload/status/:sessionId", { preHandler: [fastify.authenticate] }, getUploadStatus);
 
-    reply.header("Content-Length", fileSize);
-    return reply.send(fs.createReadStream(filePath));
-  }
+  //15. Complete Multipart Upload Session and Create Database Record
+  fastify.post("/upload/complete", { preHandler: [fastify.authenticate] }, completeResumableUpload);
 
-  // Get media assets - return real uploaded files
-  fastify.get("/", async (request, reply) => {
-    const {
-      query,
-      type,
-      sortBy,
-      sortOrder,
-      limit = 20,
-      offset = 0,
-      source = "all",
-    } = request.query;
+  //16. Abort Multipart Upload Session
+  fastify.delete("/upload/abort/:sessionId", { preHandler: [fastify.authenticate] }, abortResumableUpload);
 
-    try {
-      const fs = require("fs");
-      const path = require("path");
-
-      // Get real uploaded files (local)
-      const uploadsDir = path.join(__dirname, "../../uploads");
-      let localAssets = [];
-      let b2Assets = [];
-
-      if ((source === "local" || source === "all") && fs.existsSync(uploadsDir)) {
-        const filePaths = getAllFiles(uploadsDir);
-        localAssets = filePaths.map((filepath) => {
-          const stats = fs.statSync(filepath);
-          const filename = path.basename(filepath);
-          const originalName = filename.replace(/^\d+-/, ""); // Remove timestamp prefix
-          const mimeType = inferMimeType(filename);
-
-          return {
-            id: filename,
-            name: originalName,
-            mimeType,
-            size: stats.size,
-            uploadDate: stats.mtime.toISOString(),
-            url: `/api/media/${encodeURIComponent(filename)}/stream`,
-            thumbnail: mimeType.startsWith("image/")
-              ? `/api/media/${encodeURIComponent(filename)}/stream`
-              : null,
-            tags: [],
-            metadata: {},
-            compressionStatus: "completed",
-            storageLocation: "local",
-          };
-        });
-      }
-
-      // Get B2 assets (same presigned URL behavior as express server path)
-      if ((source === "b2" || source === "all") && b2Storage.isEnabled()) {
-        try {
-          const b2Files = await b2Storage.listFiles("uploads/", 1000);
-          b2Assets = await b2Storage.transformToMediaAssets(b2Files);
-        } catch (b2Error) {
-          console.error("Error listing B2 files:", b2Error.message);
-        }
-      }
-
-      // Add some mock data if no real files exist
-      const mockAssets =
-        localAssets.length === 0 && b2Assets.length === 0
-          ? [
-              {
-                id: "1",
-                name: "Project Video.mp4",
-                mimeType: "video/mp4",
-                size: 125000000,
-                uploadDate: "2025-07-31T10:00:00Z",
-                url: "/uploads/project-video.mp4",
-                thumbnail: "/uploads/thumbnails/project-video.jpg",
-                tags: [],
-                metadata: {},
-                compressionStatus: "completed",
-              },
-              {
-                id: "2",
-                name: "Design Mockup.png",
-                mimeType: "image/png",
-                size: 2500000,
-                uploadDate: "2025-07-30T15:30:00Z",
-                url: "/uploads/design-mockup.png",
-                thumbnail: "/uploads/design-mockup.png",
-                tags: [],
-                metadata: {},
-                compressionStatus: "completed",
-              },
-              {
-                id: "3",
-                name: "Audio Track.mp3",
-                mimeType: "audio/mpeg",
-                size: 8200000,
-                uploadDate: "2025-07-29T09:15:00Z",
-                url: "/uploads/audio-track.mp3",
-                thumbnail: null,
-                tags: [],
-                metadata: {},
-                compressionStatus: "completed",
-              },
-              {
-                id: "4",
-                name: "Report.pdf",
-                mimeType: "application/pdf",
-                size: 1800000,
-                uploadDate: "2025-07-28T14:20:00Z",
-                url: "/uploads/report.pdf",
-                thumbnail: null,
-                tags: [],
-                metadata: {},
-                compressionStatus: "completed",
-              },
-            ]
-          : [];
-
-      const combinedAssets = [...localAssets, ...b2Assets, ...mockAssets];
-      const deduplicatedAssets = [];
-      const seenIds = new Set();
-      
-      for (const asset of combinedAssets) {
-        if (!seenIds.has(asset.id)) {
-          seenIds.add(asset.id);
-          
-          const isLocal = localAssets.some(l => l.id === asset.id);
-          const isB2 = b2Assets.some(b => b.id === asset.id);
-          if (isLocal && isB2) {
-            asset.storageLocation = "both";
-          }
-          
-          deduplicatedAssets.push(asset);
-        }
-      }
-      
-      let allAssets = deduplicatedAssets;
-
-      // Apply search filter
-      if (query) {
-        allAssets = allAssets.filter((asset) =>
-          asset.name.toLowerCase().includes(query.toLowerCase())
-        );
-      }
-
-      // Apply type filter
-      if (type && type !== "All") {
-        allAssets = allAssets.filter((asset) => {
-          const mimeType = asset.mimeType || inferMimeType(asset.name || "");
-          switch (type) {
-            case "Video":
-              return mimeType.startsWith("video/");
-            case "Images":
-              return mimeType.startsWith("image/");
-            case "Audio":
-              return mimeType.startsWith("audio/");
-            case "Document":
-              return mimeType === "application/pdf";
-            default:
-              return true;
-          }
-        });
-      }
-
-      // Apply sorting
-      if (sortBy) {
-        allAssets.sort((a, b) => {
-          let compareValue = 0;
-          switch (sortBy) {
-            case "name":
-              compareValue = a.name.localeCompare(b.name);
-              break;
-            case "size":
-              compareValue = a.size - b.size;
-              break;
-            case "date":
-              compareValue =
-                new Date(a.uploadDate).getTime() -
-                new Date(b.uploadDate).getTime();
-              break;
-          }
-          return sortOrder === "desc" ? -compareValue : compareValue;
-        });
-      }
-
-      // Apply pagination
-      const start = parseInt(offset) || 0;
-      const end = start + (parseInt(limit) || 20);
-      const paginatedAssets = allAssets.slice(start, end);
-      const transformedAssets = paginatedAssets.map(toFrontendAssetShape);
-
-      reply.send({
-        success: true,
-        assets: transformedAssets,
-        folders: [],
-      });
-    } catch (error) {
-      console.error("Error reading uploaded files:", error);
-      reply.code(500).send({
-        success: false,
-        error: "Failed to retrieve media assets",
-        message: error.message,
-      });
-    }
-  });
-
-  // Get single media asset
-  fastify.get("/search", async (request, reply) => {
-    try {
-      const fs = require("fs");
-      const path = require("path");
-      const { q: query = "", source = "all" } = request.query;
-
-      if (!query || !String(query).trim()) {
-        return reply.code(400).send({
-          success: false,
-          error: "Search query is required",
-          assets: [],
-        });
-      }
-
-      const searchLower = String(query).toLowerCase();
-      const uploadsDir = path.join(__dirname, "../../uploads");
-      let assets = [];
-
-      // Local search (current parity phase)
-      if ((source === "local" || source === "all") && fs.existsSync(uploadsDir)) {
-        const filePaths = getAllFiles(uploadsDir);
-
-        assets = filePaths
-          .map((filepath) => {
-            const stats = fs.statSync(filepath);
-            const filename = path.basename(filepath);
-            const mimeType = inferMimeType(filename);
-            const originalName = filename.replace(/^\d+-/, "");
-
-            return toFrontendAssetShape({
-              id: filename,
-              name: originalName,
-              mimeType,
-              size: stats.size,
-              uploadDate: stats.mtime.toISOString(),
-              url: `/api/media/${encodeURIComponent(filename)}/stream`,
-              thumbnail: mimeType.startsWith("image/")
-                ? `/api/media/${encodeURIComponent(filename)}/stream`
-                : null,
-              tags: [],
-              metadata: {},
-              compressionStatus: "completed",
-            });
-          })
-          .filter((asset) => {
-            const typeMatch = String(asset.type || "")
-              .toLowerCase()
-              .includes(searchLower);
-            const nameMatch = String(asset.name || "")
-              .toLowerCase()
-              .includes(searchLower);
-            const tagMatch = Array.isArray(asset.tags)
-              ? asset.tags.some((tag) => String(tag).toLowerCase().includes(searchLower))
-              : false;
-
-            return nameMatch || typeMatch || tagMatch;
-          });
-      }
-
-      return reply.send({
-        success: true,
-        assets,
-        query: String(query),
-        count: assets.length,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: error.message,
-        assets: [],
-      });
-    }
-  });
-
-  // Stream file for preview/playback (video player uses this URL)
-  fastify.get("/:filename/stream", async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      const filePath = resolveMediaFilePath(filename);
-
-      if (!filePath || !fs.existsSync(filePath)) {
-        return reply.code(404).send({ success: false, error: "File not found" });
-      }
-
-      const displayName = filename.replace(/^\d+-/, "");
-      return serveMediaFile(request, reply, filePath, {
-        download: false,
-        displayName,
-      });
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: "Failed to stream file",
-        message: error.message,
-      });
-    }
-  });
-
-  // Download file (browser saves to disk)
-  fastify.get("/:filename/download", async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      const filePath = resolveMediaFilePath(filename);
-
-      if (!filePath || !fs.existsSync(filePath)) {
-        return reply.code(404).send({ success: false, error: "File not found" });
-      }
-
-      const displayName = filename.replace(/^\d+-/, "");
-      return serveMediaFile(request, reply, filePath, {
-        download: true,
-        displayName,
-      });
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: "Failed to download file",
-        message: error.message,
-      });
-    }
-  });
-
-  // GET /api/media/:filename — file bytes for players, or ?meta=true for JSON info
-  fastify.get("/:filename", async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      const wantsMeta =
-        request.query.meta === "true" || request.query.meta === "1";
-
-      if (wantsMeta) {
-        const storedName = resolveMediaFilename(filename);
-        const filePath = resolveMediaFilePath(filename);
-        if (!filePath || !fs.existsSync(filePath)) {
-          return reply.code(404).send({ success: false, error: "File not found" });
-        }
-
-        const stats = fs.statSync(filePath);
-        const mimeType = inferMimeType(storedName || filename);
-        const asset = toFrontendAssetShape({
-          id: storedName || filename,
-          name: (storedName || filename).replace(/^\d+-/, ""),
-          mimeType,
-          size: stats.size,
-          uploadDate: stats.mtime.toISOString(),
-          tags: [],
-          metadata: {},
-          compressionStatus: "completed",
-        });
-
-        return reply.send({ success: true, asset });
-      }
-
-      const filePath = resolveMediaFilePath(filename);
-      if (!filePath || !fs.existsSync(filePath)) {
-        return reply.code(404).send({ success: false, error: "File not found" });
-      }
-
-      const displayName = filename.replace(/^\d+-/, "");
-      return serveMediaFile(request, reply, filePath, {
-        download: false,
-        displayName,
-      });
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: "Failed to serve file",
-        message: error.message,
-      });
-    }
-  });
-
-  // Upload media asset
-  // fastify.post("/upload", async (request, reply) => {
-  fastify.post("/upload", { preHandler: [fastify.authenticate] }, async (request, reply) => {
-    try {
-      const fs = require("fs");
-      const path = require("path");
-      const util = require("util");
-      const pipeline = util.promisify(require("stream").pipeline);
-
-      // Determine isolation tier based on User role
-      // request.user was injected by our fastify.authenticate middleware 
-      const role = (request.user && request.user.role) ? request.user.role : "member";
-      const isolationTier = (role === "admin" || role === "system_admin") ? "internal" : "external";
-
-      // Generate data-based subfolder (YYYY-MM-DD)
-      // This creates a string like "2026-05-28" which acts as our daily directory folder 
-      const today = new Date().toISOString().split("T")[0];
-
-      // Build a dynamic file path and ensure it exists
-      const uploadsDir = path.join(__dirname,"../../uploads",isolationTier,today);
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-
-      const parts = request.parts();
-      const tempFiles = [];
-      const uploadOptions = {
-        destination: "both",
-      };
-
-      for await (const part of parts) {
-        if (part.file) {
-          const filename = `${Date.now()}-${part.filename}`;
-          
-          if (uploadOptions.destination === "b2" && b2Storage.isEnabled()) {
-            // Direct stream to B2 without touching local disk
-            console.log(`Streaming directly to B2: ${filename}`);
-            let size = 0;
-            part.file.on('data', (chunk) => {
-              size += chunk.length;
-            });
-            
-            // Also apply the isolation path structure to Cloud Storage (B2)
-            const b2Key = `uploads/${isolationTier}/${today}/${filename}`; 
-            try {
-              const b2Result = await b2Storage.uploadStream(part.file, b2Key, part.mimetype, {
-                originalName: part.filename,
-              });
-              
-              tempFiles.push({
-                isDirectB2: true,
-                filename,
-                originalName: part.filename,
-                mimetype: part.mimetype,
-                size, // calculated from stream chunks
-                b2Result
-              });
-            } catch (err) {
-              console.error("Direct B2 stream failed:", err);
-              throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
-            }
-          } else {
-            // Save to local disk first
-            const filepath = path.join(uploadsDir, filename);
-            await pipeline(part.file, fs.createWriteStream(filepath));
-
-            const stats = fs.statSync(filepath);
-            tempFiles.push({
-              isDirectB2: false,
-              filepath,
-              filename,
-              originalName: part.filename,
-              mimetype: part.mimetype,
-              size: stats.size,
-            });
-          }
-        } else {
-          if (part.fieldname === "destination") {
-            // fastify-multipart gives the value on part.value, sometimes as an object if JSON
-            let val = part.value;
-            if (typeof val === 'object' && val !== null) {
-               val = val.value || JSON.stringify(val);
-            }
-            const destination = String(val).toLowerCase().trim();
-            if (["local", "b2", "both"].includes(destination)) {
-              uploadOptions.destination = destination;
-              console.log(`Upload destination set to: ${destination}`);
-            }
-          }
-        }
-      }
-
-      if (tempFiles.length === 0) {
-        return reply.code(400).send({
-          success: false,
-          message: "No files uploaded",
-        });
-      }
-
-      const uploadedFiles = [];
-      for (const file of tempFiles) {
-        let b2Result = file.b2Result || null;
-
-        if (!file.isDirectB2 && (uploadOptions.destination === "b2" || uploadOptions.destination === "both") && b2Storage.isEnabled()) {
-          try {
-            // Fallback path for Cloud Storage (B2)
-            const b2Key = `uploads/${isolationTier}/${today}/${file.filename}`;
-            b2Result = await b2Storage.uploadFile(file.filepath, b2Key, {
-              originalName: file.originalName,
-            });
-
-            // If strictly B2 (but landed here for some reason), delete local file
-            if (uploadOptions.destination === "b2" && b2Result) {
-              try {
-                fs.unlinkSync(file.filepath);
-                console.log(`Local file deleted after upload (B2-only mode fallback): ${file.filepath}`);
-              } catch (unlinkErr) {
-                console.error(`Failed to delete local file ${file.filepath}:`, unlinkErr);
-              }
-            }
-          } catch (b2Error) {
-            console.error("B2 upload failed:", b2Error.message);
-            if (uploadOptions.destination === "b2") {
-              // Try to delete local file even on B2 failure if strictly B2? 
-              // Usually we want to keep it or handle it, but let's throw.
-              throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(b2Error.message)}`);
-            }
-          }
-        }
-
-        const fileInfo = toFrontendAssetShape({
-          id: file.filename,
-          name: file.originalName,
-          mimeType: file.mimetype,
-          size: file.size,
-          uploadDate: new Date().toISOString(),
-          url: uploadOptions.destination === "b2" && b2Result?.url 
-            ? b2Result.url 
-            : `/api/media/${encodeURIComponent(file.filename)}/stream`,
-          thumbnail: file.mimetype.startsWith("image/")
-            ? (uploadOptions.destination === "b2" && b2Result?.url ? b2Result.url : `/api/media/${encodeURIComponent(file.filename)}/stream`)
-            : null,
-          tags: [],
-          metadata: {},
-          compressionStatus: "completed",
-        });
-
-        fileInfo.storageLocation = b2Result ? (uploadOptions.destination === "b2" ? "b2" : "both") : "local";
-        fileInfo.b2Url = b2Result?.url || null;
-        fileInfo.b2Key = b2Result?.key || null;
-
-        uploadedFiles.push(fileInfo);
-
-        // Log upload success
-        console.log(`File uploaded: ${file.originalName} (${file.size} bytes)`);
-      }
-
-      reply.send({
-        success: true,
-        message: "Files uploaded successfully",
-        asset: uploadedFiles[0],
-        files: uploadedFiles,
-        uploadedTo: {
-          local:
-            uploadOptions.destination === "local" ||
-            uploadOptions.destination === "both",
-          b2:
-            uploadOptions.destination === "b2" ||
-            uploadOptions.destination === "both",
-        },
-      });
-    } catch (error) {
-      console.error("Upload error:", error);
-      reply.code(500).send({
-        success: false,
-        message: "Upload failed",
-        error: error.message,
-      });
-    }
-  });
-
-  // Delete media asset
-  fastify.delete("/:filename", async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      
-      let deletedFromLocal = false;
-      let deletedFromB2 = false;
-
-      // 1. Try deleting from local
-      let filePath = resolveMediaFilePath(filename);
-      // Delete all local files with that name in case of duplicates across folders
-      while (filePath && fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        deletedFromLocal = true;
-        
-        // Temporarily rename or mock so resolveMediaFilePath can find any other duplicates
-        // Actually, resolveMediaFilename will just return null if the file is deleted
-        filePath = resolveMediaFilePath(filename);
-      }
-
-      // 2. Try deleting from B2
-      if (b2Storage.isEnabled()) {
-        try {
-          // B2 keys usually start with 'uploads/' and contain subfolders like 'internal/2026-05-28/'
-          // We need to search for the exact key
-          const b2Files = await b2Storage.searchFiles(filename);
-          const exactMatch = b2Files.find(f => path.basename(f.key) === filename || path.basename(f.key) === filename.replace(/^\d+-/, ""));
-          
-          if (exactMatch) {
-            await b2Storage.deleteFile(exactMatch.key);
-            deletedFromB2 = true;
-          } else {
-            // Fallback: try deleting the direct key
-            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
-            await b2Storage.deleteFile(cleanKey);
-            // This might create a delete marker, but it's a fallback.
-            deletedFromB2 = true;
-          }
-        } catch (b2Error) {
-          console.warn(`Failed to delete key ${filename} from B2:`, b2Error.message);
-        }
-      }
-
-      if (!deletedFromLocal && !deletedFromB2) {
-        return reply.code(404).send({
-          success: false,
-          error: "File not found on local disk or B2 storage",
-        });
-      }
-
-      return reply.send({
-        success: true,
-        message: "File deleted successfully",
-        deletedFrom: {
-          local: deletedFromLocal,
-          b2: deletedFromB2,
-        }
-      });
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: error.message,
-      });
-    }
-  });
-
+  //17. Coconut Webhook (No auth, Coconut calls this)
+  fastify.post("/webhooks/coconut", handleCoconutWebhook);
 
   done();
 };

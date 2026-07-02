@@ -1,4 +1,17 @@
-const { S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { 
+  S3Client, 
+  ListObjectsV2Command, 
+  GetObjectCommand, 
+  PutObjectCommand, 
+  DeleteObjectCommand, 
+  ListObjectVersionsCommand, 
+  DeleteObjectsCommand,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand
+} = require('@aws-sdk/client-s3');
+
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const fs = require('fs');
 const path = require('path');
@@ -109,7 +122,7 @@ class B2StorageService {
       return items;
       
     } catch (error) {
-      console.error('❌ Error listing B2 files:', error);
+      console.error(' Error listing B2 files:', error);
       return [];
     }
   }
@@ -133,10 +146,91 @@ class B2StorageService {
       return url;
       
     } catch (error) {
-      console.error('❌ Error generating presigned URL:', error);
+      console.error('Error generating presigned URL:', error);
       return null;
     }
   }
+
+  /**
+   * Get presigned URL for uploading a file (PUT)
+   */
+  async getPresignedPutUrl(key, expiresIn = 3600) {
+    if (!this.enabled) return null;
+    
+    try {
+      const command = new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      });
+      
+      const url = await getSignedUrl(this.s3Client, command, { 
+        expiresIn 
+      });
+      
+      return url;
+      
+    } catch (error) {
+      console.error('Error generating presigned PUT URL:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get presigned URL for uploading a specific multipart chunk
+   */
+  async getPresignedPartUrl(key, uploadId, partNumber, expiresIn = 3600) {
+    if (!this.enabled) return null;
+    
+    try {
+      const command = new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber, 
+      });
+      
+      const url = await getSignedUrl(this.s3Client, command, { expiresIn });
+      return url;
+    } catch (error) {
+      console.error('Error generating presigned part URL:', error);
+      throw error;
+    }
+  }
+
+  //Download a file from B2 to a local destination path *****
+  async downloadFile(key, downloadPath){
+    if(!this.enabled){
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      const command = new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      });
+
+      const response = await this.s3Client.send(command);
+
+      // Ensure the destination directory exists
+      const dir = path.dirname(downloadPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+
+      const writer = fs.createWriteStream(downloadPath);
+
+      return new Promise((resolve, reject) => {
+        response.Body.pipe(writer);
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+
+    }catch (error){
+      console.error(`❌ Error downloading file from B2 (${key}):`, error);
+      throw error;
+    }
+  }
+  // *****
   
   /**
    * Upload file to B2
@@ -193,7 +287,7 @@ class B2StorageService {
   /**
    * Upload stream to B2 (for direct uploads)
    */
-  async uploadStream(stream, key, contentType, metadata = {}) {
+  async uploadStream(stream, key, contentType, metadata = {}, onB2Progress) {
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
@@ -203,21 +297,50 @@ class B2StorageService {
       // without needing to know the content-length or hashing upfront
       const { Upload } = require('@aws-sdk/lib-storage');
 
-      const upload = new Upload({
-        client: this.s3Client,
-        params: {
-          Bucket: this.bucket,
-          Key: key,
-          Body: stream,
-          ContentType: contentType,
-          Metadata: {
-            ...metadata,
-            uploadedAt: new Date().toISOString(),
-          },
-        },
-      });
+      // const upload = new Upload({
+      //   client: this.s3Client,
+      //   params: {
+      //     Bucket: this.bucket,
+      //     Key: key,
+      //     Body: stream,
+      //     ContentType: contentType,
+      //     Metadata: {
+      //       ...metadata,
+      //       uploadedAt: new Date().toISOString(),
+      //     },
+      //   },
+      // });
       
-      await upload.done();
+      // await upload.done();
+      const upload = new Upload({
+      client: this.s3Client,
+
+      params: {
+      Bucket: this.bucket,
+      Key: key,
+      Body: stream,
+      ContentType: contentType,
+      Metadata: {
+        ...metadata,
+        uploadedAt: new Date().toISOString(),
+      },
+    },
+
+  // Upload each part in 5 MB chunks
+  partSize: 5 * 1024 * 1024,
+
+  // Upload up to 5 parts concurrently
+  queueSize: 100,
+
+  // Clean up uploaded parts if an error occurs
+  leavePartsOnError: false,
+});
+
+if (onB2Progress) {
+  upload.on("httpUploadProgress", onB2Progress);
+}
+
+await upload.done();
       
       console.log(`✅ Stream uploaded to B2: ${key}`);
       
@@ -544,6 +667,253 @@ class B2StorageService {
     }
   }
   
+
+  // List all soft-deleted files in B2 (files where the latest version is a delete marker)
+
+  async listTrashFiles(prefix = '', maxKeys = 1000) {
+    if (!this.enabled) return [];
+    
+    try {
+      const command = new ListObjectVersionsCommand({
+        Bucket: this.bucket,
+        Prefix: prefix,
+        MaxKeys: maxKeys,
+      });
+      
+      const response = await this.s3Client.send(command);
+      const trashItems = [];
+      
+      const deleteMarkers = response.DeleteMarkers || [];
+      const versions = response.Versions || [];
+      
+      // Find all delete markers that are the latest version (soft-deleted files)
+      const latestDeleteMarkers = deleteMarkers.filter(dm => dm.IsLatest === true);
+      
+      for (const dm of latestDeleteMarkers) {
+        // Find the latest actual version of this file to get size/metadata
+        const fileVersions = versions.filter(v => v.Key === dm.Key);
+        
+        // Sort by LastModified descending to get the most recent version
+        fileVersions.sort((a, b) => new Date(b.LastModified) - new Date(a.LastModified));
+        const activeVersion = fileVersions[0];
+        
+        trashItems.push({
+          id: path.basename(dm.Key),
+          name: path.basename(dm.Key).replace(/^\d+-/, ""),
+          key: dm.Key,
+          size: activeVersion ? activeVersion.Size : 0,
+          lastModified: activeVersion ? activeVersion.LastModified : dm.LastModified,
+          deletedAt: dm.LastModified,
+          type: this.getFileType(dm.Key),
+          storageLocation: 'b2',
+          bucket: this.bucket,
+          isFolder: false,
+          fullPath: dm.Key,
+          deleteMarkerVersionId: dm.VersionId,
+        });
+      }
+      return trashItems;
+      
+    } catch (error) {
+      console.error('Error listing trash files from B2:', error);
+      throw error;
+    }
+  }
+
+  // Restore a soft-deleted file by deleting its latest Delete Marker
+  async restoreFile(key) {
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+    
+    try {
+      const command = new ListObjectVersionsCommand({
+        Bucket: this.bucket,
+        Prefix: key,
+      });
+      
+      const response = await this.s3Client.send(command);
+      const deleteMarkers = response.DeleteMarkers || [];
+      
+      // Find the latest delete marker for this key
+      const activeDM = deleteMarkers.find(dm => dm.Key === key && dm.IsLatest === true);
+      
+      if (!activeDM) {
+        throw new Error(`No active delete marker found for file: ${key}`);
+      }
+      
+      // Delete the active delete marker version to restore the file
+      const deleteCommand = new DeleteObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        VersionId: activeDM.VersionId,
+      });
+      
+      await this.s3Client.send(deleteCommand);
+      return true;
+      
+    } catch (error) {
+      console.error('Error restoring file from B2 Trash:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Permanently delete a file and all of its versions/delete markers
+   */
+  async permanentlyDeleteFile(key) {
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+    
+    try {
+      const listCommand = new ListObjectVersionsCommand({
+        Bucket: this.bucket,
+        Prefix: key,
+      });
+      
+      const response = await this.s3Client.send(listCommand);
+      const objectsToDelete = [];
+      
+      if (response.Versions) {
+        for (const version of response.Versions) {
+          if (version.Key === key) {
+            objectsToDelete.push({ Key: key, VersionId: version.VersionId });
+          }
+        }
+      }
+      
+      if (response.DeleteMarkers) {
+        for (const marker of response.DeleteMarkers) {
+          if (marker.Key === key) {
+            objectsToDelete.push({ Key: key, VersionId: marker.VersionId });
+          }
+        }
+      }
+      
+      if (objectsToDelete.length > 0) {
+        const deleteCommand = new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          Delete: {
+            Objects: objectsToDelete,
+            Quiet: true
+          }
+        });
+        await this.s3Client.send(deleteCommand);
+      } else {
+        // Fallback to standard delete if no versions are found
+        const command = new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+        });
+        await this.s3Client.send(command);
+      }
+      
+      return true;
+      
+    } catch (error) {
+      console.error('Error permanently deleting file from B2:', error);
+      throw error;
+    }
+  }
+  
+  // Initialize a multipart upload session in B2
+  async initiateMultipartUpload(key, contentType){
+    if(!this.enabled){
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      const command = new CreateMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        ContentType: contentType,
+      });
+      const response = await this.s3Client.send(command);
+      return {
+        uploadId: response.UploadId,
+        key: response.Key,
+      };
+    } catch (error){
+      console.error('Error initiating multipart upload B2:', error);
+      throw error;
+    }
+  }
+
+  // Upload an individual part/chunk of multipart upload
+  async uploadPart(key, uploadId, partNumber, body){
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+    try{
+      const command = new UploadPartCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+        Body: body, // Buffer chunk
+      });
+
+      const response = await this.s3Client.send(command);
+      return {
+        PartNumber: partNumber,
+        ETag: response.ETag,
+      };
+
+    }catch(error) {
+      console.error(`Error uploading part ${partNumber} for upload ${uploadId}:`, error);
+      throw error;
+    }
+  }
+
+  // Complete a multipart Upload session
+  async completeMultipartUpload(key, uploadId, parts){
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      // Sort parts by PartNumber (S3/B2 requires parts list to be sorted ascending)
+      const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
+
+      const command = new CompleteMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: sortedParts,
+        },
+      });
+
+      const response = await this.s3Client.send(command);
+      return response;
+
+    } catch (error) {
+      console.error(`❌ Error completing multipart upload ${uploadId}:`, error);
+      throw error;
+    }
+  }
+
+  // Abort a multipart upload session to free temporay storage
+  async abortMultipartUpload (key, uploadId){
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try{
+      const command = new AbortMultipartUploadCommand({
+        Bucket: this.bucket,
+        Key: key,
+        UploadId: uploadId,
+      });
+      await this.s3Client.send(command);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error aborting multipart upload ${uploadId}:`, error);
+      throw error;
+    }
+  }
+
   /**
    * Format file size for display
    */

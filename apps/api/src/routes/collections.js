@@ -1,20 +1,14 @@
+const { getCollections, getSingleCollection, createCollection } = require ('../controller');
+
 module.exports = function (fastify, opts, done) {
-  // Get collections
-  fastify.get("/", async (request, reply) => {
-    reply.send({ message: "Collections endpoints not yet implemented" });
-  });
+  //1. Get collections 
+  fastify.get("/", getCollections);
 
-  // Get single collection
-  fastify.get("/:id", async (request, reply) => {
-    reply.send({
-      message: `Collection ${request.params.id} endpoint not yet implemented`,
-    });
-  });
+  //2. Get single collection
+  fastify.get("/:id", getSingleCollection);
 
-  // Create collection
-  fastify.post("/", async (request, reply) => {
-    reply.send({ message: "Collection creation endpoint not yet implemented" });
-  });
+  //3. Create collection
+  fastify.post("/", createCollection);
 
   done();
 };
