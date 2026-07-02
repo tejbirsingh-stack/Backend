@@ -17,8 +17,11 @@ module.exports.login = async (request, reply) =>{
         });
       }
 
+      // Normalize email (lowercase and trim spaces) to ensure it matches the database
+      const normalizedEmail = email.toLowerCase().trim();
+
       // Find the user
-      const user = await authService.findUserByEmail(email);
+      const user = await authService.findUserByEmail(normalizedEmail);
 
       // Check if user exists and password is valid
       if (
