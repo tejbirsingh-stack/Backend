@@ -31,6 +31,9 @@ async function routes(fastify, options) {
   //9. Reset password route
   fastify.post("/reset-password",resetPassword);
 
+  // Google login route
+  fastify.post("/loging-google", googleLogin);
+
 }
 
 module.exports = routes;
