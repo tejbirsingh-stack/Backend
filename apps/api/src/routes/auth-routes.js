@@ -267,6 +267,7 @@ fastify.post("/register", async (request, reply) => {
     return reply.status(500).send({
       error: "Internal Server Error",
       message: "Failed to register user",
+      details: error.message || String(error)
     });
   }
 });
