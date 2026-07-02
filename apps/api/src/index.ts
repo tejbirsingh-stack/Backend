@@ -153,18 +153,7 @@ async function setupServer() {
   });
 
   await fastify.register(cors, {
-<<<<<<< HEAD
-    origin: (origin, cb) => {
-      if (!origin || origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('192.168.')) {
-        cb(null, true);
-        return;
-      }
-      const allowed = config.API_CORS_ORIGIN.split(',').map((s: string) => s.trim());
-      cb(null, allowed.includes(origin));
-    },
-=======
     origin: true,
->>>>>>> 7dd83984d28eaf5c16bf434b7ce986e70fcab5a4
     credentials: config.CORS_CREDENTIALS,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']

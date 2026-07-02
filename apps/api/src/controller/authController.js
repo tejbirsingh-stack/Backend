@@ -128,7 +128,7 @@ module.exports.register = async (request, reply) => {
         });
       }
 
-      organization = await fastify.prisma.organization.findUnique({
+      organization = await request.server.prisma.organization.findUnique({
         where: { id: finalOrgId },
       });
 
@@ -141,7 +141,7 @@ module.exports.register = async (request, reply) => {
     } else {
       // Auto-generate a new Organization if orgId was not provided
       const slugBase = email.split('@')[0].replace(/[^a-z0-9]/gi, '-').toLowerCase();
-      organization = await fastify.prisma.organization.create({
+      organization = await request.server.prisma.organization.create({
         data: {
           name: orgName || `${name}'s Workspace`,
           slug: `${slugBase}-${Date.now()}`,
@@ -155,7 +155,7 @@ module.exports.register = async (request, reply) => {
     const passwordHash = await authService.hashPassword(password);
 
     // Store user in database
-    const user = await fastify.prisma.user.create({
+    const user = await request.server.prisma.user.create({
       data: {
         name,
         email: email.toLowerCase().trim(),
