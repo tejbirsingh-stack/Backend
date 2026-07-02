@@ -36,11 +36,6 @@ class AuthService {
   // Verify a password against a stored hash
   async verifyPassword(hashedPassword, plainPassword) {
     try {
-      // Handle both argon2 (legacy) and bcrypt hashes
-      if (hashedPassword.startsWith('$argon2')) {
-        const argon2 = require("argon2");
-        return await argon2.verify(hashedPassword, plainPassword);
-      }
       return await bcrypt.compare(plainPassword, hashedPassword);
     } catch (error) {
       console.error("Password verification error:", error);
