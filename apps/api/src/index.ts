@@ -154,9 +154,9 @@ async function setupServer() {
 
   await fastify.register(cors, {
     origin: true,
-    credentials: config.CORS_CREDENTIALS,
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-File-Size', 'X-Request-Id']
   });
 
   await fastify.register(rateLimit as any, {
