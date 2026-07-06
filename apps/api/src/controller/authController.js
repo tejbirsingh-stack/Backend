@@ -182,7 +182,7 @@ module.exports.register = async (request, reply) => {
       // Split name into first and last name for HubSpot
       const [firstname, ...lastnameParts] = name.split(" ");
       const lastname = lastnameParts.join(" ") || "";
-      const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formId}`;
+      const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
 
       const headers = { "Content-Type": "application/json" };
       if (accessToken) {
@@ -201,7 +201,6 @@ module.exports.register = async (request, reply) => {
               { objectTypeId: "0-1", name: "lastname", value: lastname },
               { objectTypeId: "0-1", name: "company", value: organization ? organization.name : "" },
               { objectTypeId: "0-1", name: "phone", value: phone || "" },
-              { objectTypeId: "0-1", name: "jobtitle", value: jobTitle || "" },
             ],
             context: {
               ...(hubspotUtk && typeof hubspotUtk === "string" && hubspotUtk.trim().length > 0
@@ -211,6 +210,7 @@ module.exports.register = async (request, reply) => {
               pageName: "Register Page",
               ipAddress: request.ip,
             },
+            skipValidation: true,
           }),
         })
           .then(async (res) => {
@@ -641,7 +641,6 @@ module.exports.googleLogin = async (request, reply) => {
               { objectTypeId: "0-1", name: "lastname", value: lastname },
               { objectTypeId: "0-1", name: "company", value: orgName },
               { objectTypeId: "0-1", name: "phone", value: "" },
-              { objectTypeId: "0-1", name: "jobtitle", value: "" },
             ],
             context: {
               pageName: "Google Auto-Signup",
