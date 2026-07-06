@@ -40,12 +40,13 @@ model User {
   name        String?   @db.VarChar(255)
   passwordHash String?  @db.VarChar(255) // Added for direct password auth
   phone       String?   @db.VarChar(50) // Store User Phone Number
-  jobTitle    String?   @db.VarChar(255) // Job jobTitle
   hubspotUtk  String?   @db.VarChar(255) // Store Hubspot Cookie
   role        String    @db.VarChar(50)
   preferences Json     @default("{}") @db.JsonB
   mfaSecret   String?   @db.VarChar(255) // Secret key for TOTP MFA
   mfaEnabled  Boolean   @default(false)  // Whether MFA is enabled
+  emailOTP    String?   @db.VarChar(10)  // Store Email OTP code
+  emailOtpExpiresAt     DateTime? @db.Timestamptz(6) // OTP expiration time    
   status      String    @default("active") @db.VarChar(50) // active, inactive, suspended
   failedLoginAttempts Int @default(0)     // Track failed login attempts
   lockoutUntil DateTime? @db.Timestamptz(6) // Account lockout timestamp
