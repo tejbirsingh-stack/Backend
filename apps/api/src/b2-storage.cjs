@@ -9,7 +9,8 @@ const {
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
-  AbortMultipartUploadCommand
+  AbortMultipartUploadCommand,
+  PutBucketCorsCommand
 } = require('@aws-sdk/client-s3');
 
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
@@ -817,11 +818,38 @@ await upload.done();
     }
   }
   
+  async ensureBucketCors() {
+    if (!this.enabled || this._corsConfigured) return;
+    try {
+      const command = new PutBucketCorsCommand({
+        Bucket: this.bucket,
+        CORSConfiguration: {
+          CORSRules: [
+            {
+              AllowedHeaders: ['*'],
+              AllowedMethods: ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
+              AllowedOrigins: ['*'],
+              ExposeHeaders: ['ETag', 'etag', 'x-amz-meta-etag', 'x-amz-version-id'],
+              MaxAgeSeconds: 86400,
+            },
+          ],
+        },
+      });
+      await this.s3Client.send(command);
+      this._corsConfigured = true;
+      console.log('✅ B2 Bucket CORS rules configured successfully for direct browser uploads');
+    } catch (err) {
+      console.warn('⚠️ Could not configure B2 Bucket CORS automatically:', err.message);
+    }
+  }
+
   // Initialize a multipart upload session in B2
   async initiateMultipartUpload(key, contentType){
     if(!this.enabled){
       throw new Error('B2 Storage is not configured');
     }
+
+    await this.ensureBucketCors().catch(() => {});
 
     try{
       const command = new CreateMultipartUploadCommand({
