@@ -47,22 +47,64 @@ module.exports.login = async (request, reply) =>{
       // Check if MFA is enabled and verify the code
       if (user.mfaEnabled) {
         if (!mfaCode) {
+          // 1. Generate a 6-digit OTP
+          const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+          // 2. Calculate expiration (10 minutes from now)
+          const expiresAt = new Date();
+          expiresAt.setMinutes(expiresAt.getMinutes() + 10);
+
+          // 3. Save OTP to user record in the database
+          await request.server.prisma.user.update({
+            where: { id: user.id },
+            data: {
+              emailOTP: otpCode, 
+              emailOtpExpiresAt: expiresAt 
+            }
+          });
+
+          // 4. Send the email using our new email service function
+          await request.server.emailService.sendMfaCode(user.email, user.name || "User", otpCode);
+
           return reply.status(400).send({
+            success : false,
+            error : "MFA Required",
+            message: "An authentication code has been sent to your email",
+            requiresMfa: true,
+            mfaType: "email",
+          });
+        }
+
+        // We have an mfaCode , verify 
+        //Fetch the latest user record to get the OTP
+        const currentUser = await request.server.prisma.user.findUnique({
+          where: {id: user.id},
+          select: { emailOTP: true, emailOtpExpiresAt: true }
+        });
+
+        // check if code matches and is not expired
+        if (
+          !currentUser.emailOTP || 
+          currentUser.emailOTP !== mfaCode || 
+          !currentUser.emailOtpExpiresAt || 
+          new Date() > currentUser.emailOtpExpiresAt
+        ) {
+          return reply.status(401).send({
             success: false,
-            error: "MFA Required",
-            message: "Multi-factor authentication code is required",
+            error: "Unauthorized",
+            message: "Invalid or expired authentication code",
             requiresMfa: true,
           });
         }
 
-        if (!authService.verifyTotp(mfaCode, user.mfaSecret)) {
-          return reply.status(401).send({
-            success: false,
-            error: "Unauthorized",
-            message: "Invalid authentication code",
-            requiresMfa: true,
-          });
-        }
+        // If code is valid, clear it from the database so it cannot be reused
+        await request.server.prisma.user.update({
+          where: { id: user.id },
+          data: { 
+            emailOTP: null, 
+            emailOtpExpiresAt: null 
+          }
+        });
       }
 
       // Create a new session
@@ -91,13 +133,14 @@ module.exports.login = async (request, reply) =>{
         success: false,
         error: "Internal Server Error",
         message: "Failed to process login",
+        details: error.message || String(error)
       });
     }
 };
 
 
 module.exports.register = async (request, reply) => {
-  const { name, email, password, orgId, orgName, phone, jobTitle, hubspotUtk } = request.body;
+  const { name, email, password, orgId, orgName, phone, hubspotUtk } = request.body;
 
   try {
     // Validate required fields
@@ -164,12 +207,12 @@ module.exports.register = async (request, reply) => {
         email: email.toLowerCase().trim(),
         passwordHash,
         orgId: finalOrgId,
-        role: "admin", // use lowercase for consistency with backend checks
+        role: "super_admin", // use lowercase for consistency with backend checks
         phone: phone || null,
-        jobTitle: jobTitle || null,
         hubspotUtk: hubspotUtk || null,
         status: "active",
         failedLoginAttempts: 0,
+        mfaEnabled: true, // Enable MFA by default for all new users
       },
     });
 
@@ -246,7 +289,6 @@ module.exports.register = async (request, reply) => {
         role: user.role,
         status: user.status,
         phone: user.phone,
-        jobTitle: user.jobTitle,
       },
       token: session.token,
       expiresAt: session.expiresAt,
@@ -606,7 +648,8 @@ module.exports.googleLogin = async (request, reply) => {
           name: name || normalizedEmail.split('@')[0],
           orgId: organization.id,
           role: "admin",
-          status: "active"
+          status: "active",
+          mfaEnabled: true // Enable MFA by default for all new users
         }
       });
       

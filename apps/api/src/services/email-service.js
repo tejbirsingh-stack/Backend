@@ -64,9 +64,8 @@ class EmailService {
     }
   }
 
-  /**
-   * Send password reset template
-   */
+  
+  // Send password reset template
   async sendPasswordReset(to, name, resetUrl) {
     const subject = "Reset Your Noah Password";
     const text = `Hi ${name},\n\nYou requested to reset your password. Please use the following link to reset it:\n\n${resetUrl}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`;
@@ -83,6 +82,27 @@ class EmailService {
       </div>
     `;
 
+    return this.sendEmail({ to, subject, text, html });
+  }
+
+  // Send MFA OTP Code
+  async sendMfaCode(to, name, code) {
+    const subject = "Your Authentication Code";
+    const text = `Hi ${name},\n\nYour authentication code is: ${code}\n\nThis code will expire in 10 minutes.`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #4f46e5; text-align: center;">Authentication Required</h2>
+        <p>Hi ${name},</p>
+        <p>You are attempting to log in. Please use the following authentication code to complete your login:</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <div style="background-color: #f1f5f9; color: #0f172a; padding: 16px 24px; border-radius: 6px; font-weight: bold; font-size: 24px; letter-spacing: 4px; display: inline-block;">
+            ${code}
+          </div>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
+        <p style="font-size: 12px; color: #64748b;">This code will expire in 10 minutes.</p>
+      </div>
+    `;
     return this.sendEmail({ to, subject, text, html });
   }
 }
