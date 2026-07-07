@@ -11,8 +11,22 @@ async function authenticate(request, reply) {
     }
 
     const token = authHeader.replace("Bearer ", "");
+    if (!token || token === "undefined" || token === "null") {
+      throw new Error("Missing or invalid authorization header");
+    }
 
-    // Validate the session
+    // 1. Try verifying as JWT first
+    try {
+      if (typeof request.jwtVerify === "function") {
+        const decoded = await request.jwtVerify();
+        request.user = decoded;
+        return;
+      }
+    } catch (jwtErr) {
+      // Not a valid JWT or expired, fall through to database session check
+    }
+
+    // 2. Validate the session in database
     const session = await authService.validateSession(token);
 
     if (!session) {

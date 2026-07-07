@@ -217,15 +217,18 @@ async function setupServer() {
         throw new Error('No authorization token provided');
       }
 
-      // const decoded = await request.jwtVerify();
-      const session = await fastify.authService.validateSession(token);
-
-      if (!session) {
-        throw new Error('Invalid or expired session');
+      try {
+        const decoded = await request.jwtVerify();
+        request.user = decoded;
+        return;
+      } catch (jwtErr) {
+        const session = await fastify.authService.validateSession(token);
+        if (!session) {
+          throw new Error('Invalid or expired session');
+        }
+        request.user = session.user;
+        request.session = session;
       }
-
-      request.user = session.user;
-      request.session = session;
     } catch (err: any) {
       err.statusCode = 401;
       throw err;

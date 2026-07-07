@@ -107,25 +107,26 @@ module.exports.login = async (request, reply) =>{
         });
       }
 
-      // Create a new session
-      const session = await authService.createSession(
-        user.id,
-        request.headers["user-agent"],
-        request.ip
-      );
+      // Generate JWT token
+      const payload = {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        orgId: user.orgId,
+        organization: user.organization
+      };
+      const token = await (reply.jwtSign ? reply.jwtSign(payload) : request.server.jwt.sign(payload));
+
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 7);
       return {
         success: true,
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          orgId: user.orgId,
-          organization: user.organization
-        },
-        accessToken: session.token,
-        refreshToken: session.token,
-        expiresAt: session.expiresAt,
+        user: payload,
+        token: token,
+        accessToken: token,
+        refreshToken: token,
+        expiresAt: expiresAt,
       };
     } catch (error) {
       console.error("Login error:", error);
