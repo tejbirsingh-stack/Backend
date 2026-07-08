@@ -302,12 +302,10 @@ module.exports.register = async (request, reply) => {
 module.exports.registerRole = async (request, reply) => {
   const { email, roleId, orgId } = request.body || {};
 
-  console.log("request.user",request.user)
   try {
     // 1. Verify that the authenticated user is a Super Admin
     const currentUserRole = request.user?.role || "";
-
-    console.log("currentUserRole:", currentUserRole);
+    
     if (
       currentUserRole.toLowerCase() !== "super_admin" &&
       currentUserRole.toLowerCase() !== "superadmin"
@@ -391,7 +389,7 @@ module.exports.registerRole = async (request, reply) => {
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const frontendUrl = process.env.FRONTEND_URL;
     const setupUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     // 8. Send Registration & Password Setup Email to the User
