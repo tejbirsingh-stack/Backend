@@ -116,17 +116,10 @@ module.exports.login = async (request, reply) =>{
         orgId: user.orgId,
         organization: user.organization
       };
-      const token = await (reply.jwtSign ? reply.jwtSign(payload) : request.server.jwt.sign(payload));
-
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
+      const token = await reply.jwtSign(payload);
       return {
-        success: true,
-        user: payload,
-        token: token,
-        accessToken: token,
-        refreshToken: token,
-        expiresAt: expiresAt,
+        success: true,      
+        accessToken: token
       };
     } catch (error) {
       console.error("Login error:", error);
