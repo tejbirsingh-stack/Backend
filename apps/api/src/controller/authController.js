@@ -298,6 +298,11 @@ module.exports.register = async (request, reply) => {
   }
 };
 
+
+module.exports.registerRole = async (request, reply) => {
+
+}
+
 // 3. Logout Handler
 module.exports.logout = async (request, reply) =>{
     try {
