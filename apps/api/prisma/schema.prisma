@@ -42,6 +42,8 @@ model User {
   phone       String?   @db.VarChar(50) // Store User Phone Number
   hubspotUtk  String?   @db.VarChar(255) // Store Hubspot Cookie
   role        String    @db.VarChar(50)
+  roleId      String?   @db.Uuid
+  roleRelation Role?    @relation(fields: [roleId], references: [id], onDelete: SetNull)
   preferences Json     @default("{}") @db.JsonB
   mfaSecret   String?   @db.VarChar(255) // Secret key for TOTP MFA
   mfaEnabled  Boolean   @default(false)  // Whether MFA is enabled
@@ -337,4 +339,12 @@ model Annotation {
   @@index([userId])
   @@index([type])
   @@map("annotations")
+}
+
+model Role {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique @db.VarChar(255)
+  show      Int?
+  users     User[]
+  @@map("roles")
 }

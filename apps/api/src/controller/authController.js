@@ -300,8 +300,152 @@ module.exports.register = async (request, reply) => {
 
 
 module.exports.registerRole = async (request, reply) => {
+  const { email, roleId, orgId } = request.body || {};
 
-}
+  console.log("request.user",request.user)
+  try {
+    // 1. Verify that the authenticated user is a Super Admin
+    const currentUserRole = request.user?.role || "";
+
+    console.log("currentUserRole:", currentUserRole);
+    if (
+      currentUserRole.toLowerCase() !== "super_admin" &&
+      currentUserRole.toLowerCase() !== "superadmin"
+    ) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Access denied. Only Super Admin can register new users with roles.",
+      });
+    }
+
+    // 2. Validate required fields
+    if (!email || !roleId) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Email and role are required",
+      });
+    }
+
+    // Normalize email
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // 3. Check if email is already registered
+    const existingUser = await authService.findUserByEmail(normalizedEmail);
+    if (existingUser) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "User with this email is already registered",
+      });
+    }
+
+    // 4. Determine Organization ID (Use provided orgId or fall back to Super Admin's orgId)
+    const finalOrgId = orgId || request.user?.orgId;
+    if (!finalOrgId) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Organization ID is required or could not be determined from admin session",
+      });
+    }
+
+    // Validate that the organization exists in database
+    const organization = await request.server.prisma.organization.findUnique({
+      where: { id: finalOrgId },
+    });
+    if (!organization) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Invalid organization ID: Organization not found",
+      });
+    }
+
+
+
+    // 5. Fetch role from Roles table where id = roleId
+    const roleObj = await request.server.prisma.role.findUnique({
+      where: { id: roleId },
+    });
+    if (!roleObj) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Invalid role ID: Role not found in roles table",
+      });
+    }
+
+    // 6. Save ONLY email, roleId, role name, and orgId to the database
+    const user = await request.server.prisma.user.create({
+      data: {
+        email: normalizedEmail,
+        roleId: roleId,
+        role: roleObj.name,
+        orgId: finalOrgId,
+        status: "inactive",
+        mfaEnabled: true, // Default to true as per existing registration logic
+      },
+    });
+
+    // 7. Generate Password Setup Token
+    const resetToken = await authService.createPasswordResetToken(user.id);
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const setupUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
+
+    // 8. Send Registration & Password Setup Email to the User
+    const emailService = request.server.emailService || require("../services/email-service");
+    const emailSubject = "Welcome to Noah - Account Registered Successfully";
+    const emailText = `Hello,\n\nYour account has been registered successfully with the role: ${user.role}.\n\nPlease use the following link to set up your password and access your account:\n${setupUrl}\n\nBest regards,\nNoah Team`;
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #4f46e5; text-align: center;">Welcome to Noah!</h2>
+        <p>Hello,</p>
+        <p>Your account has been registered successfully by an administrator.</p>
+        <div style="background-color: #f8fafc; padding: 15px; border-radius: 6px; margin: 20px 0;">
+          <p style="margin: 0 0 10px 0;"><strong>Email:</strong> ${user.email}</p>
+          <p style="margin: 0; text-transform: capitalize;"><strong>Role:</strong> ${user.role}</p>
+        </div>
+        <p>To get started, please click the button below to set up your password:</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${setupUrl}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Set Up Password</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
+        <p style="font-size: 12px; color: #64748b;">This setup link will expire in 1 hour. If you have any questions, please reach out to your administrator.</p>
+      </div>
+    `;
+
+    await emailService.sendEmail({
+      to: user.email,
+      subject: emailSubject,
+      text: emailText,
+      html: emailHtml,
+    });
+
+    // 9. Return success response (No HubSpot sync performed)
+    return reply.status(201).send({
+      success: true,
+      message: "User registered and invitation email sent successfully",
+      user: {
+        id: user.id,
+        email: user.email,
+        roleId: user.roleId,
+        role: user.role,
+        orgId: user.orgId,
+        status: user.status,
+      },
+    });
+  } catch (error) {
+    console.error("Register Role Error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to register user role",
+      details: error.message || String(error),
+    });
+  }
+};
 
 // 3. Logout Handler
 module.exports.logout = async (request, reply) =>{
@@ -504,14 +648,15 @@ module.exports.forgotPassword = async (request, reply) => {
 
 // 9. Reset Password Handle
 module.exports.resetPassword = async (request, reply) => {
-    const { token, newPassword } = request.body;
+    const { token, newPassword, password, name } = request.body || {};
+    const finalPassword = newPassword || password;
 
     try {
       // Validate input
-      if (!token || !newPassword) {
+      if (!token || !finalPassword) {
         return reply.status(400).send({
           error: "Bad Request",
-          message: "Token and new password are required",
+          message: "Token and password are required",
         });
       }
 
@@ -521,13 +666,14 @@ module.exports.resetPassword = async (request, reply) => {
       if (!userId) {
         return reply.status(400).send({
           error: "Bad Request",
-          message: "Invalid or expired token",
+          message: "Invalid or expired setup/reset token",
         });
       }
 
-      // Get the user
+      // Get the user with organization details
       const user = await request.server.prisma.user.findUnique({
         where: { id: userId },
+        include: { organization: true },
       });
 
       if (!user) {
@@ -538,24 +684,84 @@ module.exports.resetPassword = async (request, reply) => {
       }
 
       // Hash the new password
-      const passwordHash = await authService.hashPassword(newPassword);
+      const passwordHash = await authService.hashPassword(finalPassword);
 
-      // Update the user's password
-      await request.server.prisma.user.update({
+      // Prepare update data: update password, activate status, and set name if provided
+      const updateData = {
+        passwordHash,
+        status: "active",
+      };
+      if (name && typeof name === "string" && name.trim().length > 0) {
+        updateData.name = name.trim();
+      }
+
+      // Update the user's account in database
+      const updatedUser = await request.server.prisma.user.update({
         where: { id: userId },
-        data: { passwordHash },
+        data: updateData,
+        include: { organization: true },
       });
 
-      // Revoke all active sessions for security
+      // Revoke all active sessions for security upon password change
       await authService.revokeAllUserSessions(userId);
 
+      // --- HUBSPOT BACKGROUND SYNC BLOCK ---
+      const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
+      const formId = process.env.HUBSPOT_FORM_ID?.trim();
+      const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
+
+      if (portalId && formId) {
+        const userName = updatedUser.name || updatedUser.email.split('@')[0];
+        const [firstname, ...lastnameParts] = userName.split(" ");
+        const lastname = lastnameParts.join(" ") || "";
+        const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
+
+        const headers = { "Content-Type": "application/json" };
+        if (accessToken) {
+          headers["Authorization"] = `Bearer ${accessToken}`;
+        }
+
+        if (typeof fetch !== 'undefined') {
+          fetch(hubspotEndpoint, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              fields: [
+                { objectTypeId: "0-1", name: "email", value: updatedUser.email },
+                { objectTypeId: "0-1", name: "firstname", value: firstname },
+                { objectTypeId: "0-1", name: "lastname", value: lastname },
+                { objectTypeId: "0-1", name: "company", value: updatedUser.organization ? updatedUser.organization.name : "" },
+                { objectTypeId: "0-1", name: "phone", value: updatedUser.phone || "" },
+              ],
+              context: {
+                pageUri: request.headers.referer || "",
+                pageName: "Account Setup / Password Reset Page",
+                ipAddress: request.ip,
+              },
+              skipValidation: true,
+            }),
+          })
+            .then(async (res) => {
+              if (!res.ok) {
+                const errText = await res.text();
+                console.error("HubSpot Form submit failed response (resetPassword):", errText);
+              } else {
+                console.log("Successfully synced setup/resetPassword to HubSpot Form");
+              }
+            })
+            .catch((err) => {
+              console.error("HubSpot Form API Connection error (resetPassword):", err.message);
+            });
+        }
+      }
+
       // Return success
-      return { success: true, message: "Password successfully reset" };
+      return { success: true, message: "Account setup / password reset completed successfully" };
     } catch (error) {
-      console.error("Reset password error:", error);
+      console.error("Reset password / account setup error:", error);
       return reply.status(500).send({
         error: "Internal Server Error",
-        message: "Failed to reset password",
+        message: "Failed to setup account / reset password",
       });
     }
 }
@@ -736,3 +942,34 @@ module.exports.googleLogin = async (request, reply) => {
     });
   }
 }
+
+// 11. Get Roles Handler
+module.exports.getRoles = async (request, reply) => {
+  try {
+    const roles = await request.server.prisma.role.findMany({
+      where: {
+        show: 1,
+      },
+      select: {
+        id: true,
+        name: true,
+      },
+      orderBy: {
+        name: "asc",
+      },
+    });
+
+    return {
+      success: true,
+      roles,
+    };
+  } catch (error) {
+    console.error("Get roles error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to fetch roles",
+      details: error.message || String(error),
+    });
+  }
+};

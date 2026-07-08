@@ -1,7 +1,7 @@
 // Authentication routes for login, registration, and session management
 const { authenticate } = require("../middleware/auth-middleware");
 
-const { login, register, logout, setupMfa, enableMfa, disableMfa, getMe, forgotPassword, resetPassword, googleLogin} = require("../controller");
+const { login, register, logout, setupMfa, enableMfa, disableMfa, getMe, forgotPassword, resetPassword, googleLogin, registerRole, getRoles} = require("../controller");
 
 async function routes(fastify, options) {
   //1. Login route
@@ -9,6 +9,9 @@ async function routes(fastify, options) {
 
   //2. Register route
   fastify.post("/register", register);
+
++ fastify.post("/registerrole", { preHandler: authenticate }, registerRole);
+  fastify.get("/roles", { preHandler: authenticate }, getRoles);
 
   //3. Logout route (requires authentication)
   fastify.post("/logout",{ preHandler: authenticate }, logout);
