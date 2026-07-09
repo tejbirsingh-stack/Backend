@@ -8,6 +8,6 @@ phases:
         --region us-east-2 \
         --instance-ids i-00c9c1576a9b26183 \
         --document-name "AWS-RunShellScript" \
-        --parameters '{"commands":["cd /opt/noah-backend && git pull origin qa && cd /opt/noah && docker compose up -d --build backend"]}' \
+        --parameters '{"commands":["cd /opt/noah-backend && git fetch origin && git reset --hard origin/qa && cd /opt/noah && docker compose up -d --build backend"]}' \
         --output text \
         --query "Command.CommandId"
