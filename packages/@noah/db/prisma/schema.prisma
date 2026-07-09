@@ -21,7 +21,7 @@ model Organization {
   metadata         Json     @default("{}") @db.JsonB
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
-
+  
   users        User[]
   mediaAssets  MediaAsset[]
   collections  Collection[]
@@ -55,7 +55,7 @@ model User {
   lastLoginAt DateTime? @db.Timestamptz(6)
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
-
+  jobTitle    String?   @db.VarChar(255)
   annotations  Annotation[]
   uploadedMediaAssets MediaAsset[] @relation("UploadedBy")
   createdCollections  Collection[] @relation("CreatedBy")
