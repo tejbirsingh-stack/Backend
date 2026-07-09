@@ -1,7 +1,10 @@
+import { request } from "http";
+
 const authService = require("../services/auth-service");
 const { OAuth2Client } = require('google-auth-library');
 const crypto = require("crypto");
-
+const jwt = require("jsonwebtoken");
+const jwksClient = require("jwks-rsa");
 
 // 1. Login Handler
 module.exports.login = async (request, reply) =>{
@@ -915,19 +918,32 @@ module.exports.googleLogin = async (request, reply) => {
       request.ip
     );
 
+    // Generate Internal JWT
+    const internalPayload = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      orgId: user.orgId,
+      organization: user.organization
+    };
+    const internalToken = await reply.jwtSign(internalPayload);
+
     // f. Return the standard auth response
     return {
       success : true,
+      message: "Google login successful",
       user : {
-       id: user.id,
+        id: user.id,
         email: user.email,
         name: user.name,
         role: user.role,
         orgId: user.orgId,
-        organization: user.organization || null
+        status: user.status,
+        organization: user.organization
       },
-      accessToken: session.token,
-      refreshToken: session.token,
+      accessToken: internalToken,
+      token: session.token,
       expiresAt: session.expiresAt,
     };
   } catch(error) {
@@ -941,7 +957,134 @@ module.exports.googleLogin = async (request, reply) => {
   }
 }
 
-// 11. Get Roles Handler
+// 11. Microsoft Login Handler
+module.exports.microsoftLogin = async (request, reply) => {
+  const { idToken } = request.body;
+  const clientId = process.env.MICROSOFT_CLIENT_ID;
+
+  if (!idToken) {
+    return reply.status(400).send({
+      success: false,
+      error: "Bad Request",
+      message: "Microsoft idToken is required",
+    });
+  }
+
+  try {
+    // 1. Fetch Microsoft's public keys dynamically 
+    const client = jwksClient({
+      jwksUri: "https://login.microsoftonline.com/common/discovery/v2.0/keys",
+    });
+
+    function getKey(header, callback) {
+      client.getSigningKey(header.kid, function (err, key) {
+        if (err){
+          callback(err, null);
+        } else {
+          const signingKey = key.publicKey || key.rsaPublicKey;
+          callback(null, signingKey);
+        }
+      });
+    }
+
+    // 2. Verify the Token
+    const decodedPayload = await new Promise((resolve, reject) => {
+      jwt.verify(
+        idToken,
+        getKey,
+        {
+          audience: clientId,
+          // We intentionally do not strictly validate the 'issuer' string here 
+          // because Microsoft multi-tenant issues dynamic issuers based on the user's specific organization tenant.
+        },
+        (err, decoded) => {
+          if (err) reject(err);
+          resolve(decoded);
+        }
+      );
+    });
+
+    // Extract user info (Microsoft uses 'preferred_username' or 'email' or 'upn')
+    const email = (decodedPayload.preferred_username || decodedPayload.email || decodedPayload.upn).toLowerCase().trim();
+    const name = decodedPayload.name || email.split("@")[0];
+
+    // 3. Find User or create new User 
+    const authService = require("../services/auth-service");
+    let user = await authService.findUserByEmail(email);
+    
+    if (!user){
+      // Auto-generate a new Organization if they are a new user
+      const slugBase = email.split("@")[0].replace(/[^a-z0-9]/gi, "-").toLowerCase();
+
+      const organization = await request.server.prisma.organization.create({
+        data: {
+          name: `${name}'s Workspace`,
+          slug: `${slugBase}-${Date.now()}`,
+          planType: "free",
+        },
+      });
+
+      //4. Create the new User
+      user = await request.server.prisma.user.create({
+        data: {
+          name,
+          email,
+          passwordHash: "oauth-user-no-password", // Dummy password since they use Microsoft
+          orgId: organization.id,
+          role: "super_admin",
+          status: "active",
+          mfaEnabled: false, // Optional: disable MFA for SSO users
+        },
+      });
+    }
+
+    // 5. Create Session
+    const session = await authService.createSession(
+      user.id,
+      request.headers["user-agent"],
+      request.ip
+    );
+
+    // 6. Generate Internal JWT
+    const internalPayload = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      orgId: user.orgId,
+      organization: user.organization
+    };
+    const internalToken = await reply.jwtSign(internalPayload);
+
+    return reply.status(200).send({
+      success: true,
+      message: "Microsoft login successful",
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        orgId: user.orgId,
+        role: user.role,
+        status: user.status,
+        organization: user.organization
+      },
+      accessToken: internalToken,
+      token: session.token, // Used by your frontend storage
+      expiresAt: session.expiresAt,
+    });
+
+  } catch (error) {
+    console.error("Microsoft Login Error:", error);
+    return reply.status(401).send({
+      success: false,
+      error: "Unauthorized",
+      message: "Invalid Microsoft token",
+      details: error.message,
+    });
+  } 
+}
+
+// Get Roles Handler
 module.exports.getRoles = async (request, reply) => {
   try {
     const roles = await request.server.prisma.role.findMany({
