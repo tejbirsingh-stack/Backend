@@ -445,29 +445,7 @@ module.exports.registerRole = async (request, reply) => {
   }
 };
 
-// 3. Logout Handler
-module.exports.logout = async (request, reply) =>{
-    try {
-        // Get token from the request (it's guaranteed to be valid due to the authenticate preHandler)
-        const authHeader = request.headers.authorization;
-        const token = authHeader.replace("Bearer ", "");
 
-        // Revoke the session
-        await authService.revokeSession(token);
-
-        return {
-          success: true,
-          message: "Logged out successfully",
-        };
-      } catch (error) {
-        console.error("Logout error:", error);
-        return reply.status(500).send({
-          success: false,
-          error: "Internal Server Error",
-          message: "Failed to process logout",
-        });
-      }
-};
 
 // 4. Setup MFA Handler
 module.exports.setupMfa = async (request, reply) =>{
