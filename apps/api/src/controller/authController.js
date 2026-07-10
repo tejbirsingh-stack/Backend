@@ -392,7 +392,7 @@ module.exports.registerRole = async (request, reply) => {
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
-    const frontendUrl = process.env.FRONTEND_URL;
+    const frontendUrl = process.env.FRONTEND_URL || "https://qa.noahcloud.ai";
     const setupUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     // 8. Send Registration & Password Setup Email to the User
