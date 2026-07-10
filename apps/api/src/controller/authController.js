@@ -105,7 +105,8 @@ module.exports.login = async (request, reply) =>{
           where: { id: user.id },
           data: { 
             emailOTP: null, 
-            emailOtpExpiresAt: null 
+            emailOtpExpiresAt: null ,
+            lastActiveAt: new Date(),
           }
         });
       }
@@ -831,7 +832,8 @@ module.exports.googleLogin = async (request, reply) => {
           orgId: organization.id,
           role: "admin",
           status: "active",
-          mfaEnabled: true // Enable MFA by default for all new users
+          mfaEnabled: true, // Enable MFA by default for all new users
+          lastActiveAt: new Date(),
         }
       });
       

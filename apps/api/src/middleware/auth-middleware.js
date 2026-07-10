@@ -15,11 +15,20 @@ async function authenticate(request, reply) {
       throw new Error("Missing or invalid authorization header");
     }
 
-    // 1. Try verifying as JWT first
+       // 1. Try verifying as JWT first
     try {
       if (typeof request.jwtVerify === "function") {
         const decoded = await request.jwtVerify();
         request.user = decoded;
+        // 👈 METHOD 1: Update lastActiveAt on User table asynchronously (fire-and-forget)
+        if (decoded && decoded.id && request.server && request.server.prisma) {
+          request.server.prisma.user
+            .update({
+              where: { id: decoded.id },
+              data: { lastActiveAt: new Date() },
+            })
+            .catch((err) => console.error("Error updating user lastActiveAt:", err.message));
+        }
         return;
       }
     } catch (jwtErr) {

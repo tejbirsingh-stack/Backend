@@ -53,6 +53,7 @@ model User {
   failedLoginAttempts Int @default(0)     // Track failed login attempts
   lockoutUntil DateTime? @db.Timestamptz(6) // Account lockout timestamp
   lastLoginAt DateTime? @db.Timestamptz(6)
+  lastActiveAt DateTime? @db.Timestamptz(6)
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   jobTitle    String?   @db.VarChar(255)
