@@ -65,6 +65,26 @@ class EmailService {
   }
 
   
+  // Send email verification link
+  async sendEmailVerification(to, name, verificationUrl) {
+    const subject = "Verify Your Noah Account Email";
+    const text = `Hi ${name},\n\nYour account has been successfully registered. Please click the link below to verify your email address:\n\n${verificationUrl}\n\nThis link will expire in 24 hours.\n\nIf you did not create an account, please ignore this email.`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #4f46e5; text-align: center;">Verify Your Email Address</h2>
+        <p>Hi ${name},</p>
+        <p>Your account has been successfully registered. Please click the link below to verify your email address:</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${verificationUrl}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Verify Email</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
+        <p style="font-size: 12px; color: #64748b;">This verification link will expire in 24 hours. If you did not create an account, you can safely ignore this email.</p>
+      </div>
+    `;
+
+    return this.sendEmail({ to, subject, text, html });
+  }
+
   // Send password reset template
   async sendPasswordReset(to, name, resetUrl) {
     const subject = "Reset Your Noah Password";

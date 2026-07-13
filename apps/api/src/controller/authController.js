@@ -38,12 +38,21 @@ module.exports.login = async (request, reply) =>{
         });
       }
 
-      // Check user status
-      if (user.status !== "active") {
+      // Check user status (allow only active users)
+      if (!user.status || user.status.toLowerCase() !== "active") {
         return reply.status(403).send({
           success: false,
           error: "Forbidden",
           message: "Account is not active",
+        });
+      }
+
+      // Check if user's email has been verified
+      if (!user.emailVerified) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Your account has not been verified. Please verify your email before logging in.",
         });
       }
 
@@ -146,6 +155,15 @@ module.exports.register = async (request, reply) => {
       return reply.status(400).send({
         error: "Bad Request",
         message: "Name, email, and password are required",
+      });
+    }
+
+    // Validate business email domain (Layer 1: Free domain check, Layer 2: DNS MX verification)
+    const emailValidation = await authService.validateBusinessEmail(email);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: emailValidation.message,
       });
     }
 
@@ -270,6 +288,17 @@ module.exports.register = async (request, reply) => {
       }
     }
 
+    // Generate email verification token and send verification email
+    try {
+      const verificationToken = await authService.createEmailVerificationToken(user.id);
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
+      const emailService = request.server.emailService || require("../services/email-service");
+      await emailService.sendEmailVerification(user.email, user.name || "User", verificationUrl);
+    } catch (emailErr) {
+      console.error("Failed to send verification email during registration:", emailErr);
+    }
+
     // Create a session for the new user
     const session = await authService.createSession(
       user.id,
@@ -287,6 +316,7 @@ module.exports.register = async (request, reply) => {
         role: user.role,
         status: user.status,
         phone: user.phone,
+        emailVerified: user.emailVerified || false,
       },
       token: session.token,
       expiresAt: session.expiresAt,
@@ -332,6 +362,16 @@ module.exports.registerRole = async (request, reply) => {
 
     // Normalize email
     const normalizedEmail = email.toLowerCase().trim();
+
+    // Validate business email domain (Layer 1: Free domain check, Layer 2: DNS MX verification)
+    const emailValidation = await authService.validateBusinessEmail(normalizedEmail);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: emailValidation.message,
+      });
+    }
 
     // 3. Check if email is already registered
     const existingUser = await authService.findUserByEmail(normalizedEmail);
@@ -1089,6 +1129,43 @@ module.exports.getRoles = async (request, reply) => {
       error: "Internal Server Error",
       message: "Failed to fetch roles",
       details: error.message || String(error),
+    });
+  }
+};
+
+// Verify Email Handler
+module.exports.verifyEmail = async (request, reply) => {
+  const { token } = request.body || request.query || {};
+
+  try {
+    if (!token) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "This verification link is invalid or has already been used.",
+      });
+    }
+
+    const userId = await authService.verifyEmailVerificationToken(token);
+
+    if (!userId) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "This verification link is invalid or has already been used.",
+      });
+    }
+
+    return reply.status(200).send({
+      success: true,
+      message: "Your email address has been verified successfully. You can now log in.",
+    });
+  } catch (error) {
+    console.error("Verify email error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to verify email address.",
     });
   }
 };

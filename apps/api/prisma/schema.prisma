@@ -37,6 +37,7 @@ model User {
   orgId       String    @db.Uuid
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   email       String    @unique @db.VarChar(255)
+  emailVerified Boolean @default(false) // Email verification status
   name        String?   @db.VarChar(255)
   passwordHash String?  @db.VarChar(255) // Added for direct password auth
   phone       String?   @db.VarChar(50) // Store User Phone Number
@@ -74,6 +75,9 @@ model User {
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
 
+  // Email verification tokens
+  emailVerificationTokens EmailVerificationToken[]
+
   @@map("users")
 }
 
@@ -89,6 +93,20 @@ model PasswordResetToken {
   
   @@index([token])
   @@map("password_reset_tokens")
+}
+
+// Email verification tokens
+model EmailVerificationToken {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  token     String   @unique @db.VarChar(255)
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  
+  @@index([token])
+  @@map("email_verification_tokens")
 }
 
 // User sessions for authentication
