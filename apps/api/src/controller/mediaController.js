@@ -188,13 +188,19 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       a.fileName === filename || 
       a.filePath === filename ||
       a.filePath.endsWith('/' + filename) ||
-      (a.metadata && a.metadata.localFilename === filename)
+      (a.metadata && a.metadata.localFilename === filename) ||
+      (a.customMetadata && a.customMetadata.originalFilePath === filename)
     );
   }
 
   if (asset) {
     const storageLocation = asset.metadata?.storageLocation || asset.status;
-    const b2Key = asset.metadata?.b2Key || asset.filePath;
+    let b2Key = asset.metadata?.b2Key || asset.filePath;
+    
+    // If the client explicitly requested the original raw file path, use that key instead of the proxy
+    if (asset.customMetadata && asset.customMetadata.originalFilePath === filename) {
+      b2Key = filename;
+    }
     
     if ((storageLocation === "b2" || storageLocation === "both") && b2Key && b2Storage.isEnabled()) {
       const freshUrl = await b2Storage.getPresignedUrl(b2Key);
@@ -636,6 +642,9 @@ module.exports.getMediaFile = async (request, reply) => {
               thumbnail: normalizedType === "image" ? fileUrl : null,
               tags: dbAsset.metadata?.tags || [],
               metadata: dbAsset.metadata || {},
+              status: dbAsset.status,
+              customMetadata: dbAsset.customMetadata || {},
+              transcodingStatus: dbAsset.transcodingStatus,
               compressionStatus: dbAsset.transcodingStatus || "completed",
             }
           });
@@ -716,10 +725,11 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
       for await (const part of parts) {
         if (part.file) {
-          const filename = `${Date.now()}-${part.filename}`;
-          const b2Key = `uploads/${isolationTier}/${today}/${filename}`; 
+          const folderName = `${Date.now()}`;
+          const filename = `raw-${part.filename}`;
+          const b2Key = `uploads/${isolationTier}/${today}/${folderName}/${filename}`; 
           
-          console.log(`Streaming directly to B2: ${filename}`);
+          console.log(`Streaming directly to B2: ${b2Key}`);
           
           let size = 0;
           part.file.on('data', (chunk) => {
@@ -763,9 +773,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
               b2FileId: b2Result?.fileId || null,
               cdnUrl: fileUrl,
               uploadedByUserId: request.user.id,
-              // Without Coconut compression, mark all videos ready immediately
-              status: "ready", // isVideo ? "processing" : "ready",
-              transcodingStatus: isVideo ? "completed" : null,
+              status: isVideo ? "processing" : "ready",
+              transcodingStatus: isVideo ? "processing" : null,
               metadata: {
                 tags: [],
                 storageLocation: "b2",
@@ -775,7 +784,6 @@ module.exports.uploadMediaFile = async (request, reply) => {
             }
           });
 
-          /* Disabled Coconut compression functionality API per user request
           // If it's a video, queue a compression job in Redis
           if (isVideo) {
             try {
@@ -793,7 +801,6 @@ module.exports.uploadMediaFile = async (request, reply) => {
               console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
             }
           }
-          */
 
           const fileInfo = {
             id: dbAsset.id,
@@ -806,7 +813,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             tags: [],
             metadata: dbAsset.metadata || {},
             // Report correct status to the frontend
-            compressionStatus: "completed", // isVideo ? "queued" : "completed",
+            compressionStatus: isVideo ? "queued" : "completed",
             storageLocation: "b2",
           };
 
@@ -908,7 +915,7 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     const sessionId = require("uuid").v4();
     const dateStr = new Date().toISOString().split("T")[0];
     const timestamp = Date.now();
-    const b2Key = `uploads/internal/${dateStr}/${timestamp}-${fileName}`;
+    const b2Key = `uploads/internal/${dateStr}/${timestamp}/raw-${fileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
@@ -1069,8 +1076,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
         b2FileId: null, // S3 multipart does not give a single B2 File ID upfront
         cdnUrl: cdnUrl,
         uploadedByUserId: request.user.id,
-        status: "ready", // isVideo ? "processing" : "ready",
-        transcodingStatus: isVideo ? "completed" : null,
+        status: isVideo ? "processing" : "ready",
+        transcodingStatus: isVideo ? "processing" : null,
         metadata: {
           tags: [],
           storageLocation: "b2",
@@ -1079,7 +1086,6 @@ module.exports.completeResumableUpload = async (request, reply) => {
       }
     });
 
-    /* Disabled Coconut compression functionality API per user request
     // Queue compression if it's a video
     if (isVideo) {
       try {
@@ -1095,7 +1101,6 @@ module.exports.completeResumableUpload = async (request, reply) => {
         console.error(`[Queue] Failed to queue job for asset ${dbAsset.id}:`, queueErr.message);
       }
     }
-    */
 
     // Clean up Redis Sessions
     await redisClient.del(`upload:session:${sessionId}`);
@@ -1110,7 +1115,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       thumbnail: null,
       tags: [],
       metadata: dbAsset.metadata || {},
-      compressionStatus: "completed", // isVideo ? "queued" : "completed",
+      compressionStatus: isVideo ? "queued" : "completed",
       storageLocation: "b2",
     };
 
@@ -1156,12 +1161,214 @@ module.exports.abortResumableUpload = async (request, reply) => {
   }
 }
 
-/* Disabled Coconut Webhook and Duplicate Check APIs per user request
 //17. Handle Coconut Webhook
 module.exports.handleCoconutWebhook = async (request, reply) => {
-  return reply.status(200).send("Disabled");
-};
+  const event = request.body;
+  const assetId = request.query.assetId;
 
+  if (!assetId) {
+    return reply.status(400).send("assetId query parameter is missing");
+  }
+
+  if (event && event.event === 'job.completed') {
+    try {
+      // 1. Fetch the asset
+      const asset = await request.server.prisma.mediaAsset.findUnique({
+        where: { id: assetId }
+      });
+
+      let duplicateOf = [];
+
+      // Tier 1: Exact Checksum Match 
+      if (asset.checksum && asset.fileSize) {
+        const exactMatch = await request.server.prisma.mediaAsset.findFirst({
+          where : {
+            id: { not: assetId },
+            checksum: asset.checksum,
+            fileSize: asset.fileSize
+          }
+        });
+        if (exactMatch) duplicateOf.push(exactMatch.id);
+      }
+
+      // If not an exact match, run the visual check
+      if (duplicateOf.length === 0) {
+
+        // Tier 2: Metadata Filter (Find Suspects)
+        // If we have duration metadata, use it to narrow down suspects. Otherwise, check all videos.
+        const whereClause = { id: { not: assetId } };
+        if (asset.durationSeconds) {
+          whereClause.durationSeconds = {
+            gte: Number(asset.durationSeconds) - 2,
+            lte: Number(asset.durationSeconds) + 2
+          };
+        }
+
+        const suspects = await request.server.prisma.mediaAsset.findMany({
+          where: whereClause,
+          select: { id: true }
+        });
+        const suspectIds = suspects.map(s => s.id);
+
+        // Tier 3: Storyboard pHash (The Visual Math)
+        const baseKey = asset.filePath; 
+        
+        // 1. Download and Hash the 5 thumbnails Coconut just created
+        for (let i = 1; i <= 5; i++) {
+          const thumbKey = `${baseKey}_thumb${i}.jpg`;
+          const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600); // 1-hour link
+          
+          if (thumbUrl) {
+            try {
+              // DOWNLOAD the image first to strip away the messy B2 URL parameters
+              // B2 Eventual Consistency Fix: Retry up to 3 times if the file returns 404
+              let fetchResponse = null;
+              for (let attempt = 1; attempt <= 3; attempt++) {
+                const res = await fetch(thumbUrl);
+                if (res.ok) {
+                  fetchResponse = res;
+                  break;
+                }
+                if (res.status === 404 && attempt < 3) {
+                  // Wait 1.5 seconds and retry
+                  await new Promise(resolve => setTimeout(resolve, 1500));
+                } else {
+                  throw new Error(`Failed to fetch thumbnail (Status: ${res.status})`);
+                }
+              }
+              
+              if (!fetchResponse) throw new Error("Thumbnail not found in B2 after 3 attempts");
+
+              const arrayBuffer = await fetchResponse.arrayBuffer();
+              const buffer = Buffer.from(arrayBuffer);
+
+              // Pass the raw buffer directly to imageHash (outputs a 256-bit Hex String)
+              const hashStr = await imageHashAsync({ data: buffer, name: 'thumb.jpg' }, 16, true);
+              
+              /* Disabled because VideoFrameHash model does not exist yet
+              // Save to PostgreSQL
+              await request.server.prisma.videoFrameHash.create({
+                data: {
+                  assetId: assetId,
+                  frameIndex: i,
+                  hashValue: hashStr
+                }
+              });
+              */
+            } catch(e) {
+              console.error(`[Webhook] Failed to hash thumb ${i}:`, e.message);
+            }
+          }
+        }
+
+        // 2. PostgreSQL Hamming Distance Calculation (Updated for 256-bit Hex)
+        if (suspectIds.length > 0) {
+          /* Disabled because VideoFrameHash model does not exist yet
+          const duplicateMatches = await request.server.prisma.$queryRawUnsafe(`
+            SELECT vfh."assetId", COUNT(*) as match_count
+            FROM video_frame_hashes vfh
+            JOIN video_frame_hashes new_vfh ON new_vfh."frameIndex" = vfh."frameIndex"
+            WHERE new_vfh."assetId" = $1::uuid 
+              AND vfh."assetId" = ANY($2::uuid[])
+              AND length(replace((('x' || vfh."hashValue")::bit(256) # ('x' || new_vfh."hashValue")::bit(256))::text, '0', '')) <= 15
+            GROUP BY vfh."assetId"
+            HAVING COUNT(*) >= 3
+          `, assetId, suspectIds);
+          
+          duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
+          */
+        }
+      }
+
+      // Update the database: Mark as ready OR mark as duplicate!
+      const compressedKey = request.query.compressedKey;
+      
+      const updatedMetadata = {
+        ...(typeof asset.customMetadata === 'object' ? asset.customMetadata : {}),
+        duplicates: duplicateOf,
+        ...(compressedKey ? { originalFilePath: asset.filePath } : {})
+      };
+
+      const updateData = {
+        transcodingStatus: 'completed',
+        status: duplicateOf.length > 0 ? 'duplicate' : 'ready',
+        customMetadata: updatedMetadata
+      };
+
+      if (compressedKey) {
+        updateData.filePath = compressedKey;
+        updateData.cdnUrl = `/api/media/${encodeURIComponent(compressedKey)}/stream`;
+      }
+
+      await request.server.prisma.mediaAsset.update({
+        where: { id: assetId },
+        data: updateData
+      });
+
+      console.log(`[Webhook] Asset ${assetId} marked ready. Duplicates found: ${duplicateOf.length}`);
+
+      // 3. Auto-Cleanup: Delete the 5 temporary thumbnails from B2 to save storage
+      const cleanupKey = compressedKey || asset.filePath;
+      if (cleanupKey) {
+        for (let i = 1; i <= 5; i++) {
+          try {
+            await b2Storage.permanentlyDeleteFile(`${cleanupKey}_thumb${i}.jpg`);
+          } catch (delErr) {
+            console.error(`[Webhook] Failed to delete thumb ${i}:`, delErr.message);
+          }
+        }
+        console.log(`[Webhook] Auto-cleaned temporary storyboard thumbnails for asset ${assetId}`);
+      }
+
+    } catch (err) {
+      console.error(`[Webhook] Failed to update DB for asset ${assetId}:`, err);
+    }
+  } else if (event && (event.progress || (event.data && event.data.progress))) {
+    try {
+      // Fetch the current asset to update its customMetadata safely
+      const asset = await request.server.prisma.mediaAsset.findUnique({
+        where: { id: assetId },
+        select: { customMetadata: true }
+      });
+      
+      if (asset) {
+        const updatedMetadata = {
+          ...(typeof asset.customMetadata === 'object' ? asset.customMetadata : {}),
+          transcodingProgress: event.progress || (event.data && event.data.progress) // e.g., "45%"
+        };
+
+        await request.server.prisma.mediaAsset.update({
+          where: { id: assetId },
+          data: {
+            transcodingStatus: 'processing',
+            customMetadata: updatedMetadata
+          }
+        });
+        console.log(`[Webhook] Asset ${assetId} transcoding progress: ${event.progress || (event.data && event.data.progress)}`);
+      }
+    } catch (err) {
+      console.error(`[Webhook] Failed to update progress for asset ${assetId}:`, err);
+    }
+  } else if (event && event.event === 'job.failed') {
+    try {
+      await request.server.prisma.mediaAsset.update({
+        where: { id: assetId },
+        data: {
+          transcodingStatus: 'failed',
+          status: 'failed'
+        }
+      });
+      console.log(`[Webhook] Asset ${assetId} marked as failed.`);
+    } catch (err) {
+      console.error(`[Webhook] Failed to update DB for asset ${assetId}:`, err);
+    }
+  }
+
+  // Always reply 200 OK to Coconut so it doesn't retry
+  return reply.status(200).send("OK");
+}
+
+/* Disabled Duplicate Check APIs per user request
 module.exports.checkDuplicateMediaFile = async (request, reply) => {
   return reply.send({ isDuplicate: false });
 };

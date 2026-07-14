@@ -215,8 +215,8 @@ const {
   getChunkUploadUrl,
   getUploadStatus,
   completeResumableUpload,
-  abortResumableUpload
-  // handleCoconutWebhook,
+  abortResumableUpload,
+  handleCoconutWebhook
   // checkDuplicateMediaFile
 } = require('../controller');
 
@@ -278,8 +278,8 @@ module.exports = function (fastify, opts, done) {
   //16. Abort Multipart Upload Session
   fastify.delete("/upload/abort/:sessionId", { preHandler: [fastify.authenticate] }, abortResumableUpload);
 
-  //17. Coconut Webhook (Disabled per request)
-  // fastify.post("/webhooks/coconut", handleCoconutWebhook);
+  //17. Coconut Webhook
+  fastify.post("/webhooks/coconut", handleCoconutWebhook);
 
   done();
 };

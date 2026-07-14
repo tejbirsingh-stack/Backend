@@ -48,17 +48,23 @@ const processCompressionJob = async (job: Job) => {
     // Generate a Presigned GET URL so Coconut can read the raw file
     const sourceUrl = await b2Storage.getPresignedUrl(key, 86400); // URL valid for 24 hours
 
+    // Generate compressed key by replacing 'raw-' with 'compressed-'
+    const parts = key.split('/');
+    const filename = parts.pop() || '';
+    const compressedFilename = filename.startsWith('raw-') ? filename.replace('raw-', 'compressed-') : `compressed-${filename}`;
+    const compressedKey = parts.length > 0 ? `${parts.join('/')}/${compressedFilename}` : compressedFilename;
+
     // Generate Presigned PUT URLs for the video AND the 5 storyboard thumbnails
-    const outputUrl = await b2Storage.getPresignedPutUrl(key, 86400); 
-    const thumbUrl1 = await b2Storage.getPresignedPutUrl(`${key}_thumb1.jpg`, 86400);
-    const thumbUrl2 = await b2Storage.getPresignedPutUrl(`${key}_thumb2.jpg`, 86400);
-    const thumbUrl3 = await b2Storage.getPresignedPutUrl(`${key}_thumb3.jpg`, 86400);
-    const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${key}_thumb4.jpg`, 86400);
-    const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${key}_thumb5.jpg`, 86400);
+    const outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400); 
+    const thumbUrl1 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400);
+    const thumbUrl2 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400);
+    const thumbUrl3 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400);
+    const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
+    const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
     // Pass the webhook URL so Coconut tells us when it's done
     const webhookHost = process.env.WEBHOOK_HOST || 'https://562546aa1bd524.lhr.life';
-    const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?assetId=${mediaAssetId}`;
+    const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?assetId=${mediaAssetId}&compressedKey=${encodeURIComponent(compressedKey)}`;
 
     // Send API request to Coconut v2 using standard fetch to avoid SDK silent errors
     const response = await fetch('https://api.coconut.co/v2/jobs', {
@@ -79,7 +85,8 @@ const processCompressionJob = async (job: Job) => {
         },
         notification: {
           type: 'http',
-          url: webhookUrl
+          url: webhookUrl,
+          events: true
         }
       })
     });
