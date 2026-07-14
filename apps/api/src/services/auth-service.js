@@ -4,8 +4,17 @@ const bcrypt = require("bcryptjs");
 const { authenticator } = require("otplib");
 const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
+const dns = require("dns").promises;
 
 const prisma = new PrismaClient();
+
+const FREE_EMAIL_DOMAINS = new Set([
+  'gmail.com', 'yahoo.com', 'yahoo.co.uk', 'yahoo.co.in', 'hotmail.com',
+  'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'mac.com',
+  'aol.com', 'zoho.com', 'protonmail.com', 'proton.me', 'mail.com', 'gmx.com',
+  'yandex.com', 'mailinator.com', 'tempmail.com', 'guerrillamail.com',
+  '10minutemail.com', 'trashmail.com', 'getairmail.com'
+]);
 
 // Configure authentication options
 const AUTH_OPTIONS = {
@@ -73,9 +82,45 @@ class AuthService {
     return authenticator.keyuri(email, AUTH_OPTIONS.mfa.issuer, secret);
   }
 
+  // Validate if an email is a real, active business email (Layer 1: free domain check, Layer 2: DNS verification)
+  async validateBusinessEmail(email) {
+    if (!email || typeof email !== "string" || !email.includes("@")) {
+      return { isValid: false, message: "Invalid email address format." };
+    }
+
+    const domain = email.split("@")[1].toLowerCase().trim();
+
+    // Layer 1: Check against known public/free email providers
+    if (FREE_EMAIL_DOMAINS.has(domain)) {
+      return {
+        isValid: false,
+        message: "Please enter a corporate or work email address (personal emails like Gmail/Outlook are not allowed)."
+      };
+    }
+
+    // Layer 2: Perform strict DNS check for active Mail Exchange (MX) records
+    try {
+      const mxRecords = await dns.resolveMx(domain);
+      if (mxRecords && mxRecords.length > 0) {
+        // Ensure at least one MX record has a valid exchange target
+        const validMx = mxRecords.some(r => r && r.exchange && r.exchange !== '.' && r.exchange !== 'localhost');
+        if (validMx) {
+          return { isValid: true };
+        }
+      }
+    } catch (mxError) {
+      // MX lookup failed (e.g. ENODATA when domain exists but has no mail servers, or ENOTFOUND when domain doesn't exist)
+    }
+
+    return {
+      isValid: false,
+      message: `The domain "${domain}" does not have active mail servers (MX records) configured to receive emails.`
+    };
+  }
+
   // Find a user by email
   async findUserByEmail(email) {
-    return await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { email },
       select: {
         id: true,
@@ -83,34 +128,57 @@ class AuthService {
         name: true,
         passwordHash: true,
         orgId: true,
-        role: true,
+        roleId: true,
         mfaSecret: true,
         mfaEnabled: true,
         status: true,
+        emailVerified: true,
         organization: {
           select: {
             id: true,
             name: true,
             slug: true
           }
+        },
+        roleId: true,
+        roleRelation: {
+          select: {
+            id: true,
+            name: true
+          }
         }
       },
     });
+    if (user && user.roleRelation && user.roleRelation.name) {
+      user.role = user.roleRelation.name;
+    }
+    return user;
   }
 
   // Find a user by ID
   async findUserById(id) {
-    return await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { id },
       select: {
         id: true,
         email: true,
         name: true,
         orgId: true,
-        role: true,
+        roleId: true,
         status: true,
+        emailVerified: true,
+        roleRelation: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
       },
     });
+    if (user && user.roleRelation && user.roleRelation.name) {
+      user.role = user.roleRelation.name;
+    }
+    return user;
   }
 
   // Create a new session for a user
@@ -195,13 +263,20 @@ class AuthService {
             email: true,
             name: true,
             orgId: true,
-            role: true,
+            roleId: true,
             status: true,
+            emailVerified: true,
             organization: {
               select: {
                 id: true,
                 name: true,
                 slug: true
+              }
+            },
+            roleRelation: {
+              select: {
+                id: true,
+                name: true
               }
             }
           },
@@ -210,6 +285,10 @@ class AuthService {
     });
 
     if (!session) return null;
+
+    if (session.user && session.user.roleRelation && session.user.roleRelation.name) {
+      session.user.role = session.user.roleRelation.name;
+    }
 
     // Update last active timestamp
     await prisma.userSession.update({
@@ -293,6 +372,52 @@ class AuthService {
     });
 
     return resetToken.userId;
+  }
+
+  // Create an email verification token
+  async createEmailVerificationToken(userId) {
+    const token = crypto.randomBytes(64).toString("hex");
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24); // 24 hours expiry
+
+    await prisma.emailVerificationToken.create({
+      data: {
+        userId,
+        token,
+        expiresAt,
+      },
+    });
+
+    return token;
+  }
+
+  // Verify an email verification token and mark user's emailVerified as true
+  async verifyEmailVerificationToken(token) {
+    if (!token || typeof token !== "string") return null;
+
+    const verificationToken = await prisma.emailVerificationToken.findFirst({
+      where: {
+        token,
+      },
+    });
+
+    if (!verificationToken || verificationToken.usedAt !== null || new Date() > verificationToken.expiresAt) {
+      return null;
+    }
+
+    // Mark token as used
+    await prisma.emailVerificationToken.update({
+      where: { id: verificationToken.id },
+      data: { usedAt: new Date() },
+    });
+
+    // Update user's emailVerified to true
+    await prisma.user.update({
+      where: { id: verificationToken.userId },
+      data: { emailVerified: true },
+    });
+
+    return verificationToken.userId;
   }
 
   // Health check method to verify auth service functionality

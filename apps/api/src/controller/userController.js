@@ -38,7 +38,7 @@ module.exports.getUsers = async (request, reply) => {
         id: true,
         name: true,
         email: true,
-        role: true,
+        roleId: true,
         status: true,
         lastLoginAt: true,
         lastActiveAt: true,
@@ -53,16 +53,27 @@ module.exports.getUsers = async (request, reply) => {
             slug: true,
           },
         },
+        roleRelation: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
       orderBy: {
         name: "asc",
       },
     });
 
+    const formattedUsers = users.map(u => ({
+      ...u,
+      role: (u.roleRelation && u.roleRelation.name) ? u.roleRelation.name : u.role,
+    }));
+
     return reply.send({
       success: true,
-      count: users.length,
-      users: users,
+      count: formattedUsers.length,
+      users: formattedUsers,
     });
   } catch (error) {
     console.error("Error fetching organization users:", error);

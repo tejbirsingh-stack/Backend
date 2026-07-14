@@ -1,4 +1,3 @@
-import { request } from "http";
 
 const authService = require("../services/auth-service");
 const { OAuth2Client } = require('google-auth-library');
@@ -38,13 +37,27 @@ module.exports.login = async (request, reply) =>{
         });
       }
 
-      // Check user status
-      if (user.status !== "active") {
-        return reply.status(403).send({
-          success: false,
-          error: "Forbidden",
-          message: "Account is not active",
-        });
+      // Determine user's role name cleanly
+      const roleName = (user.roleRelation && user.roleRelation.name) ? user.roleRelation.name : (user.role || "");
+      const isSuperAdmin = roleName.toLowerCase().replace(/[_ -]+/g, "") === "superadmin";
+
+      // Check user status and email verification ONLY for Super Admin
+      if (isSuperAdmin) {
+        if (!user.status || user.status.toLowerCase() !== "active") {
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Account is not active",
+          });
+        }
+
+        if (!user.emailVerified) {
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Your account has not been verified. Please verify your email before logging in.",
+          });
+        }
       }
 
       // Check if MFA is enabled and verify the code
@@ -116,8 +129,10 @@ module.exports.login = async (request, reply) =>{
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
         orgId: user.orgId,
+        roleId: user.roleId,
+        role: user.role || (user.roleRelation ? user.roleRelation.name : null),
+        roleRelation: user.roleRelation,
         organization: user.organization
       };
       const token = await reply.jwtSign(payload);
@@ -146,6 +161,15 @@ module.exports.register = async (request, reply) => {
       return reply.status(400).send({
         error: "Bad Request",
         message: "Name, email, and password are required",
+      });
+    }
+
+    // Validate business email domain (Layer 1: Free domain check, Layer 2: DNS MX verification)
+    const emailValidation = await authService.validateBusinessEmail(email);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: emailValidation.message,
       });
     }
 
@@ -198,6 +222,17 @@ module.exports.register = async (request, reply) => {
     // Hash password
     const passwordHash = await authService.hashPassword(password);
 
+
+     const superAdminRole = await request.server.prisma.role.findFirst({
+      where: {
+        OR: [
+          { name: "Super Admin" },
+          { name: "super_admin" },
+          { name: "SuperAdmin" }
+        ]
+      }
+     });
+
     // Store user in database
     const user = await request.server.prisma.user.create({
       data: {
@@ -205,7 +240,7 @@ module.exports.register = async (request, reply) => {
         email: email.toLowerCase().trim(),
         passwordHash,
         orgId: finalOrgId,
-        role: "super_admin", // use lowercase for consistency with backend checks
+        roleId: superAdminRole?.id || null,
         phone: phone || null,
         hubspotUtk: hubspotUtk || null,
         status: "active",
@@ -270,6 +305,17 @@ module.exports.register = async (request, reply) => {
       }
     }
 
+    // Generate email verification token and send verification email
+    try {
+      const verificationToken = await authService.createEmailVerificationToken(user.id);
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
+      const emailService = request.server.emailService || require("../services/email-service");
+      await emailService.sendEmailVerification(user.email, user.name || "User", verificationUrl);
+    } catch (emailErr) {
+      console.error("Failed to send verification email during registration:", emailErr);
+    }
+
     // Create a session for the new user
     const session = await authService.createSession(
       user.id,
@@ -287,6 +333,7 @@ module.exports.register = async (request, reply) => {
         role: user.role,
         status: user.status,
         phone: user.phone,
+        emailVerified: user.emailVerified || false,
       },
       token: session.token,
       expiresAt: session.expiresAt,
@@ -308,12 +355,21 @@ module.exports.registerRole = async (request, reply) => {
 
   try {
     // 1. Verify that the authenticated user is a Super Admin
-    const currentUserRole = request.user?.role || "";
+    let currentUserRole = request.user?.role || "";
+    if (request.user?.id) {
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true },
+      });
+      if (liveUser && liveUser.roleRelation && liveUser.roleRelation.name) {
+        currentUserRole = liveUser.roleRelation.name;
+      } else if (liveUser && liveUser.role) {
+        currentUserRole = liveUser.role;
+      }
+    }
+    const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
     
-    if (
-      currentUserRole.toLowerCase() !== "super_admin" &&
-      currentUserRole.toLowerCase() !== "superadmin"
-    ) {
+    if (normalizedRole !== "superadmin") {
       return reply.status(403).send({
         success: false,
         error: "Forbidden",
@@ -332,6 +388,16 @@ module.exports.registerRole = async (request, reply) => {
 
     // Normalize email
     const normalizedEmail = email.toLowerCase().trim();
+
+    // Validate business email domain (Layer 1: Free domain check, Layer 2: DNS MX verification)
+    const emailValidation = await authService.validateBusinessEmail(normalizedEmail);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: emailValidation.message,
+      });
+    }
 
     // 3. Check if email is already registered
     const existingUser = await authService.findUserByEmail(normalizedEmail);
@@ -384,12 +450,12 @@ module.exports.registerRole = async (request, reply) => {
       data: {
         email: normalizedEmail,
         roleId: roleId,
-        role: roleObj.name,
         orgId: finalOrgId,
         status: "inactive",
         mfaEnabled: true, // Default to true as per existing registration logic
       },
     });
+    user.role = roleObj.name;
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
@@ -555,12 +621,84 @@ module.exports.disableMfa = async (request, reply) =>{
       }
 };
 
-// 7. Get Me Currenlt User Info
-module.exports.getMe = async (request, reply) =>{
+// 7. Get Me Currently User Info (Dynamic Profile Fetch with Role Relation)
+module.exports.getMe = async (request, reply) => {
+  try {
+    if (!request.user || !request.user.id) {
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
+    }
+
+    const user = await request.server.prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        orgId: true,
+        roleId: true,
+        status: true,
+        emailVerified: true,
+        phone: true,
+        jobTitle: true,
+        mfaEnabled: true,
+        lastLoginAt: true,
+        lastActiveAt: true,
+        createdAt: true,
+        updatedAt: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        roleRelation: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: "Not Found",
+        message: "User not found",
+      });
+    }
+
+    // Dynamically set user's role based on the Role table relation (by roleId)
+    if (user.roleRelation && user.roleRelation.name) {
+      user.role = user.roleRelation.name;
+    } else if (user.roleId) {
+      const roleObj = await request.server.prisma.role.findUnique({
+        where: { id: user.roleId },
+        select: { id: true, name: true },
+      });
+      if (roleObj && roleObj.name) {
+        user.role = roleObj.name;
+        user.roleRelation = roleObj;
+      }
+    }
+
     return {
       success: true,
-      user: request.user,
+      user: user,
     };
+  } catch (error) {
+    console.error("Get me error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to fetch current user profile",
+    });
+  }
 };
 
 // 8. Forgot Password Handler
@@ -1089,6 +1227,43 @@ module.exports.getRoles = async (request, reply) => {
       error: "Internal Server Error",
       message: "Failed to fetch roles",
       details: error.message || String(error),
+    });
+  }
+};
+
+// Verify Email Handler
+module.exports.verifyEmail = async (request, reply) => {
+  const { token } = request.body || request.query || {};
+
+  try {
+    if (!token) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "This verification link is invalid or has already been used.",
+      });
+    }
+
+    const userId = await authService.verifyEmailVerificationToken(token);
+
+    if (!userId) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "This verification link is invalid or has already been used.",
+      });
+    }
+
+    return reply.status(200).send({
+      success: true,
+      message: "Your email address has been verified successfully. You can now log in.",
+    });
+  } catch (error) {
+    console.error("Verify email error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to verify email address.",
     });
   }
 };
