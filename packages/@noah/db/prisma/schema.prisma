@@ -23,7 +23,7 @@ model Organization {
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   
   users        User[]
-  mediaAssets  MediaAsset[]
+  assets       Asset[]
   collections  Collection[]
   tags         Tag[]
   shareLinks   ShareLink[]
@@ -58,7 +58,7 @@ model User {
   updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   jobTitle    String?   @db.VarChar(255)
   annotations  Annotation[]
-  uploadedMediaAssets MediaAsset[] @relation("UploadedBy")
+  uploadedAssets Asset[] @relation("UploadedBy")
   createdCollections  Collection[] @relation("CreatedBy")
   addedToCollections  CollectionAsset[]
   addedAssetTags      AssetTag[]
@@ -127,62 +127,6 @@ model UserSession {
   @@map("user_sessions")
 }
 
-model MediaAsset {
-  id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId             String     @db.Uuid
-  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  parentId          String?    @db.Uuid // For versions
-  parentAsset       MediaAsset? @relation("MediaAssetVersions", fields: [parentId], references: [id])
-  childAssets       MediaAsset[] @relation("MediaAssetVersions")
-
-  fileName          String     @db.VarChar(500)
-  filePath          String     @db.VarChar(1000) // Path in B2/S3
-  fileSize          BigInt
-  originalSize      BigInt
-  mimeType          String     @db.VarChar(100)
-  fileExtension     String?    @db.VarChar(20)
-  b2FileId          String?    @unique @db.VarChar(255)
-  b2BucketId        String?    @db.VarChar(50)
-  cdnUrl            String?    @db.VarChar(500)
-  storageClass      String     @default("STANDARD") @db.VarChar(50)
-  compressionRatio  Decimal?   @db.Decimal(4, 2)
-  durationSeconds   Decimal?   @db.Decimal(10, 3)
-  width             Int?
-  height            Int?
-  fps               Decimal?   @db.Decimal(5, 2)
-  bitrate           Int?
-  codec             String?    @db.VarChar(50)
-  metadata          Json      @default("{}") @db.JsonB // Technical metadata, custom properties
-  aiTags            Json      @default("[]") @db.JsonB // AI-extracted tags
-  customMetadata    Json      @default("{}") @db.JsonB // User-defined custom metadata
-  checksum          String?    @db.VarChar(64) // SHA-256
-  status            String     @default("uploading") @db.VarChar(50) // e.g., uploading, processing, ready, failed
-  transcodingStatus String?    @db.VarChar(50) // e.g., queued, in_progress, completed, failed
-
-  uploadedByUserId  String?    @db.Uuid
-  uploadedBy        User?      @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
-
-  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
-  deletedAt         DateTime?  @db.Timestamptz(6)
-
-  annotations  Annotation[]
-  collectionAssets CollectionAsset[]
-  assetVersions    AssetVersion[]
-  assetTags        AssetTag[]
-  shareLinks       ShareLink[]
-  analyticsEvents  AnalyticsEvent[]
-  thumbnailForCollections Collection[] @relation("ThumbnailAsset")
-
-  @@index([orgId])
-  @@index([status])
-  @@index([mimeType])
-  @@index([createdAt(sort: Desc)])
-  // Use raw SQL for GIN indexes like gin(metadata) and gin(aiTags) if Prisma doesn't support directly
-  // @@fulltext([fileName]) // Use this with PostgreSQL's full-text search
-  // @@index([fileName(ops: Raw("gin_trgm_ops"))]) // For pg_trgm, requires raw SQL for now
-  @@map("media_assets")
-}
 
 model Collection {
   id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -196,7 +140,7 @@ model Collection {
   type            String    @default("manual") @db.VarChar(50) // e.g., manual, smart
   rules           Json?    @db.JsonB // For smart collections
   thumbnailAssetId String?  @db.Uuid
-  thumbnailAsset  MediaAsset? @relation("ThumbnailAsset", fields: [thumbnailAssetId], references: [id])
+  thumbnailAsset  Asset? @relation("ThumbnailAsset", fields: [thumbnailAssetId], references: [id])
   metadata        Json     @default("{}") @db.JsonB
   createdById     String?   @db.Uuid
   createdBy       User?     @relation("CreatedBy", fields: [createdById], references: [id])
@@ -214,7 +158,7 @@ model CollectionAsset {
   collectionId String @db.Uuid
   collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
   assetId      String @db.Uuid
-  asset        MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  asset        Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   position     Int    @default(0)
   addedById    String? @db.Uuid
   addedBy      User?  @relation(fields: [addedById], references: [id])
@@ -228,7 +172,7 @@ model CollectionAsset {
 model AssetVersion {
   id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   assetId         String    @db.Uuid
-  asset           MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  asset           Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   versionNumber   Int
   changeDescription String?
   createdById     String?   @db.Uuid
@@ -256,7 +200,7 @@ model Tag {
 
 model AssetTag {
   assetId    String    @db.Uuid
-  asset      MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  asset      Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   tagId      String    @db.Uuid
   tag        Tag        @relation(fields: [tagId], references: [id], onDelete: Cascade)
   addedById  String?   @db.Uuid
@@ -272,7 +216,7 @@ model ShareLink {
   orgId           String    @db.Uuid
   organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   assetId         String?   @db.Uuid
-  asset           MediaAsset? @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  asset           Asset? @relation(fields: [assetId], references: [id], onDelete: Cascade)
   collectionId    String?   @db.Uuid
   collection      Collection? @relation(fields: [collectionId], references: [id], onDelete: Cascade)
   token           String    @unique @db.VarChar(255)
@@ -320,7 +264,7 @@ model AnalyticsEvent {
   user         User?     @relation(fields: [userId], references: [id])
   eventType    String    @db.VarChar(100)
   assetId      String?   @db.Uuid
-  asset        MediaAsset? @relation(fields: [assetId], references: [id])
+  asset        Asset? @relation(fields: [assetId], references: [id])
   properties   Json     @default("{}") @db.JsonB
   createdAt    DateTime  @default(now()) @db.Timestamptz(6)
 
@@ -335,7 +279,7 @@ model Annotation {
   orgId           String       @db.Uuid
   organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   assetId         String       @db.Uuid
-  mediaAsset      MediaAsset   @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  mediaAsset      Asset   @relation(fields: [assetId], references: [id], onDelete: Cascade)
   userId          String       @db.Uuid
   user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -365,4 +309,84 @@ model Role {
   show      Int?
   users     User[]
   @@map("roles")
+}
+// --- NEW ENTERPRISE ASSET ARCHITECTURE ---
+
+model Asset {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String       @db.Uuid
+  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  title             String       @db.VarChar(500)
+  type              String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
+  status            String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
+  aiTags            Json         @default("[]") @db.JsonB
+  
+  createdAt         DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?    @db.Timestamptz(6)
+  
+  files             AssetFile[]
+  metadata          AssetMetadata?
+  transcodeJobs     TranscodeJob[]
+
+  uploadedByUserId  String?      @db.Uuid
+  uploadedBy        User?        @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
+
+  annotations  Annotation[]
+  collectionAssets CollectionAsset[]
+  assetVersions    AssetVersion[]
+  assetTags        AssetTag[]
+  shareLinks       ShareLink[]
+  analyticsEvents  AnalyticsEvent[]
+  thumbnailForCollections Collection[] @relation("ThumbnailAsset")
+
+  @@index([orgId])
+  @@index([status])
+  @@index([type])
+  @@map("assets")
+}
+
+model AssetFile {
+  id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId           String     @db.Uuid
+  asset             Asset      @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  fileClass         String     @db.VarChar(50) // 'original', 'proxy', 'thumbnail', 'hls_playlist'
+  fileName          String     @db.VarChar(500)
+  filePath          String     @db.VarChar(1000) // B2 Key
+  sizeBytes         BigInt
+  mimeType          String     @db.VarChar(100)
+  cdnUrl            String?    @db.VarChar(500)
+  
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  
+  @@index([assetId])
+  @@index([fileClass])
+  @@map("asset_files")
+}
+
+model AssetMetadata {
+  assetId           String     @id @db.Uuid
+  asset             Asset      @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  technicalSpecs    Json       @default("{}") @db.JsonB // width, height, fps, bitrate, codec, duration
+  customProperties  Json       @default("{}") @db.JsonB // user-defined metadata
+  checksum          String?    @db.VarChar(64)
+  
+  @@map("asset_metadata")
+}
+
+model TranscodeJob {
+  id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId           String     @db.Uuid
+  asset             Asset      @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  provider          String     @db.VarChar(50) // 'coconut', 'aws_mediaconvert'
+  jobId             String?    @unique @db.VarChar(255)
+  status            String     @default("queued") @db.VarChar(50) // 'queued', 'processing', 'completed', 'failed'
+  providerMetadata  Json       @default("{}") @db.JsonB // API responses, errors
+  
+  createdAt         DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
+  
+  @@index([assetId])
+  @@index([status])
+  @@map("transcode_jobs")
 }
