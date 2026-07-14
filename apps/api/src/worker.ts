@@ -30,14 +30,16 @@ console.log(' Noah Media Compression Worker is starting...');
 
 // 2. Define the unified job processor function
 const processCompressionJob = async (job: Job) => {
-  const { mediaAssetId, key, preset } = job.data;
-  console.log(`[Job ${job.id}] Submitting compression job to Coconut for asset: ${mediaAssetId}, key: ${key}`);
+  const { assetId, key, preset } = job.data;
+  console.log(`[Job ${job.id}] Submitting compression job to Coconut for newAsset: ${assetId}, key: ${key}`);
 
-  // Update database status to "in_progress"
-  await prisma.mediaAsset.update({
-    where: { id: mediaAssetId },
-    data: { transcodingStatus: 'in_progress' },
-  });
+  // Update database status to "processing" (New Architecture)
+  if (assetId) {
+    await prisma.transcodeJob.updateMany({
+      where: { assetId: assetId, provider: "coconut" },
+      data: { status: 'processing' }
+    });
+  }
 
   try {
     const coconutApiKey = process.env.COCONUT_API_KEY || '';
@@ -64,7 +66,7 @@ const processCompressionJob = async (job: Job) => {
 
     // Pass the webhook URL so Coconut tells us when it's done
     const webhookHost = process.env.WEBHOOK_HOST || 'https://562546aa1bd524.lhr.life';
-    const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?assetId=${mediaAssetId}&compressedKey=${encodeURIComponent(compressedKey)}`;
+    const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?newAssetId=${assetId}&compressedKey=${encodeURIComponent(compressedKey)}`;
 
     // Send API request to Coconut v2 using standard fetch to avoid SDK silent errors
     const response = await fetch('https://api.coconut.co/v2/jobs', {
@@ -99,13 +101,27 @@ const processCompressionJob = async (job: Job) => {
     const jobData = await response.json();
     console.log(`[Job ${job.id}] Successfully submitted to Coconut. Coconut Job ID: ${jobData.id}. Worker is now free!`);
 
+    if (assetId && jobData.id) {
+      await prisma.transcodeJob.updateMany({
+        where: { assetId: assetId, provider: "coconut" },
+        data: { jobId: jobData.id.toString() }
+      }).catch(err => console.error(`[Job ${job.id}] Failed to save Job ID to db:`, err.message));
+    }
+
   } catch (error: any) {
     console.error(`[Job ${job.id}] Error submitting to Coconut:`, error.message);
 
-    await prisma.mediaAsset.update({
-      where: { id: mediaAssetId },
-      data: { transcodingStatus: 'failed', status: 'failed' },
-    }).catch((dbErr) => console.error('Failed to write failure status to DB:', dbErr));
+    if (assetId) {
+      await prisma.transcodeJob.updateMany({
+        where: { assetId: assetId, provider: "coconut" },
+        data: { status: 'failed' }
+      }).catch((dbErr) => console.error('Failed to write failure status to transcode job:', dbErr));
+      
+      await prisma.asset.update({
+        where: { id: assetId },
+        data: { status: 'failed' }
+      }).catch((dbErr) => console.error('Failed to write failure status to asset:', dbErr));
+    }
 
     throw error;
   }
