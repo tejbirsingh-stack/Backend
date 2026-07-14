@@ -128,7 +128,6 @@ class AuthService {
         name: true,
         passwordHash: true,
         orgId: true,
-        role: true,
         roleId: true,
         mfaSecret: true,
         mfaEnabled: true,
@@ -141,6 +140,7 @@ class AuthService {
             slug: true
           }
         },
+        roleId: true,
         roleRelation: {
           select: {
             id: true,
@@ -164,7 +164,6 @@ class AuthService {
         email: true,
         name: true,
         orgId: true,
-        role: true,
         roleId: true,
         status: true,
         emailVerified: true,
@@ -264,7 +263,6 @@ class AuthService {
             email: true,
             name: true,
             orgId: true,
-            role: true,
             roleId: true,
             status: true,
             emailVerified: true,

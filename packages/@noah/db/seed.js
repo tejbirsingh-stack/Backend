@@ -1,4 +1,5 @@
 const { PrismaClient } = require("@prisma/client");
+const bcrypt = require("bcrypt");
 
 const prisma = new PrismaClient();
 
@@ -6,7 +7,16 @@ async function seedDatabase() {
   try {
     console.log("🌱 Seeding database...");
 
+    // ===========================
+    // Hash Password
+    // ===========================
+
+    const hashedPassword = await bcrypt.hash("Noah@2026!", 10);
+
+    // ===========================
     // Create Organization
+    // ===========================
+
     const org = await prisma.organization.upsert({
       where: { slug: "demo-org" },
       update: {},
@@ -20,6 +30,7 @@ async function seedDatabase() {
     });
 
     console.log("✅ Organization created");
+
 
     // ===========================
     // Seed Roles
@@ -68,23 +79,23 @@ async function seedDatabase() {
       console.log(`✅ Role created: ${createdRole.name}`);
     }
 
+
     // ===========================
     // Create System Admin User
     // ===========================
 
     await prisma.user.upsert({
       where: {
-        email: "systemadmin@example.com",
+        email: "systemadminnoah@yopmail.com",
       },
       update: {},
       create: {
         name: "System Admin",
         email: "systemadminnoah@yopmail.com",
-        role: "System Admin",
         roleId: roleMap["System Admin"].id,
         orgId: org.id,
         status: "active",
-        passwordHash: "Noah@2026!",
+        passwordHash: hashedPassword,
         emailVerified: true,
         preferences: {},
       },
@@ -92,33 +103,35 @@ async function seedDatabase() {
 
     console.log("✅ System Admin created");
 
-  // ===========================
-// Create Super Admin User
-// ===========================
 
-await prisma.user.upsert({
-  where: {
-    email: "tejbir.singh@mtxeurope.com",
-  },
-  update: {},
-  create: {
-    name: "Super Admin",
-    email: "tejbir.singh@mtxeurope.com",
-    role: "Super Admin",
-    roleId: roleMap["Super Admin"].id,
-    orgId: org.id,
-    status: "active",
-    emailVerified: true, // if this field exists
-    preferences: {},
-    passwordHash: "Noah@2026!",
-  },
-});
+    // ===========================
+    // Create Super Admin User
+    // ===========================
 
-console.log("✅ Super Admin created");
+    await prisma.user.upsert({
+      where: {
+        email: "tejbir.singh@mtxeurope.com",
+      },
+      update: {},
+      create: {
+        name: "Super Admin",
+        email: "tejbir.singh@mtxeurope.com",
+        roleId: roleMap["Super Admin"].id,
+        orgId: org.id,
+        status: "active",
+        passwordHash: hashedPassword,
+        emailVerified: true,
+        preferences: {},
+      },
+    });
+
+    console.log("✅ Super Admin created");
+
 
     console.log("🎉 Database seeded successfully");
+
   } catch (err) {
-    console.error(err);
+    console.error("❌ Seeding failed:", err);
   } finally {
     await prisma.$disconnect();
   }

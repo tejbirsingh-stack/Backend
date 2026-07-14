@@ -38,7 +38,6 @@ module.exports.getUsers = async (request, reply) => {
         id: true,
         name: true,
         email: true,
-        role: true,
         roleId: true,
         status: true,
         lastLoginAt: true,

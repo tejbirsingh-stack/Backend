@@ -37,22 +37,27 @@ module.exports.login = async (request, reply) =>{
         });
       }
 
-      // Check user status (allow only active users)
-      if (!user.status || user.status.toLowerCase() !== "active") {
-        return reply.status(403).send({
-          success: false,
-          error: "Forbidden",
-          message: "Account is not active",
-        });
-      }
+      // Determine user's role name cleanly
+      const roleName = (user.roleRelation && user.roleRelation.name) ? user.roleRelation.name : (user.role || "");
+      const isSuperAdmin = roleName.toLowerCase().replace(/[_ -]+/g, "") === "superadmin";
 
-      // Check if user's email has been verified
-      if (!user.emailVerified) {
-        return reply.status(403).send({
-          success: false,
-          error: "Forbidden",
-          message: "Your account has not been verified. Please verify your email before logging in.",
-        });
+      // Check user status and email verification ONLY for Super Admin
+      if (isSuperAdmin) {
+        if (!user.status || user.status.toLowerCase() !== "active") {
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Account is not active",
+          });
+        }
+
+        if (!user.emailVerified) {
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Your account has not been verified. Please verify your email before logging in.",
+          });
+        }
       }
 
       // Check if MFA is enabled and verify the code
@@ -124,8 +129,10 @@ module.exports.login = async (request, reply) =>{
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
         orgId: user.orgId,
+        roleId: user.roleId,
+        role: user.role || (user.roleRelation ? user.roleRelation.name : null),
+        roleRelation: user.roleRelation,
         organization: user.organization
       };
       const token = await reply.jwtSign(payload);
@@ -215,6 +222,17 @@ module.exports.register = async (request, reply) => {
     // Hash password
     const passwordHash = await authService.hashPassword(password);
 
+
+     const superAdminRole = await request.server.prisma.role.findFirst({
+      where: {
+        OR: [
+          { name: "Super Admin" },
+          { name: "super_admin" },
+          { name: "SuperAdmin" }
+        ]
+      }
+     });
+
     // Store user in database
     const user = await request.server.prisma.user.create({
       data: {
@@ -222,7 +240,7 @@ module.exports.register = async (request, reply) => {
         email: email.toLowerCase().trim(),
         passwordHash,
         orgId: finalOrgId,
-        role: "super_admin", // use lowercase for consistency with backend checks
+        roleId: superAdminRole?.id || null,
         phone: phone || null,
         hubspotUtk: hubspotUtk || null,
         status: "active",
@@ -337,12 +355,21 @@ module.exports.registerRole = async (request, reply) => {
 
   try {
     // 1. Verify that the authenticated user is a Super Admin
-    const currentUserRole = request.user?.role || "";
+    let currentUserRole = request.user?.role || "";
+    if (request.user?.id) {
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true },
+      });
+      if (liveUser && liveUser.roleRelation && liveUser.roleRelation.name) {
+        currentUserRole = liveUser.roleRelation.name;
+      } else if (liveUser && liveUser.role) {
+        currentUserRole = liveUser.role;
+      }
+    }
+    const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
     
-    if (
-      currentUserRole.toLowerCase() !== "super_admin" &&
-      currentUserRole.toLowerCase() !== "superadmin"
-    ) {
+    if (normalizedRole !== "superadmin") {
       return reply.status(403).send({
         success: false,
         error: "Forbidden",
@@ -423,12 +450,12 @@ module.exports.registerRole = async (request, reply) => {
       data: {
         email: normalizedEmail,
         roleId: roleId,
-        role: roleObj.name,
         orgId: finalOrgId,
         status: "inactive",
         mfaEnabled: true, // Default to true as per existing registration logic
       },
     });
+    user.role = roleObj.name;
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
@@ -612,7 +639,6 @@ module.exports.getMe = async (request, reply) => {
         email: true,
         name: true,
         orgId: true,
-        role: true,
         roleId: true,
         status: true,
         emailVerified: true,
