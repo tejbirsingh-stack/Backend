@@ -2,7 +2,7 @@ const sgMail = require("@sendgrid/mail");
 
 class EmailService {
   constructor() {
-    const apiKey = process.env.SENDGRID_API_KEY;
+    const apiKey = this.apiKey;
     if (apiKey) {
       sgMail.setApiKey(apiKey);
     } else {
@@ -12,17 +12,17 @@ class EmailService {
 
   get apiKey() {
     const raw = process.env.SENDGRID_API_KEY;
-    return raw ? raw.replace(/^["']|["']$/g, "") : null;
+    return raw ? raw.replace(/^["']|["']$/g, "").trim() : null;
   }
 
   get fromEmail() {
     const raw = process.env.SMTP_FROM_EMAIL || process.env.EMAIL_FROM || "noreply@noah-dev.local";
-    return raw.replace(/^["']|["']$/g, "");
+    return raw.replace(/^["']|["']$/g, "").trim();
   }
 
   get fromName() {
     const raw = process.env.SMTP_FROM_NAME || "Noah Platform";
-    return raw.replace(/^["']|["']$/g, "");
+    return raw.replace(/^["']|["']$/g, "").trim();
   }
 
   /**
@@ -42,7 +42,7 @@ class EmailService {
     };
 
     if (!apiKey) {
-      console.log("✉️ [Email Service (Mock)]");
+      console.log("✉️ [Email Service (Mock) - No API Key Found]");
       console.log(`To: ${to}`);
       console.log(`Subject: ${subject}`);
       console.log(`Body: ${text}`);
@@ -51,15 +51,29 @@ class EmailService {
 
     sgMail.setApiKey(apiKey);
 
+    console.log(`\n================= ✉️ SENDGRID EMAIL DEBUG =================`);
+    console.log(`Sending To     : ${to}`);
+    console.log(`Sending From   : "${this.fromName}" <${this.fromEmail}>`);
+    console.log(`Subject        : ${subject}`);
+    console.log(`API Key Prefix : ${apiKey.substring(0, 10)}... (${apiKey.length} characters)`);
+    console.log(`===========================================================\n`);
+
     try {
-      await sgMail.send(msg);
-      console.log(`✉️ Email successfully sent via SendGrid to ${to}`);
+      const [response] = await sgMail.send(msg);
+      console.log(`✅ SendGrid Response Status : ${response.statusCode} (${response.statusCode === 202 ? "Accepted by SendGrid" : "OK"})`);
+      console.log(`✅ SendGrid Message ID      : ${response.headers["x-message-id"] || "N/A"}`);
+      console.log(`✉️ Email successfully sent via SendGrid to ${to}\n`);
       return true;
     } catch (error) {
-      console.error("❌ SendGrid email sending failed:", error);
-      if (error.response) {
-        console.error("SendGrid API Response:", error.response.body);
+      console.error(`\n❌ ================== SENDGRID ERROR ================== ❌`);
+      console.error(`Error Message : ${error.message || error}`);
+      if (error.response && error.response.body) {
+        console.error(`HTTP Status   : ${error.code || error.response.statusCode}`);
+        console.error(`Error Details :`, JSON.stringify(error.response.body, null, 2));
+      } else {
+        console.error(`Full Error    :`, error);
       }
+      console.error(`❌ ==================================================== ❌\n`);
       return false;
     }
   }

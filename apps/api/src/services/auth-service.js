@@ -6,7 +6,9 @@ const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
 const dns = require("dns").promises;
 
-const prisma = new PrismaClient();
+const globalForPrisma = globalThis;
+const prisma = globalForPrisma.prisma || new PrismaClient();
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
 const FREE_EMAIL_DOMAINS = new Set([
   'gmail.com', 'yahoo.com', 'yahoo.co.uk', 'yahoo.co.in', 'hotmail.com',

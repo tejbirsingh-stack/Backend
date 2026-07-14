@@ -16,7 +16,9 @@ const redisConnection = new Redis({
   maxRetriesPerRequest: null, // Required by BullMQ
 });
 
-const prisma = new PrismaClient();
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const prisma = globalForPrisma.prisma || new PrismaClient();
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,
