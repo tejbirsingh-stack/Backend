@@ -946,6 +946,16 @@ module.exports.googleLogin = async (request, reply) => {
     // Normalize email
     const normalizedEmail = email.toLowerCase().trim();
 
+     // Validate business email domain (B2B check: Layer 1 Free domain check & Layer 2 DNS MX verification)
+    const emailValidation = await authService.validateBusinessEmail(normalizedEmail);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: emailValidation.message,
+      });
+    }
+
     // b. Extract user info from verified token
     let user = await authService.findUserByEmail(normalizedEmail);
     
@@ -1126,6 +1136,17 @@ module.exports.microsoftLogin = async (request, reply) => {
 
     // 3. Find User or create new User 
     const authService = require("../services/auth-service");
+
+     // Validate business email domain (B2B check: Layer 1 Free domain check & Layer 2 DNS MX verification)
+    const emailValidation = await authService.validateBusinessEmail(email);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: emailValidation.message,
+      });
+    }
+
     let user = await authService.findUserByEmail(email);
     
     if (!user){
