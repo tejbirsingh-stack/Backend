@@ -91,7 +91,8 @@ const fastify = Fastify({
 });
 
 // Initialize database connection
-const prisma = new PrismaClient({
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const prisma = globalForPrisma.prisma || new PrismaClient({
   log: ['query', 'info', 'warn', 'error'],
   datasources: {
     db: {
@@ -99,6 +100,7 @@ const prisma = new PrismaClient({
     }
   }
 });
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
 // Initialize Redis connection with Sentinel support
 // const redis = new Redis({
