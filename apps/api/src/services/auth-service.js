@@ -120,7 +120,7 @@ class AuthService {
 
   // Find a user by email
   async findUserByEmail(email) {
-    return await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { email },
       select: {
         id: true,
@@ -129,6 +129,7 @@ class AuthService {
         passwordHash: true,
         orgId: true,
         role: true,
+        roleId: true,
         mfaSecret: true,
         mfaEnabled: true,
         status: true,
@@ -139,14 +140,24 @@ class AuthService {
             name: true,
             slug: true
           }
+        },
+        roleRelation: {
+          select: {
+            id: true,
+            name: true
+          }
         }
       },
     });
+    if (user && user.roleRelation && user.roleRelation.name) {
+      user.role = user.roleRelation.name;
+    }
+    return user;
   }
 
   // Find a user by ID
   async findUserById(id) {
-    return await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { id },
       select: {
         id: true,
@@ -154,10 +165,21 @@ class AuthService {
         name: true,
         orgId: true,
         role: true,
+        roleId: true,
         status: true,
         emailVerified: true,
+        roleRelation: {
+          select: {
+            id: true,
+            name: true
+          }
+        }
       },
     });
+    if (user && user.roleRelation && user.roleRelation.name) {
+      user.role = user.roleRelation.name;
+    }
+    return user;
   }
 
   // Create a new session for a user
@@ -243,6 +265,7 @@ class AuthService {
             name: true,
             orgId: true,
             role: true,
+            roleId: true,
             status: true,
             emailVerified: true,
             organization: {
@@ -251,6 +274,12 @@ class AuthService {
                 name: true,
                 slug: true
               }
+            },
+            roleRelation: {
+              select: {
+                id: true,
+                name: true
+              }
             }
           },
         },
@@ -258,6 +287,10 @@ class AuthService {
     });
 
     if (!session) return null;
+
+    if (session.user && session.user.roleRelation && session.user.roleRelation.name) {
+      session.user.role = session.user.roleRelation.name;
+    }
 
     // Update last active timestamp
     await prisma.userSession.update({

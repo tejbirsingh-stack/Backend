@@ -42,7 +42,6 @@ model User {
   passwordHash String?  @db.VarChar(255) // Added for direct password auth
   phone       String?   @db.VarChar(50) // Store User Phone Number
   hubspotUtk  String?   @db.VarChar(255) // Store Hubspot Cookie
-  role        String    @db.VarChar(50)
   roleId      String?   @db.Uuid
   roleRelation Role?    @relation(fields: [roleId], references: [id], onDelete: SetNull)
   preferences Json     @default("{}") @db.JsonB

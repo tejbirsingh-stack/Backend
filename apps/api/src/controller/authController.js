@@ -1,4 +1,3 @@
-import { request } from "http";
 
 const authService = require("../services/auth-service");
 const { OAuth2Client } = require('google-auth-library');
@@ -595,12 +594,85 @@ module.exports.disableMfa = async (request, reply) =>{
       }
 };
 
-// 7. Get Me Currenlt User Info
-module.exports.getMe = async (request, reply) =>{
+// 7. Get Me Currently User Info (Dynamic Profile Fetch with Role Relation)
+module.exports.getMe = async (request, reply) => {
+  try {
+    if (!request.user || !request.user.id) {
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
+    }
+
+    const user = await request.server.prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        orgId: true,
+        role: true,
+        roleId: true,
+        status: true,
+        emailVerified: true,
+        phone: true,
+        jobTitle: true,
+        mfaEnabled: true,
+        lastLoginAt: true,
+        lastActiveAt: true,
+        createdAt: true,
+        updatedAt: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+        roleRelation: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: "Not Found",
+        message: "User not found",
+      });
+    }
+
+    // Dynamically set user's role based on the Role table relation (by roleId)
+    if (user.roleRelation && user.roleRelation.name) {
+      user.role = user.roleRelation.name;
+    } else if (user.roleId) {
+      const roleObj = await request.server.prisma.role.findUnique({
+        where: { id: user.roleId },
+        select: { id: true, name: true },
+      });
+      if (roleObj && roleObj.name) {
+        user.role = roleObj.name;
+        user.roleRelation = roleObj;
+      }
+    }
+
     return {
       success: true,
-      user: request.user,
+      user: user,
     };
+  } catch (error) {
+    console.error("Get me error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to fetch current user profile",
+    });
+  }
 };
 
 // 8. Forgot Password Handler
