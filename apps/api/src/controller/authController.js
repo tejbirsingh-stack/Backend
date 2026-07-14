@@ -308,7 +308,7 @@ module.exports.register = async (request, reply) => {
     // Generate email verification token and send verification email
     try {
       const verificationToken = await authService.createEmailVerificationToken(user.id);
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      const frontendUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
       const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
       const emailService = request.server.emailService || require("../services/email-service");
       await emailService.sendEmailVerification(user.email, user.name || "User", verificationUrl);
@@ -459,7 +459,7 @@ module.exports.registerRole = async (request, reply) => {
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
-    const frontendUrl = process.env.FRONTEND_URL || "https://qa.noahcloud.ai";
+    const frontendUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
     const setupUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     // 8. Send Registration & Password Setup Email to the User
@@ -738,8 +738,8 @@ module.exports.forgotPassword = async (request, reply) => {
       // Generate token
       const resetToken = await authService.createPasswordResetToken(user.id);
 
-      // Send email with reset link
-      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+      const frontendUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
+      const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
       // Use the email service to send the email
       // This is a placeholder - you'll need to implement email sending
