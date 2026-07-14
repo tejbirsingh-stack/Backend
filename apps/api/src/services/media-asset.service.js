@@ -4,7 +4,7 @@ const {
 
 class MediaAssetService {
   constructor() {
-    this.prisma = new PrismaClient();
+    this.prisma = globalThis.prisma || new PrismaClient();
   }
 
   // Get all media assets with filtering and sorting

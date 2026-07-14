@@ -194,4 +194,4 @@ export class MediaService {
 }
 
 // Export singleton instance
-export const mediaService = new MediaService(new PrismaClient());
+export const mediaService = new MediaService((globalThis as any).prisma || new PrismaClient());
