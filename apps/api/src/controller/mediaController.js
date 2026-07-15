@@ -389,7 +389,7 @@ module.exports.searchMediaAssets = async (request, reply) => {
           size: fileSize,
           uploadDate: asset.createdAt.toISOString(),
           url: fileUrl,
-          thumbnail: normalizedType === "image" ? fileUrl : (proxyFile ? `/api/media/${encodeURIComponent(proxyFile.filePath)}_thumb1.jpg/stream` : null),
+          thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
           tags: asset.aiTags || [],
           metadata: asset.metadata || {},
           customMetadata: {
@@ -432,10 +432,80 @@ module.exports.fileStreamPreview = async (request, reply) => {
     }
 };
 
+// 4b. Stream thumbnail image directly by asset ID
+module.exports.getThumbnail = async (request, reply) => {
+  try {
+    const { id } = request.params;
+    
+    // Fast path for non-UUIDs (e.g. if an old client sends a file path)
+    if (!id || !id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      return reply.code(404).send({ error: "Invalid Asset ID" });
+    }
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id },
+      include: { files: true }
+    });
+    
+    if (!asset) {
+      return reply.code(404).send({ error: "Asset not found" });
+    }
+    
+    let thumbKey = null;
+    if (asset.type === 'image') {
+      const original = asset.files.find(f => f.fileClass === 'original');
+      thumbKey = original?.filePath;
+    } else {
+      const proxy = asset.files.find(f => f.fileClass === 'proxy');
+      if (proxy) thumbKey = `${proxy.filePath}_thumb1.jpg`;
+    }
+    
+    if (!thumbKey) {
+      return reply.code(404).send({ error: "Thumbnail not found" });
+    }
+    
+    const stream = await b2Storage.downloadFile(thumbKey);
+    reply.header("Content-Type", "image/jpeg");
+    return reply.send(stream);
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: "Failed to stream thumbnail",
+      message: error.message,
+    });
+  }
+};
+
 //5. Download file (browser saves to disk)
 module.exports.downloadFile = async (request, reply) => {
     try {
       const { filename } = request.params;
+      const { raw } = request.query;
+      
+      let b2Key = null;
+
+      if (filename && filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        // Look up the Asset and get its file (proxy or original depending on raw flag)
+        const asset = await request.server.prisma.asset.findUnique({
+          where: { id: filename },
+          include: { files: true }
+        });
+        if (asset && asset.files.length > 0) {
+          const original = asset.files.find(f => f.fileClass === 'original');
+          const proxy = asset.files.find(f => f.fileClass === 'proxy');
+          
+          if (raw === 'true') {
+            b2Key = original ? original.filePath : null;
+          } else {
+            b2Key = proxy ? proxy.filePath : original?.filePath;
+          }
+        }
+      }
+
+      if (b2Key) {
+        return await handleMediaRedirectOrServe(request, reply, b2Key, true);
+      }
+      
       return await handleMediaRedirectOrServe(request, reply, filename, true);
     } catch (error) {
       return reply.code(500).send({

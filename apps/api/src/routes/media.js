@@ -216,7 +216,8 @@ const {
   getUploadStatus,
   completeResumableUpload,
   abortResumableUpload,
-  handleCoconutWebhook
+  handleCoconutWebhook,
+  getThumbnail
   // checkDuplicateMediaFile
 } = require('../controller');
 
@@ -238,6 +239,9 @@ module.exports = function (fastify, opts, done) {
 
   //4. Stream file for preview/playback (video player uses this URL)
   fastify.get("/:filename/stream",fileStreamPreview);
+
+  // 4b. Stream thumbnail image directly by asset ID
+  fastify.get("/:id/thumbnail", getThumbnail);
 
   //5. Download file (browser saves to disk)
   fastify.get("/:filename/download", downloadFile);
