@@ -67,7 +67,7 @@ const processCompressionJob = async (job: Job) => {
     const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
     // Pass the webhook URL so Coconut tells us when it's done
-    const webhookHost = process.env.WEBHOOK_HOST || 'https://562546aa1bd524.lhr.life';
+    const webhookHost = process.env.WEBHOOK_HOST || 'https://qa.noahcloud.ai';
     const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?newAssetId=${assetId}&compressedKey=${encodeURIComponent(compressedKey)}`;
 
     // Send API request to Coconut v2 using standard fetch to avoid SDK silent errors
