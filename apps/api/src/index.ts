@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './worker.js';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
