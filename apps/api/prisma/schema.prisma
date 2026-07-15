@@ -29,7 +29,33 @@ model Organization {
   shareLinks   ShareLink[]
   annotations  Annotation[]
 
+  workspaces  Workspace[]
+
   @@map("organizations")
+}
+
+model Workspace {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  organizationId String         @db.Uuid
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  name           String         @db.VarChar(255)
+  description    String?        @db.Text
+  color          String?        @db.VarChar(255)
+
+  folders     Folder[]
+
+  createdAt      DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
+  deletedAt      DateTime?      @db.Timestamptz(6)
+
+  @@index([organizationId])
+  @@map("workspaces")
+}
+enum MediaAssetOwnerType {
+  WORKSPACE
+  FOLDER
 }
 
 model User {
@@ -110,6 +136,28 @@ model UserSession {
   @@map("user_sessions")
 }
 
+model Folder {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+
+  workspaceId String   @db.Uuid
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Self relation
+  parentId    String?  @db.Uuid
+  parent      Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id])
+  children    Folder[] @relation("FolderHierarchy")
+
+
+  name        String
+  description String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@map("folders")
+}
+
 model MediaAsset {
   id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId             String     @db.Uuid
@@ -117,6 +165,9 @@ model MediaAsset {
   parentId          String?    @db.Uuid // For versions
   parentAsset       MediaAsset? @relation("MediaAssetVersions", fields: [parentId], references: [id])
   childAssets       MediaAsset[] @relation("MediaAssetVersions")
+
+  ownerType         MediaAssetOwnerType   // replaces workspaceId + workspace relation
+  ownerId           String     @db.Uuid   // points to Workspace.id, Project.id, etc. depending on owner
 
   fileName          String     @db.VarChar(500)
   filePath          String     @db.VarChar(1000) // Path in B2/S3

@@ -319,6 +319,7 @@ async function setupServer() {
     fastify.register(require('./routes/realtime'), { prefix: '/ws' });    // WebSocket routes for real-time video features
     fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
+    fastify.register(require('./routes/workspaces'), {prefix: '/api/workspaces'});
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });
   }

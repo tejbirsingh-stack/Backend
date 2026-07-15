@@ -23,4 +23,5 @@ module.exports = {
   ...userController,
   ...mediaController,
   ...roomController,
+  ...require('./workSpaceController')
 };
