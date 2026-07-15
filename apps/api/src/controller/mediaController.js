@@ -304,9 +304,7 @@ module.exports.getMediaAssets = async (request, reply) => {
         size: Number(originalFile?.sizeBytes || 0),
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
-        thumbnail: asset.type === 'image' 
-          ? fileUrl 
-          : proxyFile ? `/api/media/${encodeURIComponent(proxyFile.filePath)}_thumb1.jpg/stream` : null,
+        thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
         metadata: {
           duration: asset.metadata?.technicalSpecs?.durationSeconds,
           b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
@@ -553,7 +551,7 @@ module.exports.softDelete = async (request, reply) => {
           uploadDate: asset.createdAt.toISOString(),
           deletedAt: asset.deletedAt ? asset.deletedAt.toISOString() : new Date().toISOString(),
           url: fileUrl,
-          thumbnail: normalizedType === "image" ? fileUrl : (proxyFile ? `/api/media/${encodeURIComponent(proxyFile.filePath)}_thumb1.jpg/stream` : null),
+          thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
           tags: asset.aiTags || [],
           metadata: asset.metadata || {},
           compressionStatus: asset.transcodingStatus || "completed",
@@ -733,7 +731,7 @@ module.exports.getMediaFile = async (request, reply) => {
               size: fileSize,
               uploadDate: fetchedAsset.createdAt.toISOString(),
               url: fileUrl,
-              thumbnail: normalizedType === "image" ? fileUrl : (proxyFile ? `/api/media/${encodeURIComponent(proxyFile.filePath)}_thumb1.jpg/stream` : null),
+              thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
               tags: fetchedAsset.aiTags || [],
               metadata: fetchedAsset.metadata || {},
               status: fetchedAsset.status,
