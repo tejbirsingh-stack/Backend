@@ -339,6 +339,8 @@ model Asset {
   shareLinks       ShareLink[]
   analyticsEvents  AnalyticsEvent[]
   thumbnailForCollections Collection[] @relation("ThumbnailAsset")
+  videoFrameHashes VideoFrameHash[]
+
 
   @@index([orgId])
   @@index([status])
@@ -389,4 +391,16 @@ model TranscodeJob {
   @@index([assetId])
   @@index([status])
   @@map("transcode_jobs")
+}
+
+model VideoFrameHash {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId    String   @db.Uuid
+  asset      Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  frameIndex Int
+  hashValue  String   @db.VarChar(255)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([assetId])
+  @@map("video_frame_hashes")
 }

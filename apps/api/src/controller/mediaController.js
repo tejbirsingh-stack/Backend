@@ -314,6 +314,7 @@ module.exports.getMediaAssets = async (request, reply) => {
         },
         status: asset.status,
         customMetadata: {
+          ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
           originalFilePath: originalFile?.filePath,
           transcodingProgress: transcodeJob?.status === 'processing' 
             ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
@@ -393,6 +394,7 @@ module.exports.searchMediaAssets = async (request, reply) => {
           tags: asset.aiTags || [],
           metadata: asset.metadata || {},
           customMetadata: {
+            ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
             transcodingProgress: transcodeJob?.status === 'processing' 
               ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
               : null,
@@ -736,6 +738,7 @@ module.exports.getMediaFile = async (request, reply) => {
               metadata: fetchedAsset.metadata || {},
               status: fetchedAsset.status,
               customMetadata: {
+                ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
                 transcodingProgress: transcodeJob?.status === 'processing' 
                   ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
                   : null,
@@ -1302,11 +1305,6 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         where: { assetId: newAssetId, provider: "coconut" },
         data: { status: 'completed' }
       });
-      
-      await request.server.prisma.asset.update({
-        where: { id: newAssetId },
-        data: { status: 'active' }
-      });
 
       if (compressedKey) {
         // Retrieve actual proxy file size via HEAD request (microscopic bandwidth)
@@ -1325,13 +1323,151 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         });
       }
 
-      console.log(`[Webhook] Asset ${newAssetId} marked ready.`);
+      // -- DUPLICATE VERIFICATION TIER 1, 2, 3 --
+      
+      const asset = await request.server.prisma.asset.findUnique({
+        where: { id: newAssetId },
+        include: { metadata: true, files: true }
+      });
+
+      let duplicateOf = [];
+      const originalFile = asset.files.find(f => f.fileClass === 'original');
+      const durationSeconds = asset.metadata?.technicalSpecs?.durationSeconds;
+      const checksum = asset.metadata?.checksum;
+
+      // Tier 1: Exact Checksum Match
+      if (checksum && originalFile?.sizeBytes) {
+        const exactMatch = await request.server.prisma.asset.findFirst({
+          where : {
+            id: { not: newAssetId },
+            orgId: asset.orgId,
+            deletedAt: null,
+            metadata: { checksum: checksum },
+            files: { some: { fileClass: 'original', sizeBytes: originalFile.sizeBytes } }
+          }
+        });
+        if (exactMatch) duplicateOf.push(exactMatch.id);
+      }
+
+      // If not an exact match, run the visual check
+      if (duplicateOf.length === 0) {
+        // Tier 2: Metadata Filter (Find Suspects)
+        const whereClause = { 
+          id: { not: newAssetId },
+          orgId: asset.orgId,
+          deletedAt: null
+        };
+        
+        const potentialSuspects = await request.server.prisma.asset.findMany({
+          where: whereClause,
+          include: { metadata: true }
+        });
+
+        const suspectIds = potentialSuspects.filter(s => {
+          if (!durationSeconds) return true;
+          const sDuration = s.metadata?.technicalSpecs?.durationSeconds;
+          if (!sDuration) return true;
+          return Number(sDuration) >= Number(durationSeconds) - 2 && Number(sDuration) <= Number(durationSeconds) + 2;
+        }).map(s => s.id);
+
+        // Tier 3: Storyboard pHash (The Visual Math)
+        const baseKey = compressedKey || originalFile?.filePath;
+        
+        if (baseKey) {
+          // 1. Download and Hash the 5 thumbnails Coconut just created
+          for (let i = 1; i <= 5; i++) {
+            const thumbKey = `${baseKey}_thumb${i}.jpg`;
+            const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600); // 1-hour link
+            
+            if (thumbUrl) {
+              try {
+                let fetchResponse = null;
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                  const res = await fetch(thumbUrl);
+                  if (res.ok) {
+                    fetchResponse = res;
+                    break;
+                  }
+                  if (res.status === 404 && attempt < 3) {
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                  } else {
+                    throw new Error(`Failed to fetch thumbnail (Status: ${res.status})`);
+                  }
+                }
+                
+                if (!fetchResponse) throw new Error("Thumbnail not found in B2 after 3 attempts");
+
+                const arrayBuffer = await fetchResponse.arrayBuffer();
+                const buffer = Buffer.from(arrayBuffer);
+
+                const hashStr = await imageHashAsync({ data: buffer, name: 'thumb.jpg' }, 16, true);
+                
+                await request.server.prisma.videoFrameHash.create({
+                  data: {
+                    assetId: newAssetId,
+                    frameIndex: i,
+                    hashValue: hashStr
+                  }
+                });
+              } catch(e) {
+                console.error(`[Webhook] Failed to hash thumb ${i}:`, e.message);
+              }
+            }
+          }
+
+          // 2. PostgreSQL Hamming Distance Calculation
+          if (suspectIds.length > 0) {
+            const duplicateMatches = await request.server.prisma.$queryRawUnsafe(`
+              SELECT vfh."assetId", COUNT(*) as match_count
+              FROM video_frame_hashes vfh
+              JOIN video_frame_hashes new_vfh ON new_vfh."frameIndex" = vfh."frameIndex"
+              WHERE new_vfh."assetId" = $1::uuid 
+                AND vfh."assetId" = ANY($2::uuid[])
+                AND length(replace((('x' || vfh."hashValue")::bit(256) # ('x' || new_vfh."hashValue")::bit(256))::text, '0', '')) <= 15
+              GROUP BY vfh."assetId"
+              HAVING COUNT(*) >= 3
+            `, newAssetId, suspectIds);
+            
+            duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
+          }
+        }
+      }
+
+      // Determine final status and metadata
+      const newStatus = duplicateOf.length > 0 ? 'duplicate' : 'active';
+      const currentCustomProps = typeof asset.metadata?.customProperties === 'object' ? asset.metadata.customProperties : {};
+      
+      const updatedCustomProps = {
+        ...currentCustomProps,
+        duplicates: duplicateOf
+      };
+
+      await request.server.prisma.asset.update({
+        where: { id: newAssetId },
+        data: { status: newStatus }
+      });
+
+      if (asset.metadata) {
+        await request.server.prisma.assetMetadata.update({
+          where: { assetId: newAssetId },
+          data: { customProperties: updatedCustomProps }
+        });
+      } else {
+        await request.server.prisma.assetMetadata.create({
+          data: {
+            assetId: newAssetId,
+            customProperties: updatedCustomProps
+          }
+        });
+      }
+
+      console.log(`[Webhook] Asset ${newAssetId} marked ${newStatus}. Duplicates found: ${duplicateOf.length}`);
 
       // 3. Auto-Cleanup: Delete the extra temporary thumbnails from B2 to save storage, EXCEPT thumb1!
-      if (compressedKey) {
+      if (baseKey) {
         for (let i = 2; i <= 5; i++) {
           try {
-            await b2Storage.permanentlyDeleteFile(`${compressedKey}_thumb${i}.jpg`);
+            await b2Storage.deleteFile(`${baseKey}_thumb${i}.jpg`);
           } catch (delErr) {
             console.error(`[Webhook] Failed to delete thumb ${i}:`, delErr.message);
           }
@@ -1379,8 +1515,38 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
   return reply.status(200).send("OK");
 }
 
-/* Disabled Duplicate Check APIs per user request
 module.exports.checkDuplicateMediaFile = async (request, reply) => {
-  return reply.send({ isDuplicate: false });
+  try {
+    const { orgId } = request.user;
+    const { fileName, fileSize } = request.body;
+
+    if (!fileName || fileSize === undefined) {
+      return reply.code(400).send({ error: "fileName and fileSize are required" });
+    }
+
+    // Check if an active file with the exact same name and size exists
+    const existingAsset = await request.server.prisma.asset.findFirst({
+      where: {
+        orgId: orgId,
+        deletedAt: null,
+        title: fileName,
+        files: {
+          some: {
+            fileClass: "original",
+            sizeBytes: BigInt(fileSize)
+          }
+        }
+      }
+    });
+
+    if (existingAsset) {
+      return reply.send({ isDuplicate: true, message: "Duplicate video: video already exists" });
+    }
+
+    return reply.send({ isDuplicate: false });
+
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to check for duplicates" });
+  }
 };
-*/
