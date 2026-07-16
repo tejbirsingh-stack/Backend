@@ -221,7 +221,7 @@ class B2StorageService {
     }
   }
 
-  //Download a file from B2 to a local destination path *****
+  //Download a file from B2 to a local destination path, or return a stream if no path provided
   async downloadFile(key, downloadPath){
     if(!this.enabled){
       throw new Error('B2 Storage is not configured');
@@ -234,6 +234,11 @@ class B2StorageService {
       });
 
       const response = await this.s3Client.send(command);
+      
+      // If no download path provided, return the readable stream directly
+      if (!downloadPath) {
+        return response.Body;
+      }
 
       // Ensure the destination directory exists
       const dir = path.dirname(downloadPath);
