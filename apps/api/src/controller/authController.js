@@ -5,7 +5,22 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 
-// 1. Login Handler
+function formatDomainToOrgName(email, defaultName) {
+  try {
+    if (email && typeof email === "string" && email.includes("@")) {
+      const domain = email.split("@")[1];
+      if (domain && domain.includes(".")) {
+        const companyPart = domain.split(".")[0];
+        if (companyPart && companyPart.length > 0) {
+          return companyPart.charAt(0).toUpperCase() + companyPart.slice(1).toLowerCase();
+        }
+      }
+    }
+  } catch (e) {
+    // fallback if domain parsing fails
+  }
+  return defaultName || "Workspace";
+} // 1. Login Handler
 module.exports.login = async (request, reply) =>{
     const { email, password, mfaCode } = request.body;
 
@@ -209,9 +224,10 @@ module.exports.register = async (request, reply) => {
     } else {
       // Auto-generate a new Organization if orgId was not provided
       const slugBase = email.split('@')[0].replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      const derivedOrgName = formatDomainToOrgName(email, orgName || `${name}'s Workspace`);
       organization = await request.server.prisma.organization.create({
         data: {
-          name: orgName || `${name}'s Workspace`,
+          name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
           planType: "free",
         },
@@ -961,7 +977,7 @@ module.exports.googleLogin = async (request, reply) => {
     
     //c. Since app requires an `orgId` to register, auto-generate them  
     if(!user){
-      const orgName = `${name || "User"}'s Workspace`;
+      const orgName = formatDomainToOrgName(normalizedEmail, `${name || "User"}'s Workspace`);
       const orgSlug = `workspace-${crypto.randomBytes(4).toString("hex")}`;
       
       // Create Organization
@@ -972,13 +988,22 @@ module.exports.googleLogin = async (request, reply) => {
           planType: "free"
         }
       });
+      const defaultRole = await request.server.prisma.role.findFirst({
+        where: {
+          OR: [
+            { name: "Super Admin" },
+            { name: "super_admin" },
+            { name: "SuperAdmin" }
+          ]
+        }
+      });
       // Create User
       user = await request.server.prisma.user.create({
         data: {
           email: normalizedEmail,
           name: name || normalizedEmail.split('@')[0],
           orgId: organization.id,
-          role: "admin",
+          roleId: defaultRole?.id || null,
           status: "active",
           mfaEnabled: true, // Enable MFA by default for all new users
           lastActiveAt: new Date(),
@@ -1152,13 +1177,24 @@ module.exports.microsoftLogin = async (request, reply) => {
     if (!user){
       // Auto-generate a new Organization if they are a new user
       const slugBase = email.split("@")[0].replace(/[^a-z0-9]/gi, "-").toLowerCase();
+      const orgName = formatDomainToOrgName(email, `${name}'s Workspace`);
 
       const organization = await request.server.prisma.organization.create({
         data: {
-          name: `${name}'s Workspace`,
+          name: orgName,
           slug: `${slugBase}-${Date.now()}`,
           planType: "free",
         },
+      });
+
+      const defaultRole = await request.server.prisma.role.findFirst({
+        where: {
+          OR: [
+            { name: "Super Admin" },
+            { name: "super_admin" },
+            { name: "SuperAdmin" }
+          ]
+        }
       });
 
       //4. Create the new User
@@ -1168,7 +1204,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           email,
           passwordHash: "oauth-user-no-password", // Dummy password since they use Microsoft
           orgId: organization.id,
-          role: "super_admin",
+          roleId: defaultRole?.id || null,
           status: "active",
           mfaEnabled: false, // Optional: disable MFA for SSO users
         },
@@ -1285,6 +1321,124 @@ module.exports.verifyEmail = async (request, reply) => {
       success: false,
       error: "Internal Server Error",
       message: "Failed to verify email address.",
+    });
+  }
+};
+
+// Get Roles Handler
+module.exports.getRoles = async (request, reply) => {
+  try {
+    const roles = await request.server.prisma.role.findMany({
+      where: {
+        show: 1,
+      },
+      select: {
+        id: true,
+        name: true,
+      },
+      orderBy: {
+        name: "asc",
+      },
+    });
+
+    return {
+      success: true,
+      roles,
+    };
+  } catch (error) {
+    console.error("Get roles error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to fetch roles",
+      details: error.message || String(error),
+    });
+  }
+};
+
+// Verify Email Handler
+module.exports.verifyEmail = async (request, reply) => {
+  const { token } = request.body || request.query || {};
+
+  try {
+    if (!token) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "This verification link is invalid or has already been used.",
+      });
+    }
+
+    const userId = await authService.verifyEmailVerificationToken(token);
+
+    if (!userId) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "This verification link is invalid or has already been used.",
+      });
+    }
+
+    return reply.status(200).send({
+      success: true,
+      message: "Your email address has been verified successfully. You can now log in.",
+    });
+  } catch (error) {
+    console.error("Verify email error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to verify email address.",
+    });
+  }
+};
+
+// Logout Handler
+module.exports.logout = async (request, reply) => {
+  try {
+    const authHeader = request.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.replace("Bearer ", "").trim();
+      if (token && token !== "undefined" && token !== "null") {
+        await authService.revokeSession(token);
+        
+        // If the token is a JWT that wasn't stored in UserSession during jwtSign,
+        // blacklist it by storing it in UserSession marked as revoked so auth-middleware blocks it immediately.
+        if (request.server && request.server.prisma && token.split(".").length === 3) {
+          const existingSession = await request.server.prisma.userSession.findFirst({
+            where: { token },
+          });
+          if (!existingSession) {
+            const userId = request.user?.id || "unknown";
+            // Check if user actually exists before creating session row to avoid FK errors
+            const userExists = userId !== "unknown" ? await request.server.prisma.user.findUnique({ where: { id: userId } }) : null;
+            if (userExists) {
+              await request.server.prisma.userSession.create({
+                data: {
+                  userId: userId,
+                  token: token,
+                  userAgent: request.headers["user-agent"] || "Unknown",
+                  ipAddress: request.ip || "Unknown",
+                  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+                  revokedAt: new Date(),
+                  lastActiveAt: new Date(),
+                },
+              });
+            }
+          }
+        }
+      }
+    }
+
+    return reply.status(200).send({
+      success: true,
+      message: "Successfully logged out and session revoked",
+    });
+  } catch (error) {
+    console.error("Logout error:", error);
+    return reply.status(200).send({
+      success: true,
+      message: "Logged out locally",
     });
   }
 };

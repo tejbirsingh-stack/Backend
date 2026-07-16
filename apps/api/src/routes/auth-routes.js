@@ -10,6 +10,9 @@ async function routes(fastify, options) {
   //2. Register route
   fastify.post("/register", register);
 
+  //3. Logout route
+  fastify.post("/logout", { preHandler: authenticate }, logout);
+
   fastify.post("/registerrole", { preHandler: authenticate }, registerRole);
 
   fastify.get("/roles", { preHandler: authenticate }, getRoles);
@@ -36,9 +39,11 @@ async function routes(fastify, options) {
 
   //10 Google login route
   fastify.post("/loging-google", googleLogin);
+  fastify.post("/login-google", googleLogin);
 
   //11. Microsoft login route
   fastify.post("/login-microsoft", microsoftLogin);
+  fastify.post("/microsoft-login", microsoftLogin);
 
   //12. Verify email routes
   fastify.post("/verify-email", verifyEmail);
