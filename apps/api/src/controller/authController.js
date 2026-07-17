@@ -531,6 +531,7 @@ module.exports.registerRole = async (request, reply) => {
   }
 };
 
+
 // 4. Setup MFA Handler
 module.exports.setupMfa = async (request, reply) =>{
     try {

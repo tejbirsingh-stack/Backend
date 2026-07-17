@@ -47,26 +47,7 @@ declare module 'fastify' {
 
 
 
-// Configuration
-const config = {
-  LOG_LEVEL: process.env.LOG_LEVEL || 'info',
-  MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '5368709120', 10), // Default 5GB
-  DATABASE_URL: process.env.DATABASE_URL || 'postgresql://noah_user:noah_dev_password@localhost:5432/noah_dev',
-  REDIS_SENTINEL_HOST: process.env.REDIS_SENTINEL_HOST || 'localhost',
-  REDIS_SENTINEL_PORT: parseInt(process.env.REDIS_SENTINEL_PORT || '26379', 10),
-  REDIS_SENTINEL_SERVICE_NAME: process.env.REDIS_SENTINEL_SERVICE_NAME || 'noah-master',
-  REDIS_PASSWORD: process.env.REDIS_PASSWORD || 'noah_redis_password',
-  API_CORS_ORIGIN: process.env.API_CORS_ORIGIN || 'http://localhost:3001',
-  CORS_CREDENTIALS: process.env.CORS_CREDENTIALS === 'true',
-  JWT_SECRET: process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production',
-  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
-  MAX_FILES_PER_UPLOAD: parseInt(process.env.MAX_FILES_PER_UPLOAD || '100', 10),
-  RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
-  RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-  API_PORT: parseInt(process.env.API_PORT || '4000', 10),
-  API_HOST: process.env.API_HOST || 'localhost',
-  NODE_ENV: process.env.NODE_ENV || 'development'
-};
+import { config } from './config/index.js';
 
 const logger = new Logger('noah-api');
 const metrics = new MetricsCollector();

@@ -5,6 +5,20 @@ const { authenticator } = require("otplib");
 const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
 const dns = require("dns").promises;
+const { config } = require("../config/index");
+
+function getExpiryMilliseconds(expiryStr) {
+  if (!expiryStr || typeof expiryStr !== "string") return 2 * 60 * 1000;
+  const match = expiryStr.match(/^(\d+)([smhd])$/);
+  if (!match) return 2 * 60 * 1000;
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  if (unit === "s") return value * 1000;
+  if (unit === "m") return value * 60 * 1000;
+  if (unit === "h") return value * 60 * 60 * 1000;
+  if (unit === "d") return value * 24 * 60 * 60 * 1000;
+  return 2 * 60 * 1000;
+}
 
 const globalForPrisma = globalThis;
 const prisma = globalForPrisma.prisma || new PrismaClient();
@@ -27,7 +41,7 @@ const AUTH_OPTIONS = {
 
   // JWT options
   jwt: {
-    accessTokenExpiry: "15m", // 15 minutes
+    accessTokenExpiry: config ? config.JWT_EXPIRES_IN : "1d", // dynamically linked to config
     refreshTokenExpiry: "7d", // 7 days
   },
 
@@ -223,9 +237,8 @@ class AuthService {
     // Generate a random token
     const token = crypto.randomBytes(64).toString("hex");
 
-    // Calculate expiry
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days from now
+    // Calculate expiry dynamically based on centralized config
+    const expiresAt = new Date(Date.now() + getExpiryMilliseconds(AUTH_OPTIONS.jwt.accessTokenExpiry));
 
     // Create session in database
     const session = await prisma.userSession.create({
