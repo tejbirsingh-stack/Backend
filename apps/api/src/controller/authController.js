@@ -975,6 +975,24 @@ module.exports.googleLogin = async (request, reply) => {
     // b. Extract user info from verified token
     let user = await authService.findUserByEmail(normalizedEmail);
     
+    if (user && (request.body?.isSignUp || request.body?.mode === 'signup')) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "You have already registered with this email",
+      });
+    }
+
+    if (!user) {
+      if (!request.body?.isSignUp && request.body?.mode !== 'signup') {
+        return reply.status(404).send({
+          success: false,
+          error: "Not Found",
+          message: "You don't have an account. Please register first.",
+        });
+      }
+    }
+
     //c. Since app requires an `orgId` to register, auto-generate them  
     if(!user){
       const orgName = formatDomainToOrgName(normalizedEmail, `${name || "User"}'s Workspace`);
@@ -1174,6 +1192,24 @@ module.exports.microsoftLogin = async (request, reply) => {
 
     let user = await authService.findUserByEmail(email);
     
+    if (user && (request.body?.isSignUp || request.body?.mode === 'signup')) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "You have already registered with this email",
+      });
+    }
+
+    if (!user) {
+      if (!request.body?.isSignUp && request.body?.mode !== 'signup') {
+        return reply.status(404).send({
+          success: false,
+          error: "Not Found",
+          message: "You don't have an account. Please register first.",
+        });
+      }
+    }
+
     if (!user){
       // Auto-generate a new Organization if they are a new user
       const slugBase = email.split("@")[0].replace(/[^a-z0-9]/gi, "-").toLowerCase();
@@ -1208,6 +1244,14 @@ module.exports.microsoftLogin = async (request, reply) => {
           status: "active",
           mfaEnabled: false, // Optional: disable MFA for SSO users
         },
+      });
+    }
+
+    if (user.status !== "active") {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Account is not active",
       });
     }
 
@@ -1395,50 +1439,8 @@ module.exports.verifyEmail = async (request, reply) => {
 
 // Logout Handler
 module.exports.logout = async (request, reply) => {
-  try {
-    const authHeader = request.headers.authorization;
-    if (authHeader && authHeader.startsWith("Bearer ")) {
-      const token = authHeader.replace("Bearer ", "").trim();
-      if (token && token !== "undefined" && token !== "null") {
-        await authService.revokeSession(token);
-        
-        // If the token is a JWT that wasn't stored in UserSession during jwtSign,
-        // blacklist it by storing it in UserSession marked as revoked so auth-middleware blocks it immediately.
-        if (request.server && request.server.prisma && token.split(".").length === 3) {
-          const existingSession = await request.server.prisma.userSession.findFirst({
-            where: { token },
-          });
-          if (!existingSession) {
-            const userId = request.user?.id || "unknown";
-            // Check if user actually exists before creating session row to avoid FK errors
-            const userExists = userId !== "unknown" ? await request.server.prisma.user.findUnique({ where: { id: userId } }) : null;
-            if (userExists) {
-              await request.server.prisma.userSession.create({
-                data: {
-                  userId: userId,
-                  token: token,
-                  userAgent: request.headers["user-agent"] || "Unknown",
-                  ipAddress: request.ip || "Unknown",
-                  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-                  revokedAt: new Date(),
-                  lastActiveAt: new Date(),
-                },
-              });
-            }
-          }
-        }
-      }
-    }
-
-    return reply.status(200).send({
-      success: true,
-      message: "Successfully logged out and session revoked",
-    });
-  } catch (error) {
-    console.error("Logout error:", error);
-    return reply.status(200).send({
-      success: true,
-      message: "Logged out locally",
-    });
-  }
+  return reply.status(200).send({
+    success: true,
+    message: "Successfully logged out locally",
+  });
 };

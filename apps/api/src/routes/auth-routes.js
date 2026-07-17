@@ -11,7 +11,7 @@ async function routes(fastify, options) {
   fastify.post("/register", register);
 
   //3. Logout route
-  fastify.post("/logout", { preHandler: authenticate }, logout);
+  fastify.post("/logout", logout);
 
   fastify.post("/registerrole", { preHandler: authenticate }, registerRole);
 
