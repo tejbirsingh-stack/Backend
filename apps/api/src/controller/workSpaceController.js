@@ -96,3 +96,60 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
         });
     }
 };
+
+module.exports.createFolder = async (request, reply) => {
+    try {
+        const { id: ownerId, ownerType } = request.params; // workspace (for now) & Project later 
+        const { name, parentId } = request.body;
+        const { orgId: organizationId, id: userId } = request.user;
+
+        if (!name) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Folder name is required.'
+            });
+        }
+
+        // Validate parent folder exists (if provided)
+        if (parentId) {
+            const parentFolder = await prisma.folder.findUnique({
+                where: {
+                    id: parentId,
+                    ownerId: ownerId,
+                    ownerType: ownerType,
+                    deletedAt: null,
+                },
+            });
+
+            if (!parentFolder) {
+                return reply.code(404).send({
+                    success: false,
+                    message: 'Parent folder not found.'
+                });
+            }
+        }
+
+        const folder = await prisma.folder.create({
+            data: {
+                name,
+                parentId,
+                ownerType: 'WORKSPACE',
+                ownerId,
+            },
+        });
+
+        return reply.code(201).send({
+            success: true,
+            message: 'Folder created successfully.',
+            data: folder
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        return reply.code(500).send({
+            success: false,
+            message: 'Internal Server Error'
+        });
+    }
+};

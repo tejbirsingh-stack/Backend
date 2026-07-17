@@ -44,8 +44,6 @@ model Workspace {
   description    String?        @db.Text
   color          String?        @db.VarChar(255)
 
-  folders     Folder[]
-
   createdAt      DateTime       @default(now()) @db.Timestamptz(6)
   updatedAt      DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
   deletedAt      DateTime?      @db.Timestamptz(6)
@@ -53,6 +51,7 @@ model Workspace {
   @@index([organizationId])
   @@map("workspaces")
 }
+
 enum MediaAssetOwnerType {
   WORKSPACE
   FOLDER
@@ -139,8 +138,9 @@ model UserSession {
 model Folder {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
 
-  workspaceId String   @db.Uuid
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // Polymorphic Owner
+  ownerType   String   // WORKSPACE, PROJECT, ORGANIZATION, USER, etc.
+  ownerId     String   @db.Uuid
 
   // Self relation
   parentId    String?  @db.Uuid
@@ -154,7 +154,8 @@ model Folder {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@index([workspaceId])
+  @@index([ownerType, ownerId])
+  @@index([parentId])
   @@map("folders")
 }
 
