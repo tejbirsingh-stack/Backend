@@ -1,4 +1,4 @@
-const { getUsers, getSingleUser, createUser } = require("../controller");
+const { getUsers, getSingleUser, createUser, userAcitivites, getRoles } = require("../controller");
 const { authenticate } = require("../middleware/auth-middleware");
 
 module.exports = function (fastify, opts, done) {
@@ -10,6 +10,10 @@ module.exports = function (fastify, opts, done) {
 
   // 3. Create user
   fastify.post("/", createUser);
+
+  fastify.get('/user-activities', { preHandler: authenticate }, userAcitivites);
+
+  fastify.get('/roles', { preHandler: authenticate }, getRoles);
 
   done();
 };
