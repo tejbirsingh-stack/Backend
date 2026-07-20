@@ -464,6 +464,13 @@ module.exports.getThumbnail = async (request, reply) => {
       return reply.code(404).send({ error: "Thumbnail not found" });
     }
     
+    if (b2Storage.isEnabled()) {
+      const freshUrl = await b2Storage.getPresignedUrl(thumbKey);
+      if (freshUrl) {
+        return reply.code(307).redirect(freshUrl);
+      }
+    }
+
     const stream = await b2Storage.downloadFile(thumbKey);
     reply.header("Content-Type", "image/jpeg");
     return reply.send(stream);
