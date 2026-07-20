@@ -28,6 +28,7 @@ model Organization {
   tags         Tag[]
   shareLinks   ShareLink[]
   annotations  Annotation[]
+  auditLogs    AuditLog[]
 
   @@map("organizations")
 }
@@ -234,27 +235,6 @@ model ShareLink {
   @@map("share_links")
 }
 
-// Audit log as TimescaleDB hypertable
-// Note: create_hypertable is done via raw SQL migration script
-model AuditLog {
-  id           String    @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId        String    @db.Uuid
-  userId       String?   @db.Uuid
-  user         User?     @relation(fields: [userId], references: [id])
-  action       String    @db.VarChar(100)
-  resourceType String    @db.VarChar(50)
-  resourceId   String?   @db.Uuid
-  ipAddress    String?   @db.Inet
-  userAgent    String?
-  details      Json     @default("{}") @db.JsonB
-  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
-
-  @@id([id, createdAt]) // TimescaleDB requires composite primary key on time column
-  @@index([orgId, userId, createdAt(sort: Desc)])
-  @@index([action, createdAt(sort: Desc)])
-  @@map("audit_log")
-}
-
 // Analytics events hypertable
 // Note: create_hypertable is done via raw SQL migration script
 model AnalyticsEvent {
@@ -428,4 +408,35 @@ model VideoFrameHash {
 
   @@index([assetId])
   @@map("video_frame_hashes")
+}
+
+
+// Audit log as TimescaleDB hypertable
+// Note: create_hypertable is done via raw SQL migration script
+model AuditLog {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  activityName  String        @db.VarChar(255)
+  description   String?       @db.Text
+  activityType  String?       @db.VarChar(100)
+
+  actorType     String        @default("user") @db.VarChar(20) // 'user' | 'system' | 'cron'
+  userName      String?       @db.VarChar(255)
+  userEmail     String?       @db.VarChar(255)
+  userRole      String?       @db.VarChar(50)
+
+  error         String?       @db.Text
+
+  userId        String?       @db.Uuid
+  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  orgId         String?       @db.Uuid
+  organization  Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  createdAt     DateTime      @default(now()) @db.Timestamptz(6)
+  deletedAt     DateTime?     @db.Timestamptz(6)
+
+  @@index([orgId])
+  @@index([userId])
+  @@index([actorType])
+  @@map("audit_logs")
 }
