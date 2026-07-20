@@ -132,7 +132,7 @@ fastify.decorate('metrics', metrics);
 fastify.decorate('authService', authService);
 fastify.decorate('mediaService', mediaService);
 fastify.decorate('compressionService', compressionService);
-fastify.decorate('emailService',emailService);
+fastify.decorate('emailService', emailService);
 
 // Main setup function to avoid top-level await
 async function setupServer() {
@@ -322,6 +322,7 @@ async function setupServer() {
     fastify.register(require('./routes/realtime'), { prefix: '/ws' });    // WebSocket routes for real-time video features
     fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
+    fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });
   }
