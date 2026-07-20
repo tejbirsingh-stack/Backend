@@ -296,6 +296,10 @@ model Annotation {
   createdAt       DateTime     @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
 
+  parentId        String?      @db.Uuid
+  parent          Annotation?  @relation("AnnotationReplies", fields: [parentId], references: [id])
+  replies         Annotation[] @relation("AnnotationReplies")
+
   @@index([orgId])
   @@index([assetId])
   @@index([userId])

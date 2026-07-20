@@ -6,21 +6,37 @@ module.exports.getMediaAnnotations = async (request, reply) => {
         const annotations = await request.server.prisma.annotation.findMany({
             where: {
                 assetId: mediaId,
-                userId: userId, // user only sees their own annotations
+                orgId: request.user.orgId, // collaborators in the same org can see annotations
             },
             orderBy: {
                 createdAt: "asc",
             },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        name: true,
+                        email: true
+                    }
+                }
+            }
         });
 
         return reply.send({
             success: true,
             annotations: annotations.map((ann) => ({
                 id: ann.id,
+                parentId: ann.parentId,
                 type: ann.type,
                 data: ann.data,
                 videoTimestamp: ann.videoTimestamp ? Number(ann.videoTimestamp) : null,
                 resolved: ann.resolved,
+                userId: ann.user?.id,
+                author: ann.user ? {
+                    name: ann.user.name || 'Unknown User',
+                    avatarUrl: ann.data?.author?.avatarUrl || null,
+                    initials: (ann.user.name || '').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
+                } : null,
                 createdAt: ann.createdAt,
                 updatedAt: ann.updatedAt, 
             })),    
@@ -41,7 +57,7 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
         const { mediaId } = request.params;
         const userId = request.user.id;
         const orgId = request.user.orgId;
-        const { type, data, videoTimestamp } = request.body;
+        const { id, type, data, videoTimestamp, parentId } = request.body;
 
         if (!type) {
             return reply.code(400).send({ success: false, error: "Type is Required!" });
@@ -64,12 +80,14 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
 
         const newAnnotation = await request.server.prisma.annotation.create({
             data: {
+                id: id || undefined, 
                 orgId,
                 assetId: mediaId,
                 userId,
                 type,
                 data: data || {},
                 videoTimestamp: videoTimestamp !== undefined ? videoTimestamp : null,
+                parentId: parentId || null,
                 resolved: false,
             },
         });
@@ -95,9 +113,9 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
         const userId = request.user.id;
         const { data, videoTimestamp, resolved } = request.body;
 
-        // Ensure annotation exists and belongs to user
+        // Ensure annotation exists and belongs to the user's organization
         const existing = await request.server.prisma.annotation.findFirst({
-            where: { id, userId },
+            where: { id, orgId: request.user.orgId },
         });
 
         if (!existing) {
@@ -134,9 +152,9 @@ module.exports.deleteMediaAnnotations = async (request, reply) => {
         const { id } = request.params;
         const userId = request.user.id;
 
-        // Ensure annotation exists and belongs to user
+        // Ensure annotation exists and belongs to the user's organization
         const existing = await request.server.prisma.annotation.findFirst({
-            where: { id, userId }
+            where: { id, orgId: request.user.orgId }
         });
 
         if (!existing) {
