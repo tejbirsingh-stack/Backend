@@ -292,6 +292,36 @@ model Role {
   @@map("roles")
 }
 
+// Note: create_hypertable is done via raw SQL migration script
+model AuditLog {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  activityName  String        @db.VarChar(255)
+  description   String?       @db.Text
+  activityType  String?       @db.VarChar(100)
+
+  actorType     String        @default("user") @db.VarChar(20) // 'user' | 'system' | 'cron'
+  userName      String?       @db.VarChar(255)
+  userEmail     String?       @db.VarChar(255)
+  userRole      String?       @db.VarChar(50)
+
+  error         String?       @db.Text
+
+  userId        String?       @db.Uuid
+  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  orgId         String?       @db.Uuid
+  organization  Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+
+  createdAt     DateTime      @default(now()) @db.Timestamptz(6)
+  deletedAt     DateTime?     @db.Timestamptz(6)
+
+  @@index([orgId])
+  @@index([userId])
+  @@index([actorType])
+  @@map("audit_logs")
+}
+
+
 model Permission {
   id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   slug        String   @unique @db.VarChar(255)
@@ -408,35 +438,4 @@ model VideoFrameHash {
 
   @@index([assetId])
   @@map("video_frame_hashes")
-}
-
-
-// Audit log as TimescaleDB hypertable
-// Note: create_hypertable is done via raw SQL migration script
-model AuditLog {
-  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  activityName  String        @db.VarChar(255)
-  description   String?       @db.Text
-  activityType  String?       @db.VarChar(100)
-
-  actorType     String        @default("user") @db.VarChar(20) // 'user' | 'system' | 'cron'
-  userName      String?       @db.VarChar(255)
-  userEmail     String?       @db.VarChar(255)
-  userRole      String?       @db.VarChar(50)
-
-  error         String?       @db.Text
-
-  userId        String?       @db.Uuid
-  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-
-  orgId         String?       @db.Uuid
-  organization  Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
-
-  createdAt     DateTime      @default(now()) @db.Timestamptz(6)
-  deletedAt     DateTime?     @db.Timestamptz(6)
-
-  @@index([orgId])
-  @@index([userId])
-  @@index([actorType])
-  @@map("audit_logs")
 }
