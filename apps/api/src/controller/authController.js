@@ -677,6 +677,15 @@ module.exports.getMe = async (request, reply) => {
           select: {
             id: true,
             name: true,
+            permissions: {
+              select: {
+                permission: {
+                  select: {
+                    slug: true
+                  }
+                }
+              }
+            }
           },
         },
       },
@@ -693,15 +702,35 @@ module.exports.getMe = async (request, reply) => {
     // Dynamically set user's role based on the Role table relation (by roleId)
     if (user.roleRelation && user.roleRelation.name) {
       user.role = user.roleRelation.name;
+      if (user.roleRelation.permissions) {
+        user.permissions = user.roleRelation.permissions.map(p => p.permission.slug);
+      } else {
+        user.permissions = [];
+      }
     } else if (user.roleId) {
       const roleObj = await request.server.prisma.role.findUnique({
         where: { id: user.roleId },
-        select: { id: true, name: true },
+        select: { 
+          id: true, 
+          name: true,
+          permissions: {
+            select: {
+              permission: {
+                select: { slug: true }
+              }
+            }
+          }
+        },
       });
       if (roleObj && roleObj.name) {
         user.role = roleObj.name;
         user.roleRelation = roleObj;
+        user.permissions = roleObj.permissions ? roleObj.permissions.map(p => p.permission.slug) : [];
+      } else {
+        user.permissions = [];
       }
+    } else {
+      user.permissions = [];
     }
 
     return {

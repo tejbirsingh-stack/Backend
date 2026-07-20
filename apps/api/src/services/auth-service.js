@@ -21,7 +21,12 @@ function getExpiryMilliseconds(expiryStr) {
 }
 
 const globalForPrisma = globalThis;
-const prisma = globalForPrisma.prisma || new PrismaClient();
+// Force clear the global instance to load the newly generated client
+if (globalForPrisma.prisma) {
+  try { globalForPrisma.prisma.$disconnect(); } catch (e) {}
+  delete globalForPrisma.prisma;
+}
+const prisma = new PrismaClient();
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
 const FREE_EMAIL_DOMAINS = new Set([
@@ -160,7 +165,16 @@ class AuthService {
         roleRelation: {
           select: {
             id: true,
-            name: true
+            name: true,
+            permissions: {
+              select: {
+                permission: {
+                  select: {
+                    slug: true
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -186,7 +200,16 @@ class AuthService {
         roleRelation: {
           select: {
             id: true,
-            name: true
+            name: true,
+            permissions: {
+              select: {
+                permission: {
+                  select: {
+                    slug: true
+                  }
+                }
+              }
+            }
           }
         }
       },
