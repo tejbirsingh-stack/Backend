@@ -1,4 +1,5 @@
 // Get Annotations Media 
+const emailService = require('../services/email-service');
 module.exports.getMediaAnnotations = async (request, reply) => {
     try {
         const { mediaId } = request.params;
@@ -91,6 +92,47 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
             },
         });
 
+        // --- SENDGRID EMAIL NOTIFICATIONS ---
+        // Fire asynchronously to avoid blocking the response
+        if (data && data.text && data.text.trim().length > 0) {
+            (async () => {
+                try {
+                    // Fetch commenter and video details
+                    const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+                    const video = await request.server.prisma.mediaAsset.findUnique({ where: { id: mediaId }, select: { name: true } });
+                    
+                    if (!video) return;
+
+                    const commenterName = commenter?.name || 'A team member';
+                    const videoName = video.name || 'a video';
+                    const commentText = data.text;
+                    const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${mediaId}`;
+
+                    // Fetch all users in the same organization
+                    const orgUsers = await request.server.prisma.user.findMany({ 
+                        where: { orgId: orgId },
+                        select: { id: true, name: true, email: true }
+                    });
+
+                    // Email everyone except the person who wrote the comment
+                    for (const u of orgUsers) {
+                        if (u.id !== userId && u.email) {
+                            await emailService.sendNewAnnotationEmail(
+                                u.email,
+                                u.name || 'User',
+                                commenterName,
+                                videoName,
+                                commentText,
+                                videoUrl
+                            );
+                        }
+                    }
+                } catch (err) {
+                    request.log.error('Failed to send SendGrid annotation notifications:', err);
+                }
+            })();
+        }
+
         return reply.code(201).send({
             success: true,
             annotations: newAnnotation,
@@ -131,6 +173,43 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
             data: updateData,
         });
 
+        // --- SENDGRID EMAIL NOTIFICATIONS (For Comments added to existing shapes) ---
+        if (data && data.text && data.text.trim().length > 0 && data.text !== (existing.data?.text || '')) {
+            (async () => {
+                try {
+                    const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
+                    const video = await request.server.prisma.mediaAsset.findUnique({ where: { id: existing.assetId }, select: { name: true } });
+                    
+                    if (!video) return;
+
+                    const commenterName = commenter?.name || 'A team member';
+                    const videoName = video.name || 'a video';
+                    const commentText = data.text;
+                    const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${existing.assetId}`;
+
+                    const orgUsers = await request.server.prisma.user.findMany({ 
+                        where: { orgId: request.user.orgId },
+                        select: { id: true, name: true, email: true }
+                    });
+
+                    for (const u of orgUsers) {
+                        if (u.id !== userId && u.email) {
+                            await emailService.sendNewAnnotationEmail(
+                                u.email,
+                                u.name || 'User',
+                                commenterName,
+                                videoName,
+                                commentText,
+                                videoUrl
+                            );
+                        }
+                    }
+                } catch (err) {
+                    request.log.error('Failed to send SendGrid annotation notifications on update:', err);
+                }
+            })();
+        }
+
         return reply.send({
             success: true,
             annotations: update,
@@ -158,6 +237,10 @@ module.exports.deleteMediaAnnotations = async (request, reply) => {
 
         if (!existing) {
             return reply.code(404).send({ success: false, error: "Annotation Not Found!" });
+        }
+
+        if (existing.userId !== userId) {
+            return reply.code(403).send({ success: false, error: "Forbidden: You can only delete your own annotations." });
         }
 
         await request.server.prisma.annotation.delete({

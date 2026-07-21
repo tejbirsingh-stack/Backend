@@ -139,6 +139,28 @@ class EmailService {
     `;
     return this.sendEmail({ to, subject, text, html });
   }
+
+  // Send New Annotation/Comment Notification
+  async sendNewAnnotationEmail(to, name, commenterName, videoName, commentText, videoUrl) {
+    const subject = `New comment on video: ${videoName}`;
+    const text = `Hi ${name},\n\n${commenterName} just left a new comment on the video "${videoName}":\n\n"${commentText}"\n\nView the video here: ${videoUrl}\n\nThanks,\nNoah Platform`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #4f46e5; text-align: center;">New Comment on ${videoName}</h2>
+        <p>Hi ${name},</p>
+        <p><strong>${commenterName}</strong> just left a new comment on your team's video.</p>
+        <div style="background-color: #f8fafc; padding: 15px; border-left: 4px solid #4f46e5; margin: 20px 0; font-style: italic;">
+          "${commentText}"
+        </div>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${videoUrl}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">View Video</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
+        <p style="font-size: 12px; color: #64748b;">You received this email because you are a member of the organization associated with this video.</p>
+      </div>
+    `;
+    return this.sendEmail({ to, subject, text, html });
+  }
 }
 
 module.exports = new EmailService();
