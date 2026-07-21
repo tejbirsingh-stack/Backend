@@ -304,6 +304,7 @@ async function setupServer() {
     fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
     fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
+    fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });
   }

@@ -10,6 +10,7 @@ const realtimeController = require('./realtimeController');
 const userController = require('./userController');
 const roomController = require('./roomController');
 const cronController = require('./cronController');
+const notificationController = require('./notificationController');
 
 module.exports = {
   ...annotationController,
@@ -23,5 +24,6 @@ module.exports = {
   ...userController,
   ...mediaController,
   ...roomController,
-  ...cronController
+  ...cronController,
+  ...notificationController
 };

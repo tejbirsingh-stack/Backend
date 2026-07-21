@@ -1,6 +1,7 @@
 // Media Controller code
 
 const fs = require("fs");
+const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
 
 const { Queue } = require("bullmq");
@@ -528,12 +529,34 @@ module.exports.softDelete = async (request, reply) => {
     try {
       const userId = request.user.id;
 
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: userId },
+        include: { roleRelation: true }
+      });
+      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+      const userRole = rawRoleName.trim().toLowerCase();
+      
+      let whereClause = {
+        orgId: request.user.orgId,
+        status: { in: ['trash'] },
+        deletedAt: { not: null }
+      };
+
+      if (userRole === 'editor' || userRole === 'collaborator' || userRole === 'viewer') {
+        whereClause.OR = [
+          { uploadedByUserId: userId },
+          { deletedByUserId: userId }
+        ];
+      } else {
+        whereClause.OR = [
+          { uploadedByUserId: userId },
+          { deletedByUserId: userId } // Admin sees files they deleted, or they uploaded
+        ];
+      }
+
       // Fetch soft-deleted assets from PostgreSQL database
       const dbAssets = await request.server.prisma.asset.findMany({
-        where: {
-          uploadedByUserId: userId,
-          deletedAt: { not: null },
-        },
+        where: whereClause,
         include: { files: true, metadata: true, transcodeJobs: true },
         orderBy: {
           deletedAt: 'desc'
@@ -591,15 +614,20 @@ module.exports.restoreSoftDelete = async (request, reply) => {
       // 1. If it's a database UUID, restore in PostgreSQL database
       if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
         try {
-          await request.server.prisma.asset.update({
-            where: { id: filename },
-            data: { 
-            deletedAt: null,
-            status: "active"
-          }
+          const asset = await request.server.prisma.asset.findUnique({ where: { id: filename }});
+          if (asset) {
+            let updateData = {
+              deletedAt: null,
+              status: "active",
+              deletedByUserId: null
+            };
 
-          });
-          restoredFromDb = true;
+            await request.server.prisma.asset.update({
+              where: { id: filename },
+              data: updateData
+            });
+            restoredFromDb = true;
+          }
         } catch (dbErr) {
           console.warn("Could not restore asset in database:", dbErr.message);
         }
@@ -669,23 +697,34 @@ module.exports.deletePermanently = async (request, reply) => {
         }
       }
  
-      if (!deletedFromLocal && !deletedFromB2) {
-        return reply.code(404).send({
-          success: false,
-          error: "File not found on local disk or B2 storage",
-        });
-      }
+      let dbDeleted = false;
+      let assetToDelete = null;
 
-      // Also delete from database if it's a UUID
+      // First delete from database if it's a UUID
       if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
         try {
-          await request.server.prisma.asset.delete({
-            where: { id: filename }
-          });
+          assetToDelete = await request.server.prisma.asset.findUnique({ where: { id: filename }});
+          if (assetToDelete) {
+            await request.server.prisma.asset.delete({
+              where: { id: filename }
+            });
+            dbDeleted = true;
+            if (assetToDelete.deletedByUserId) {
+              await createNotification(request.server, assetToDelete.deletedByUserId, assetToDelete.orgId, 'deletion_approved', 'Permanently Deleted', `Your asset ${assetToDelete.title} has been permanently deleted.`, assetToDelete.id);
+            }
+          }
         } catch (dbErr) {
           console.warn("Could not delete asset from database during permanent delete:", dbErr.message);
         }
       }
+
+      if (!deletedFromLocal && !deletedFromB2 && !dbDeleted) {
+        return reply.code(404).send({
+          success: false,
+          error: "File not found on local disk, B2 storage, or Database",
+        });
+      }
+
 
       return reply.send({
         success: true,
@@ -983,17 +1022,54 @@ module.exports.uploadMediaFile = async (request, reply) => {
 module.exports.deleteMediaFile = async (request, reply) => {
     try {
       const { filename } = request.params;
+      const userRole = request.user?.role || 'Viewer';
       
-      // If it's a database UUID, soft-delete it in the database
+      // If it's a database UUID, handle deletion logic based on role
       if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
         try {
-          await request.server.prisma.asset.update({
+          // Find the asset first to get uploadedByUserId
+          const assetToUpdate = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+          
+          if (!assetToUpdate) {
+             return reply.code(404).send({ success: false, error: "Asset not found" });
+          }
+
+          const liveUser = await request.server.prisma.user.findUnique({
+            where: { id: request.user.id },
+            include: { roleRelation: true }
+          });
+          const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+          const userRole = rawRoleName.trim().toLowerCase();
+
+          // 1. Super Admin: Permanent Delete Directly
+          if (userRole === 'super admin' || userRole === 'superadmin') {
+            return await module.exports.deletePermanently(request, reply);
+          }
+
+          // Admin and Editor will fall through to Soft Delete
+
+          // 3. Editor: Soft Delete (goes to Trash normally)
+          const asset = await request.server.prisma.asset.update({
             where: { id: filename },
             data: { 
-              status: "softdelete",
-              deletedAt: new Date() 
+              status: "trash",
+              deletedAt: new Date(),
+              deletedByUserId: request.user.id
             }
           });
+          
+          // Notify the original uploader if someone else deleted it
+          if (asset.uploadedByUserId && asset.uploadedByUserId !== request.user.id) {
+            await createNotification(
+              request.server, 
+              asset.uploadedByUserId, 
+              asset.orgId, 
+              'deletion_alert', 
+              'File Moved to Trash', 
+              `${request.user.name} (${userRole}) moved your file '${asset.title}' to the Trash.`, 
+              asset.id
+            );
+          }
           
           return reply.send({
             success: true,
@@ -1020,7 +1096,157 @@ module.exports.deleteMediaFile = async (request, reply) => {
     }
 };
 
+//11.1 Request Permanent Delete (From Trash, user initiates or cron does)
+module.exports.requestPermanentDelete = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        const asset = await request.server.prisma.asset.update({
+          where: { id: filename },
+          data: { status: "pending_admin_review" },
+          include: { deletedBy: { include: { roleRelation: true } } }
+        });
+        const userName = asset.deletedBy?.name || request.user?.name || 'User';
+        const roleName = asset.deletedBy?.roleRelation?.name || request.user?.role || 'Unknown Role';
+        await notifyRole(request.server, asset.orgId, 'Admin', 'approval_request', 'Manual Deletion Request', `${userName} (${roleName}) requested permanent deletion for file: '${asset.title}'. Please review.`, asset.id);
+        return reply.send({ success: true, message: "Deletion requested for admin review" });
+      }
+      return reply.code(400).send({ success: false, error: "Invalid file ID" });
+    } catch (error) {
+      return reply.code(500).send({ success: false, error: error.message });
+    }
+};
 
+//11.1.1 Get Pending Deletions
+module.exports.getPendingDeletions = async (request, reply) => {
+    try {
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true }
+      });
+      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+      const userRole = rawRoleName.trim().toLowerCase();
+
+      let statusFilter = null;
+      
+      if (userRole === 'super admin' || userRole === 'superadmin') {
+        statusFilter = 'pending_super_admin';
+      } else if (userRole === 'admin') {
+        statusFilter = 'pending_admin_review';
+      } else {
+        return reply.code(403).send({ success: false, error: 'Unauthorized to view pending deletions' });
+      }
+
+      const assets = await request.server.prisma.asset.findMany({
+        where: { 
+          status: statusFilter,
+          orgId: request.user?.orgId 
+        },
+        include: {
+          deletedBy: {
+            include: { roleRelation: true }
+          }
+        },
+        orderBy: { deletedAt: 'desc' }
+      });
+
+      return reply.send({ success: true, data: assets });
+    } catch (error) {
+      return reply.code(500).send({ success: false, error: error.message });
+    }
+};
+
+//11.2 Admin Approve Delete (Moves to Super Admin Review)
+module.exports.adminApproveDelete = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true }
+      });
+      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+      const userRole = rawRoleName.trim().toLowerCase();
+
+      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        if (userRole === 'admin') {
+          const asset = await request.server.prisma.asset.update({
+            where: { id: filename },
+            data: { status: "pending_super_admin" }
+          });
+          const userName = request.user?.name || 'Admin';
+          await notifyRole(request.server, asset.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) approved deletion for file: '${asset.title}'. Final approval needed.`, asset.id);
+          return reply.send({ success: true, message: "Approved by Admin, waiting for Super Admin" });
+        } else if (userRole === 'super admin' || userRole === 'superadmin') {
+          // If a Super Admin accepts, the file is permanently deleted.
+          return await module.exports.deletePermanently(request, reply);
+        } else {
+          return reply.code(403).send({ success: false, error: "Unauthorized to approve deletion" });
+        }
+      }
+      return reply.code(400).send({ success: false, error: "Invalid file ID" });
+    } catch (error) {
+      return reply.code(500).send({ success: false, error: error.message });
+    }
+};
+
+//11.3 Reject Delete (Moves back to Trash or Active depending on role)
+module.exports.rejectDelete = async (request, reply) => {
+    try {
+      const { filename } = request.params;
+      
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true }
+      });
+      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+      const userRole = rawRoleName.trim().toLowerCase();
+
+      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        
+        let updateData = {};
+        let message = "";
+        
+        if (userRole === 'super admin' || userRole === 'superadmin') {
+          // User requested that if Super Admin rejects an Editor's file, it goes to Editor's trash, not Admin's.
+          // By setting status to 'trash', it will appear in the trash of whoever deleted it (Editor or Admin).
+          updateData = { 
+            status: "trash",
+            deletedAt: new Date()
+          };
+          message = "Deletion rejected by Super Admin, returned to Trash";
+        } else if (userRole === 'admin') {
+          // If Admin rejects, it goes back to Trash with a reset 30-day timer
+          updateData = { 
+            status: "trash",
+            deletedAt: new Date()
+          };
+          message = "Deletion rejected by Admin, returned to Trash";
+        } else {
+           return reply.code(403).send({ success: false, error: "Unauthorized to reject deletion" });
+        }
+
+        const asset = await request.server.prisma.asset.update({
+          where: { id: filename },
+          data: updateData
+        });
+        
+        if (asset.deletedByUserId) {
+          await createNotification(request.server, asset.deletedByUserId, asset.orgId, 'deletion_rejected', 'Deletion Rejected', `Your permanent deletion request for ${asset.title} was rejected.`, asset.id);
+        }
+        
+        // Also notify the original uploader if it was made active
+        if (updateData.status === 'active' && asset.uploadedByUserId && asset.uploadedByUserId !== asset.deletedByUserId) {
+          await createNotification(request.server, asset.uploadedByUserId, asset.orgId, 'deletion_rejected', 'File Restored', `Your file ${asset.title} has been restored to Active status by Super Admin.`, asset.id);
+        }
+
+        return reply.send({ success: true, message });
+      }
+      return reply.code(400).send({ success: false, error: "Invalid file ID" });
+    } catch (error) {
+      return reply.code(500).send({ success: false, error: error.message });
+    }
+};
 
 //12. Initialize a Resumable Multipart Upload Session
 module.exports.initiateResumableUpload = async (request, reply) => {

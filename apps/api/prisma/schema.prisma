@@ -29,6 +29,7 @@ model Organization {
   shareLinks   ShareLink[]
   annotations  Annotation[]
   auditLogs    AuditLog[]
+  notifications Notification[]
 
   @@map("organizations")
 }
@@ -60,6 +61,7 @@ model User {
   jobTitle    String?   @db.VarChar(255)
   annotations  Annotation[]
   uploadedAssets Asset[] @relation("UploadedBy")
+  deletedAssets  Asset[] @relation("AssetDeletedBy")
   createdCollections  Collection[] @relation("CreatedBy")
   addedToCollections  CollectionAsset[]
   addedAssetTags      AssetTag[]
@@ -67,6 +69,7 @@ model User {
   auditLogs           AuditLog[]
   analyticsEvents     AnalyticsEvent[]
   createdAssetVersions AssetVersion[]
+  notifications       Notification[]
 
   @@unique([orgId, email], name: "unique_email_per_org")
   // Sessions related to this user
@@ -353,12 +356,14 @@ model Asset {
   organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   title             String       @db.VarChar(500)
   type              String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
-  status            String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
+  status            String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash', 'pending_admin_review', 'pending_super_admin'
   aiTags            Json         @default("[]") @db.JsonB
   
   createdAt         DateTime     @default(now()) @db.Timestamptz(6)
   updatedAt         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
   deletedAt         DateTime?    @db.Timestamptz(6)
+  deletedByUserId   String?      @db.Uuid
+  deletedBy         User?        @relation("AssetDeletedBy", fields: [deletedByUserId], references: [id])
   
   files             AssetFile[]
   metadata          AssetMetadata?
@@ -438,4 +443,22 @@ model VideoFrameHash {
 
   @@index([assetId])
   @@map("video_frame_hashes")
+}
+
+model Notification {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String   @db.Uuid
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgId           String   @db.Uuid
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  title           String   @db.VarChar(255)
+  message         String   @db.Text
+  type            String   @db.VarChar(50) // e.g., 'approval_request', 'deletion_approved', 'deletion_rejected'
+  isRead          Boolean  @default(false)
+  relatedEntityId String?  @db.Uuid // Optional link to an Asset
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([userId])
+  @@index([orgId])
+  @@map("notifications")
 }

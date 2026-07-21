@@ -210,6 +210,10 @@ const {
   getMediaFile, 
   uploadMediaFile, 
   deleteMediaFile,
+  requestPermanentDelete,
+  adminApproveDelete,
+  rejectDelete,
+  getPendingDeletions,
   initiateResumableUpload,
   uploadChunk,
   getChunkUploadUrl,
@@ -263,6 +267,17 @@ module.exports = function (fastify, opts, done) {
 
   //11. Delete media asset
   fastify.delete("/:filename", { preValidation: [fastify.authenticate] }, deleteMediaFile);
+
+  //11.1 Request Permanent Delete
+  fastify.post("/:filename/request-delete", { preValidation: [fastify.authenticate] }, requestPermanentDelete);
+
+  //11.2 Admin Approve Delete
+  fastify.post("/:filename/admin-approve", { preValidation: [fastify.authenticate] }, adminApproveDelete);
+
+  //11.3 Reject Delete
+  fastify.post("/:filename/reject", { preValidation: [fastify.authenticate] }, rejectDelete);
+  
+  fastify.get("/pending-deletions", { preValidation: [fastify.authenticate] }, getPendingDeletions);
 
   //12. Initialize a Resumable Multipart Upload Session
   fastify.post("/upload/init", { preHandler: [fastify.authenticate] }, initiateResumableUpload);
