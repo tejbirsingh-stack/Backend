@@ -99,12 +99,12 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                 try {
                     // Fetch commenter and video details
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
-                    const video = await request.server.prisma.asset.findUnique({ where: { id: mediaId }, select: { name: true } });
+                    const video = await request.server.prisma.asset.findUnique({ where: { id: mediaId }, select: { title: true } });
                     
                     if (!video) return;
 
                     const commenterName = commenter?.name || 'A team member';
-                    const videoName = video.name || 'a video';
+                    const videoName = video.title || 'a video';
                     const commentText = data.text;
                     const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${mediaId}`;
 
@@ -178,12 +178,12 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
             (async () => {
                 try {
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
-                    const video = await request.server.prisma.asset.findUnique({ where: { id: existing.assetId }, select: { name: true } });
+                    const video = await request.server.prisma.asset.findUnique({ where: { id: existing.assetId }, select: { title: true } });
                     
                     if (!video) return;
 
                     const commenterName = commenter?.name || 'A team member';
-                    const videoName = video.name || 'a video';
+                    const videoName = video.title || 'a video';
                     const commentText = data.text;
                     const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${existing.assetId}`;
 
