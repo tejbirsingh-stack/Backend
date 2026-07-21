@@ -300,7 +300,7 @@ async function setupServer() {
     fastify.register(require('./routes/health-route.js'));
     fastify.register(require('./routes/media'), { prefix: '/api/media' });
     fastify.register(require('./routes/organizations'), { prefix: '/api/organizations' });
-    fastify.register(require('./routes/realtime'), { prefix: '/ws' });    // WebSocket routes for real-time video features
+    fastify.register(require('./routes/realtime'), { prefix: '/api/ws' });    // WebSocket routes for real-time video features
     fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
     fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
