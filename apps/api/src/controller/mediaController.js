@@ -1076,14 +1076,17 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     }
     const session = JSON.parse(sessionRaw);
 
-    // Read raw binary body from the request stream
-    const chunks = [];
-    const stream = request.body || request.raw;
-    for await (const chunk of stream) {
-      chunks.push(chunk);
+    let chunkBuffer;
+    if (Buffer.isBuffer(request.body)) {
+      chunkBuffer = request.body;
+    } else {
+      const chunks = [];
+      const stream = request.body || request.raw;
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      chunkBuffer = Buffer.concat(chunks);
     }
-
-    const chunkBuffer = Buffer.concat(chunks);
 
     if (chunkBuffer.length === 0) {
       return reply.status(400).send({ message: "Empty chunk payload received" });

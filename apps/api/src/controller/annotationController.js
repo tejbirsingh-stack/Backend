@@ -26,7 +26,7 @@ module.exports.getMediaAnnotations = async (request, reply) => {
             success: true,
             annotations: annotations.map((ann) => ({
                 id: ann.id,
-                parentId: ann.parentId,
+                parentId: ann.data?.parentId || null,
                 type: ann.type,
                 data: ann.data,
                 videoTimestamp: ann.videoTimestamp ? Number(ann.videoTimestamp) : null,
@@ -85,9 +85,8 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                 assetId: mediaId,
                 userId,
                 type,
-                data: data || {},
+                data: { ...(data || {}), parentId: parentId || null },
                 videoTimestamp: videoTimestamp !== undefined ? videoTimestamp : null,
-                parentId: parentId || null,
                 resolved: false,
             },
         });

@@ -35,20 +35,24 @@ async function errorToString(error) {
 }
 
 async function recordActivity(input) {
-    await prisma.auditLog.create({
-        data: {
-            activityName: input.activityName,
-            description: input.description,
-            activityType: input.activityType,  //Error or Info
-            actorType: input.actorType ?? ACTOR_TYPE.USER,
-            userId: input.userDetail?.id,
-            userName: input.userDetail?.name,
-            userEmail: input.userDetail?.email,
-            userRole: input.userDetail?.role,
-            orgId: input.userDetail?.orgId,
-            error: await errorToString(input.error),
-        },
-    });
+    try {
+        await prisma.auditLog.create({
+            data: {
+                activityName: input.activityName,
+                description: input.description,
+                activityType: input.activityType,  //Error or Info
+                actorType: input.actorType ?? ACTOR_TYPE.USER,
+                userId: input.userDetail?.id,
+                userName: input.userDetail?.name,
+                userEmail: input.userDetail?.email,
+                userRole: input.userDetail?.role,
+                orgId: input.userDetail?.orgId,
+                error: await errorToString(input.error),
+            },
+        });
+    } catch (e) {
+        console.error("Failed to record audit log:", e.message);
+    }
 }
 
 // Log successful operation
