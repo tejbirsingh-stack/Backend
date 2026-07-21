@@ -99,7 +99,7 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                 try {
                     // Fetch commenter and video details
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
-                    const video = await request.server.prisma.mediaAsset.findUnique({ where: { id: mediaId }, select: { name: true } });
+                    const video = await request.server.prisma.asset.findUnique({ where: { id: mediaId }, select: { name: true } });
                     
                     if (!video) return;
 
@@ -178,7 +178,7 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
             (async () => {
                 try {
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
-                    const video = await request.server.prisma.mediaAsset.findUnique({ where: { id: existing.assetId }, select: { name: true } });
+                    const video = await request.server.prisma.asset.findUnique({ where: { id: existing.assetId }, select: { name: true } });
                     
                     if (!video) return;
 
