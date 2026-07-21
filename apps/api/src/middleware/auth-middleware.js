@@ -19,16 +19,35 @@ async function authenticate(request, reply) {
     try {
       if (typeof request.jwtVerify === "function") {
         const decoded = await request.jwtVerify();
-        request.user = decoded;
-        // 👈 METHOD 1: Update lastActiveAt on User table asynchronously (fire-and-forget)
-        if (decoded && decoded.id && request.server && request.server.prisma) {
-          request.server.prisma.user
-            .update({
+        if (decoded && request.server && request.server.prisma) {
+          // Check if this JWT token has been blacklisted/revoked upon logout
+          const revokedCheck = await request.server.prisma.userSession.findFirst({
+            where: {
+              token: token,
+              revokedAt: { not: null },
+            },
+          });
+          if (revokedCheck) {
+            throw new Error("Token has been revoked or expired");
+          }
+
+          if (decoded.id) {
+            const dbUser = await request.server.prisma.user.findUnique({
               where: { id: decoded.id },
-              data: { lastActiveAt: new Date() },
-            })
-            .catch((err) => console.error("Error updating user lastActiveAt:", err.message));
+              select: { id: true, status: true },
+            });
+            if (!dbUser || dbUser.status !== "active") {
+              throw new Error("User account no longer exists or is inactive");
+            }
+            request.server.prisma.user
+              .update({
+                where: { id: decoded.id },
+                data: { lastActiveAt: new Date() },
+              })
+              .catch((err) => console.error("Error updating user lastActiveAt:", err.message));
+          }
         }
+        request.user = decoded;
         return;
       }
     } catch (jwtErr) {

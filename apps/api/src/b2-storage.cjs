@@ -10,7 +10,8 @@ const {
   UploadPartCommand,
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
-  PutBucketCorsCommand
+  PutBucketCorsCommand,
+  HeadObjectCommand
 } = require('@aws-sdk/client-s3');
 
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
@@ -172,7 +173,29 @@ class B2StorageService {
       
     } catch (error) {
       console.error('Error generating presigned PUT URL:', error);
-      return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Get file size from B2 using a HEAD request
+   * @param {string} key - File path in B2
+   * @returns {Promise<number>} - File size in bytes
+   */
+  async getFileSize(key) {
+    if (!this.enabled) return 0;
+    
+    try {
+      const command = new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      });
+      
+      const response = await this.s3Client.send(command);
+      return response.ContentLength || 0;
+    } catch (error) {
+      console.error(`Error fetching file size for ${key}:`, error.message);
+      return 0;
     }
   }
 
@@ -198,7 +221,7 @@ class B2StorageService {
     }
   }
 
-  //Download a file from B2 to a local destination path *****
+  //Download a file from B2 to a local destination path, or return a stream if no path provided
   async downloadFile(key, downloadPath){
     if(!this.enabled){
       throw new Error('B2 Storage is not configured');
@@ -211,6 +234,11 @@ class B2StorageService {
       });
 
       const response = await this.s3Client.send(command);
+      
+      // If no download path provided, return the readable stream directly
+      if (!downloadPath) {
+        return response.Body;
+      }
 
       // Ensure the destination directory exists
       const dir = path.dirname(downloadPath);

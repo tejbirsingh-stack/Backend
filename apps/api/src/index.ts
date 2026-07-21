@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './worker.js';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -46,26 +47,7 @@ declare module 'fastify' {
 
 
 
-// Configuration
-const config = {
-  LOG_LEVEL: process.env.LOG_LEVEL || 'info',
-  MAX_FILE_SIZE: parseInt(process.env.MAX_FILE_SIZE || '5368709120', 10), // Default 5GB
-  DATABASE_URL: process.env.DATABASE_URL || 'postgresql://noah_user:noah_dev_password@localhost:5432/noah_dev',
-  REDIS_SENTINEL_HOST: process.env.REDIS_SENTINEL_HOST || 'localhost',
-  REDIS_SENTINEL_PORT: parseInt(process.env.REDIS_SENTINEL_PORT || '26379', 10),
-  REDIS_SENTINEL_SERVICE_NAME: process.env.REDIS_SENTINEL_SERVICE_NAME || 'noah-master',
-  REDIS_PASSWORD: process.env.REDIS_PASSWORD || 'noah_redis_password',
-  API_CORS_ORIGIN: process.env.API_CORS_ORIGIN || 'http://localhost:3001',
-  CORS_CREDENTIALS: process.env.CORS_CREDENTIALS === 'true',
-  JWT_SECRET: process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production',
-  JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
-  MAX_FILES_PER_UPLOAD: parseInt(process.env.MAX_FILES_PER_UPLOAD || '100', 10),
-  RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
-  RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-  API_PORT: parseInt(process.env.API_PORT || '4000', 10),
-  API_HOST: process.env.API_HOST || 'localhost',
-  NODE_ENV: process.env.NODE_ENV || 'development'
-};
+import { config } from './config/index.js';
 
 const logger = new Logger('noah-api');
 const metrics = new MetricsCollector();
@@ -91,7 +73,8 @@ const fastify = Fastify({
 });
 
 // Initialize database connection
-const prisma = new PrismaClient({
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const prisma = globalForPrisma.prisma || new PrismaClient({
   log: ['query', 'info', 'warn', 'error'],
   datasources: {
     db: {
@@ -99,6 +82,7 @@ const prisma = new PrismaClient({
     }
   }
 });
+if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
 // Initialize Redis connection with Sentinel support
 // const redis = new Redis({
@@ -129,7 +113,7 @@ fastify.decorate('metrics', metrics);
 fastify.decorate('authService', authService);
 fastify.decorate('mediaService', mediaService);
 fastify.decorate('compressionService', compressionService);
-fastify.decorate('emailService',emailService);
+fastify.decorate('emailService', emailService);
 
 // Main setup function to avoid top-level await
 async function setupServer() {
@@ -319,7 +303,8 @@ async function setupServer() {
     fastify.register(require('./routes/realtime'), { prefix: '/ws' });    // WebSocket routes for real-time video features
     fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
-    fastify.register(require('./routes/workspaces'), {prefix: '/api/workspaces'});
+    fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
+    fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });
   }

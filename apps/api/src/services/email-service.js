@@ -2,7 +2,7 @@ const sgMail = require("@sendgrid/mail");
 
 class EmailService {
   constructor() {
-    const apiKey = process.env.SENDGRID_API_KEY;
+    const apiKey = this.apiKey;
     if (apiKey) {
       sgMail.setApiKey(apiKey);
     } else {
@@ -12,17 +12,17 @@ class EmailService {
 
   get apiKey() {
     const raw = process.env.SENDGRID_API_KEY;
-    return raw ? raw.replace(/^["']|["']$/g, "") : null;
+    return raw ? raw.replace(/^["']|["']$/g, "").trim() : null;
   }
 
   get fromEmail() {
     const raw = process.env.SMTP_FROM_EMAIL || process.env.EMAIL_FROM || "noreply@noah-dev.local";
-    return raw.replace(/^["']|["']$/g, "");
+    return raw.replace(/^["']|["']$/g, "").trim();
   }
 
   get fromName() {
     const raw = process.env.SMTP_FROM_NAME || "Noah Platform";
-    return raw.replace(/^["']|["']$/g, "");
+    return raw.replace(/^["']|["']$/g, "").trim();
   }
 
   /**
@@ -42,7 +42,7 @@ class EmailService {
     };
 
     if (!apiKey) {
-      console.log("✉️ [Email Service (Mock)]");
+      console.log("✉️ [Email Service (Mock) - No API Key Found]");
       console.log(`To: ${to}`);
       console.log(`Subject: ${subject}`);
       console.log(`Body: ${text}`);
@@ -51,20 +51,54 @@ class EmailService {
 
     sgMail.setApiKey(apiKey);
 
+    console.log(`\n================= ✉️ SENDGRID EMAIL DEBUG =================`);
+    console.log(`Sending To     : ${to}`);
+    console.log(`Sending From   : "${this.fromName}" <${this.fromEmail}>`);
+    console.log(`Subject        : ${subject}`);
+    console.log(`API Key Prefix : ${apiKey.substring(0, 10)}... (${apiKey.length} characters)`);
+    console.log(`===========================================================\n`);
+
     try {
-      await sgMail.send(msg);
-      console.log(`✉️ Email successfully sent via SendGrid to ${to}`);
+      const [response] = await sgMail.send(msg);
+      console.log(`✅ SendGrid Response Status : ${response.statusCode} (${response.statusCode === 202 ? "Accepted by SendGrid" : "OK"})`);
+      console.log(`✅ SendGrid Message ID      : ${response.headers["x-message-id"] || "N/A"}`);
+      console.log(`✉️ Email successfully sent via SendGrid to ${to}\n`);
       return true;
     } catch (error) {
-      console.error("❌ SendGrid email sending failed:", error);
-      if (error.response) {
-        console.error("SendGrid API Response:", error.response.body);
+      console.error(`\n❌ ================== SENDGRID ERROR ================== ❌`);
+      console.error(`Error Message : ${error.message || error}`);
+      if (error.response && error.response.body) {
+        console.error(`HTTP Status   : ${error.code || error.response.statusCode}`);
+        console.error(`Error Details :`, JSON.stringify(error.response.body, null, 2));
+      } else {
+        console.error(`Full Error    :`, error);
       }
+      console.error(`❌ ==================================================== ❌\n`);
       return false;
     }
   }
 
   
+  // Send email verification link
+  async sendEmailVerification(to, name, verificationUrl) {
+    const subject = "Verify Your Noah Account Email";
+    const text = `Hi ${name},\n\nYour account has been successfully registered. Please click the link below to verify your email address:\n\n${verificationUrl}\n\nThis link will expire in 24 hours.\n\nIf you did not create an account, please ignore this email.`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
+        <h2 style="color: #4f46e5; text-align: center;">Verify Your Email Address</h2>
+        <p>Hi ${name},</p>
+        <p>Your account has been successfully registered. Please click the link below to verify your email address:</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${verificationUrl}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Verify Email</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
+        <p style="font-size: 12px; color: #64748b;">This verification link will expire in 24 hours. If you did not create an account, you can safely ignore this email.</p>
+      </div>
+    `;
+
+    return this.sendEmail({ to, subject, text, html });
+  }
+
   // Send password reset template
   async sendPasswordReset(to, name, resetUrl) {
     const subject = "Reset Your Noah Password";

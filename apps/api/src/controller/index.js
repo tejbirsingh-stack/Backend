@@ -9,7 +9,7 @@ const organizationController = require('./organizationsController');
 const realtimeController = require('./realtimeController');
 const userController = require('./userController');
 const roomController = require('./roomController');
-
+const cronController = require('./cronController');
 
 module.exports = {
   ...annotationController,
@@ -23,5 +23,6 @@ module.exports = {
   ...userController,
   ...mediaController,
   ...roomController,
-  ...require('./workSpaceController')
+  ...require('./workSpaceController'),
+  ...cronController
 };

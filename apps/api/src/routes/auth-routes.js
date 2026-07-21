@@ -1,7 +1,7 @@
 // Authentication routes for login, registration, and session management
 const { authenticate } = require("../middleware/auth-middleware");
 
-const { login, register, logout, setupMfa, enableMfa, disableMfa, getMe, forgotPassword, resetPassword, googleLogin, microsoftLogin, registerRole, getRoles, getUsers } = require("../controller");
+const { login, register, logout, setupMfa, enableMfa, disableMfa, getMe, forgotPassword, resetPassword, googleLogin, microsoftLogin, registerRole, getRoles, getUsers, verifyEmail } = require("../controller");
 
 async function routes(fastify, options) {
   //1. Login route
@@ -9,6 +9,9 @@ async function routes(fastify, options) {
 
   //2. Register route
   fastify.post("/register", register);
+
+  //3. Logout route
+  fastify.post("/logout", logout);
 
   fastify.post("/registerrole", { preHandler: authenticate }, registerRole);
 
@@ -36,9 +39,15 @@ async function routes(fastify, options) {
 
   //10 Google login route
   fastify.post("/loging-google", googleLogin);
+  fastify.post("/login-google", googleLogin);
 
   //11. Microsoft login route
   fastify.post("/login-microsoft", microsoftLogin);
+  fastify.post("/microsoft-login", microsoftLogin);
+
+  //12. Verify email routes
+  fastify.post("/verify-email", verifyEmail);
+  fastify.get("/verify-email", verifyEmail);
 }
 
 module.exports = routes;
