@@ -1,29 +1,38 @@
 const prisma = require('../utils/prisma');
+const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log')
 module.exports.storeWorkplace = async (request, reply) => {
     try {
-        const userId = request.user.id;
-        const { orgId: organizationId } = await prisma.user.findUnique({
-            where: {
-                id: userId
-            }
-        });
         const { name, description, color } = request.body;
+        const { orgId } = request.user;
 
-        if (!organizationId || !name) {
+        if (!orgId || !name) {
             return reply.code(400).send({
                 success: false,
                 message: 'Organization ID and Name are required.'
             });
         }
+        const existing = await prisma.workspace.findFirst({
+            where: {
+                orgId,
+                name
+            }
+        });
+        if (existing)
+            return reply.code(409).send({
+                success: false,
+                message: "Name already exist",
+                data: null
+            });
+
         const workspace = await prisma.workspace.create({
             data: {
-                organizationId,
+                orgId,
                 name,
                 description,
                 color
             }
         });
-
+        logSuccess(ACTIVITY_NAME.WORKSPACE_CREATED, "Workspace created successfully.", request);
         return reply.code(201).send({
             success: true,
             message: 'Workspace created successfully.',
@@ -32,7 +41,7 @@ module.exports.storeWorkplace = async (request, reply) => {
 
     } catch (error) {
         console.error(error);
-
+        logError(ACTIVITY_NAME.WORKSPACE_CREATED, `Failed to create workspace, Error : ${error?.message}`, request, error);
         return reply.code(500).send({
             success: false,
             message: 'Internal Server Error'
@@ -42,9 +51,10 @@ module.exports.storeWorkplace = async (request, reply) => {
 
 module.exports.findAllWorkspaces = async (request, reply) => {
     try {
+        const { orgId } = request.user;
         const workspaces = await prisma.workspace.findMany({
             where: {
-                deletedAt: null
+                orgId
             },
             orderBy: {
                 createdAt: 'desc'
@@ -70,11 +80,35 @@ module.exports.findAllWorkspaces = async (request, reply) => {
 module.exports.findWorkspaceMedia = async (request, reply) => {
     try {
         const { id } = request.params;  //workspace Id
-        const mediaAssets = await prisma.mediaAsset.findMany({
+        const mediaAssets = await prisma.asset.findMany({
             where: {
                 ownerType: 'WORKSPACE',
                 ownerId: id,
                 deletedAt: null,
+            },
+            include: {
+                files: true,
+                metadata: true,
+            },
+            orderBy: {
+                createdAt: 'desc',
+            },
+        });
+
+        const folders = await prisma.folder.findMany({
+            where: {
+                workspaceId: id,
+                parentId: null, // Get root folders only
+            },
+            orderBy: {
+                createdAt: 'desc',
+            },
+        });
+
+        const projects = await prisma.project.findMany({
+            where: {
+                ownerType: 'WORKSPACE',
+                workspaceId: id,
             },
             orderBy: {
                 createdAt: 'desc',
@@ -83,8 +117,12 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
 
         return reply.code(200).send({
             success: true,
-            message: 'Media fetched successfully.',
-            data: mediaAssets
+            message: 'Workspace contents fetched successfully.',
+            data: {
+                media: mediaAssets,
+                folders,
+                projects
+            }
         });
 
     } catch (error) {
@@ -99,9 +137,9 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
 
 module.exports.createFolder = async (request, reply) => {
     try {
-        const { id: ownerId, ownerType } = request.params; // workspace (for now) & Project later 
+        const { workspaceId, ownerType } = request.params; // workspace (for now) & Project later 
         const { name, parentId } = request.body;
-        const { orgId: organizationId, id: userId } = request.user;
+        const { orgId, id: userId } = request.user;
 
         if (!name) {
             return reply.code(400).send({
@@ -115,9 +153,6 @@ module.exports.createFolder = async (request, reply) => {
             const parentFolder = await prisma.folder.findUnique({
                 where: {
                     id: parentId,
-                    ownerId: ownerId,
-                    ownerType: ownerType,
-                    deletedAt: null,
                 },
             });
 
@@ -133,8 +168,7 @@ module.exports.createFolder = async (request, reply) => {
             data: {
                 name,
                 parentId,
-                ownerType: 'WORKSPACE',
-                ownerId,
+                workspaceId,
             },
         });
 
@@ -147,6 +181,102 @@ module.exports.createFolder = async (request, reply) => {
     } catch (error) {
         console.error(error);
 
+        return reply.code(500).send({
+            success: false,
+            message: 'Internal Server Error'
+        });
+    }
+};
+
+module.exports.createProject = async (request, reply) => {
+    try {
+        const { workspaceId } = request.params;
+        const { name, folderId } = request.body;
+
+        if (!name) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Project name is required.'
+            });
+        }
+
+        // Determine owner type based on presence of folderId
+        const ownerType = folderId ? 'FOLDER' : 'WORKSPACE';
+        const project = await prisma.project.create({
+            data: {
+                name,
+                ownerType,
+                workspaceId, // Always capture workspaceId for easier querying later
+                folderId: folderId || null,
+            },
+        });
+
+        return reply.code(201).send({
+            success: true,
+            message: 'Project created successfully.',
+            data: project
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        return reply.code(500).send({
+            success: false,
+            message: 'Internal Server Error'
+        });
+    }
+};
+
+module.exports.findFolderData = async (request, reply) => {
+    try {
+        const { id } = request.params; // folderId
+
+        const mediaAssets = await prisma.asset.findMany({
+            where: {
+                ownerType: 'FOLDER',
+                ownerId: id,
+                deletedAt: null,
+            },
+            include: {
+                files: true,
+                metadata: true,
+            },
+            orderBy: {
+                createdAt: 'desc',
+            },
+        });
+
+        const folders = await prisma.folder.findMany({
+            where: {
+                parentId: id,
+            },
+            orderBy: {
+                createdAt: 'desc',
+            },
+        });
+
+        const projects = await prisma.project.findMany({
+            where: {
+                ownerType: 'FOLDER',
+                folderId: id,
+            },
+            orderBy: {
+                createdAt: 'desc',
+            },
+        });
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Folder contents fetched successfully.',
+            data: {
+                media: mediaAssets,
+                folders,
+                projects
+            }
+        });
+
+    } catch (error) {
+        console.error(error);
         return reply.code(500).send({
             success: false,
             message: 'Internal Server Error'

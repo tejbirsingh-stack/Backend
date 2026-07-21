@@ -1,3 +1,9 @@
+-- CreateEnum
+CREATE TYPE "public"."MediaAssetOwnerType" AS ENUM ('WORKSPACE', 'FOLDER');
+
+-- CreateEnum
+CREATE TYPE "public"."SourceableType" AS ENUM ('ASSET', 'FOLDER');
+
 -- CreateTable
 CREATE TABLE "public"."organizations" (
     "id" UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -81,6 +87,72 @@ CREATE TABLE "public"."user_sessions" (
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "user_sessions_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."workspaces" (
+    "id" TEXT NOT NULL,
+    "user_id" TEXT NOT NULL,
+    "org_id" UUID NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "workspaces_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."folders" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "workspace_id" TEXT NOT NULL,
+    "parent_folder_id" TEXT,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "folders_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."assets" (
+    "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+    "orgId" UUID NOT NULL,
+    "title" VARCHAR(500) NOT NULL,
+    "type" VARCHAR(50) NOT NULL,
+    "status" VARCHAR(50) NOT NULL DEFAULT 'active',
+    "aiTags" JSONB NOT NULL DEFAULT '[]',
+    "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "deletedAt" TIMESTAMPTZ(6),
+    "ownerType" "public"."MediaAssetOwnerType" NOT NULL,
+    "ownerId" UUID NOT NULL,
+    "uploadedByUserId" UUID,
+
+    CONSTRAINT "assets_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."projects" (
+    "id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "owner_type" "public"."MediaAssetOwnerType" NOT NULL,
+    "workspace_id" TEXT,
+    "folder_id" TEXT,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "projects_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."project_sources" (
+    "id" TEXT NOT NULL,
+    "project_id" TEXT NOT NULL,
+    "sourceable_type" "public"."SourceableType" NOT NULL,
+    "asset_id" UUID,
+    "folder_id" TEXT,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "project_sources_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -204,19 +276,42 @@ CREATE TABLE "public"."roles" (
 );
 
 -- CreateTable
-CREATE TABLE "public"."assets" (
+CREATE TABLE "public"."audit_logs" (
     "id" UUID NOT NULL DEFAULT gen_random_uuid(),
-    "orgId" UUID NOT NULL,
-    "title" VARCHAR(500) NOT NULL,
-    "type" VARCHAR(50) NOT NULL,
-    "status" VARCHAR(50) NOT NULL DEFAULT 'active',
-    "aiTags" JSONB NOT NULL DEFAULT '[]',
+    "activityName" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "activityType" VARCHAR(100),
+    "actorType" VARCHAR(20) NOT NULL DEFAULT 'user',
+    "userName" VARCHAR(255),
+    "userEmail" VARCHAR(255),
+    "userRole" VARCHAR(50),
+    "error" TEXT,
+    "userId" UUID,
+    "orgId" UUID,
     "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "deletedAt" TIMESTAMPTZ(6),
-    "uploadedByUserId" UUID,
 
-    CONSTRAINT "assets_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "audit_logs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."permissions" (
+    "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+    "slug" VARCHAR(255) NOT NULL,
+    "name" VARCHAR(255) NOT NULL,
+    "description" TEXT,
+    "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "permissions_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."role_permissions" (
+    "roleId" UUID NOT NULL,
+    "permissionId" UUID NOT NULL,
+    "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "role_permissions_pkey" PRIMARY KEY ("roleId","permissionId")
 );
 
 -- CreateTable
@@ -269,24 +364,6 @@ CREATE TABLE "public"."video_frame_hashes" (
     CONSTRAINT "video_frame_hashes_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "public"."user_activities" (
-    "id" UUID NOT NULL DEFAULT gen_random_uuid(),
-    "activityName" VARCHAR(255) NOT NULL,
-    "description" TEXT,
-    "activityType" VARCHAR(100),
-    "actorType" VARCHAR(20) NOT NULL DEFAULT 'user',
-    "userName" VARCHAR(255),
-    "userEmail" VARCHAR(255),
-    "userRole" VARCHAR(50),
-    "error" TEXT,
-    "userId" UUID,
-    "orgId" UUID,
-    "createdAt" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "user_activities_pkey" PRIMARY KEY ("id")
-);
-
 -- CreateIndex
 CREATE UNIQUE INDEX "organizations_slug_key" ON "public"."organizations"("slug");
 
@@ -316,6 +393,42 @@ CREATE INDEX "user_sessions_userId_idx" ON "public"."user_sessions"("userId");
 
 -- CreateIndex
 CREATE INDEX "user_sessions_token_idx" ON "public"."user_sessions"("token");
+
+-- CreateIndex
+CREATE INDEX "workspaces_org_id_idx" ON "public"."workspaces"("org_id");
+
+-- CreateIndex
+CREATE INDEX "folders_workspace_id_idx" ON "public"."folders"("workspace_id");
+
+-- CreateIndex
+CREATE INDEX "folders_parent_folder_id_idx" ON "public"."folders"("parent_folder_id");
+
+-- CreateIndex
+CREATE INDEX "assets_orgId_idx" ON "public"."assets"("orgId");
+
+-- CreateIndex
+CREATE INDEX "assets_status_idx" ON "public"."assets"("status");
+
+-- CreateIndex
+CREATE INDEX "assets_type_idx" ON "public"."assets"("type");
+
+-- CreateIndex
+CREATE INDEX "assets_ownerType_ownerId_idx" ON "public"."assets"("ownerType", "ownerId");
+
+-- CreateIndex
+CREATE INDEX "projects_workspace_id_idx" ON "public"."projects"("workspace_id");
+
+-- CreateIndex
+CREATE INDEX "projects_folder_id_idx" ON "public"."projects"("folder_id");
+
+-- CreateIndex
+CREATE INDEX "project_sources_project_id_idx" ON "public"."project_sources"("project_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "project_sources_project_id_asset_id_key" ON "public"."project_sources"("project_id", "asset_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "project_sources_project_id_folder_id_key" ON "public"."project_sources"("project_id", "folder_id");
 
 -- CreateIndex
 CREATE INDEX "collections_orgId_idx" ON "public"."collections"("orgId");
@@ -354,13 +467,22 @@ CREATE INDEX "annotations_type_idx" ON "public"."annotations"("type");
 CREATE UNIQUE INDEX "roles_name_key" ON "public"."roles"("name");
 
 -- CreateIndex
-CREATE INDEX "assets_orgId_idx" ON "public"."assets"("orgId");
+CREATE INDEX "audit_logs_orgId_idx" ON "public"."audit_logs"("orgId");
 
 -- CreateIndex
-CREATE INDEX "assets_status_idx" ON "public"."assets"("status");
+CREATE INDEX "audit_logs_userId_idx" ON "public"."audit_logs"("userId");
 
 -- CreateIndex
-CREATE INDEX "assets_type_idx" ON "public"."assets"("type");
+CREATE INDEX "audit_logs_actorType_idx" ON "public"."audit_logs"("actorType");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "permissions_slug_key" ON "public"."permissions"("slug");
+
+-- CreateIndex
+CREATE INDEX "role_permissions_roleId_idx" ON "public"."role_permissions"("roleId");
+
+-- CreateIndex
+CREATE INDEX "role_permissions_permissionId_idx" ON "public"."role_permissions"("permissionId");
 
 -- CreateIndex
 CREATE INDEX "asset_files_assetId_idx" ON "public"."asset_files"("assetId");
@@ -380,15 +502,6 @@ CREATE INDEX "transcode_jobs_status_idx" ON "public"."transcode_jobs"("status");
 -- CreateIndex
 CREATE INDEX "video_frame_hashes_assetId_idx" ON "public"."video_frame_hashes"("assetId");
 
--- CreateIndex
-CREATE INDEX "user_activities_orgId_idx" ON "public"."user_activities"("orgId");
-
--- CreateIndex
-CREATE INDEX "user_activities_userId_idx" ON "public"."user_activities"("userId");
-
--- CreateIndex
-CREATE INDEX "user_activities_actorType_idx" ON "public"."user_activities"("actorType");
-
 -- AddForeignKey
 ALTER TABLE "public"."users" ADD CONSTRAINT "users_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "public"."organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
@@ -403,6 +516,36 @@ ALTER TABLE "public"."email_verification_tokens" ADD CONSTRAINT "email_verificat
 
 -- AddForeignKey
 ALTER TABLE "public"."user_sessions" ADD CONSTRAINT "user_sessions_userId_fkey" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."workspaces" ADD CONSTRAINT "workspaces_org_id_fkey" FOREIGN KEY ("org_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."folders" ADD CONSTRAINT "folders_workspace_id_fkey" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."folders" ADD CONSTRAINT "folders_parent_folder_id_fkey" FOREIGN KEY ("parent_folder_id") REFERENCES "public"."folders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."assets" ADD CONSTRAINT "assets_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "public"."organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."assets" ADD CONSTRAINT "assets_uploadedByUserId_fkey" FOREIGN KEY ("uploadedByUserId") REFERENCES "public"."users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."projects" ADD CONSTRAINT "projects_workspace_id_fkey" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."projects" ADD CONSTRAINT "projects_folder_id_fkey" FOREIGN KEY ("folder_id") REFERENCES "public"."folders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."project_sources" ADD CONSTRAINT "project_sources_project_id_fkey" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."project_sources" ADD CONSTRAINT "project_sources_asset_id_fkey" FOREIGN KEY ("asset_id") REFERENCES "public"."assets"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."project_sources" ADD CONSTRAINT "project_sources_folder_id_fkey" FOREIGN KEY ("folder_id") REFERENCES "public"."folders"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "public"."collections" ADD CONSTRAINT "collections_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "public"."organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -471,10 +614,16 @@ ALTER TABLE "public"."annotations" ADD CONSTRAINT "annotations_assetId_fkey" FOR
 ALTER TABLE "public"."annotations" ADD CONSTRAINT "annotations_userId_fkey" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "public"."assets" ADD CONSTRAINT "assets_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "public"."organizations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "public"."audit_logs" ADD CONSTRAINT "audit_logs_userId_fkey" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "public"."assets" ADD CONSTRAINT "assets_uploadedByUserId_fkey" FOREIGN KEY ("uploadedByUserId") REFERENCES "public"."users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "public"."audit_logs" ADD CONSTRAINT "audit_logs_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "public"."organizations"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."role_permissions" ADD CONSTRAINT "role_permissions_roleId_fkey" FOREIGN KEY ("roleId") REFERENCES "public"."roles"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."role_permissions" ADD CONSTRAINT "role_permissions_permissionId_fkey" FOREIGN KEY ("permissionId") REFERENCES "public"."permissions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "public"."asset_files" ADD CONSTRAINT "asset_files_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "public"."assets"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -487,9 +636,3 @@ ALTER TABLE "public"."transcode_jobs" ADD CONSTRAINT "transcode_jobs_assetId_fke
 
 -- AddForeignKey
 ALTER TABLE "public"."video_frame_hashes" ADD CONSTRAINT "video_frame_hashes_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "public"."assets"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "public"."user_activities" ADD CONSTRAINT "user_activities_userId_fkey" FOREIGN KEY ("userId") REFERENCES "public"."users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "public"."user_activities" ADD CONSTRAINT "user_activities_orgId_fkey" FOREIGN KEY ("orgId") REFERENCES "public"."organizations"("id") ON DELETE SET NULL ON UPDATE CASCADE;
