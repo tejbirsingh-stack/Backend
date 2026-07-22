@@ -30,6 +30,8 @@ model Organization {
   annotations  Annotation[]
   auditLogs    AuditLog[]
 
+  workspaces  Workspace[]
+
   @@map("organizations")
 }
 
@@ -126,6 +128,141 @@ model UserSession {
   @@index([userId])
   @@index([token])
   @@map("user_sessions")
+}
+
+//Adding workspaces schema here
+model Workspace {
+  id          String  @id @default(uuid())
+  name        String
+  description String? @db.Text
+  color       String? @db.VarChar(50)
+
+  orgId        String       @map("org_id") @db.Uuid
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  folders  Folder[]
+  projects Project[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([orgId])
+  @@map("workspaces")
+}
+
+model Folder {
+  id          String  @id @default(uuid())
+  name        String
+  workspaceId String  @map("workspace_id")
+  parentId    String? @map("parent_folder_id")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent    Folder?   @relation("FolderToFolder", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]  @relation("FolderToFolder")
+
+  // Files/Projects owned directly by this folder (ownerType = "folder")
+  projects Project[]
+
+  sources ProjectSource[] @relation("FolderAsSource")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId])
+  @@index([parentId])
+  @@map("folders")
+}
+
+// ownerType tells you which relation (workspaceId or folderId) is the active one.
+enum MediaAssetOwnerType {
+  WORKSPACE
+  FOLDER 
+}
+
+model Asset {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String       @db.Uuid
+  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  title             String       @db.VarChar(500)
+  type              String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
+  status            String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
+  aiTags            Json         @default("[]") @db.JsonB
+
+  createdAt         DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?    @db.Timestamptz(6)
+
+  files             AssetFile[]
+  metadata          AssetMetadata?
+  transcodeJobs     TranscodeJob[]
+  ownerType         MediaAssetOwnerType   // WORKSPACE, FOLDER, or PROJECT
+  ownerId           String     @db.Uuid   // points to Workspace.id, Folder.id, or Project.id depending on ownerType
+  uploadedByUserId  String?      @db.Uuid
+  uploadedBy        User?        @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
+  annotations  Annotation[]
+  collectionAssets CollectionAsset[]
+  assetVersions    AssetVersion[]
+  assetTags        AssetTag[]
+  shareLinks       ShareLink[]
+  analyticsEvents  AnalyticsEvent[]
+  thumbnailForCollections Collection[] @relation("ThumbnailAsset")
+  videoFrameHashes VideoFrameHash[]
+
+  sources ProjectSource[] @relation("AssetAsSource")
+
+  @@index([orgId])
+  @@index([status])
+  @@index([type])
+  @@index([ownerType, ownerId])
+  @@map("assets")
+}
+
+model Project {
+  id        String    @id @default(uuid())
+  name      String
+  ownerType MediaAssetOwnerType @map("owner_type")
+
+  workspaceId String? @map("workspace_id") // set when ownerType = WORKSPACE
+  folderId    String? @map("folder_id")    // set when ownerType = FOLDER
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder    Folder?    @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  sources ProjectSource[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId])
+  @@index([folderId])
+  @@map("projects")
+}
+// Reference table: which files/folders a Project pulls in as a source.
+// Not related to ownership/placement above — purely "linked for AI reference".
+
+enum SourceableType {
+  ASSET
+  FOLDER
+}
+
+model ProjectSource {
+  id             String         @id @default(uuid())
+  projectId      String         @map("project_id")
+  sourceableType SourceableType @map("sourceable_type")
+
+  assetId  String? @map("asset_id")  @db.Uuid // set when sourceableType = ASSET
+  folderId String? @map("folder_id")          // set when sourceableType = FOLDER
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  asset   Asset?  @relation("AssetAsSource", fields: [assetId], references: [id], onDelete: Cascade)
+  folder  Folder? @relation("FolderAsSource", fields: [folderId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([projectId, assetId])
+  @@unique([projectId, folderId])
+  @@index([projectId])
+  @@map("project_sources")
 }
 
 
@@ -346,42 +483,6 @@ model RolePermission {
   @@map("role_permissions")
 }
 // --- NEW ENTERPRISE ASSET ARCHITECTURE ---
-
-model Asset {
-  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId             String       @db.Uuid
-  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  title             String       @db.VarChar(500)
-  type              String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
-  status            String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
-  aiTags            Json         @default("[]") @db.JsonB
-  
-  createdAt         DateTime     @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
-  deletedAt         DateTime?    @db.Timestamptz(6)
-  
-  files             AssetFile[]
-  metadata          AssetMetadata?
-  transcodeJobs     TranscodeJob[]
-
-  uploadedByUserId  String?      @db.Uuid
-  uploadedBy        User?        @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
-
-  annotations  Annotation[]
-  collectionAssets CollectionAsset[]
-  assetVersions    AssetVersion[]
-  assetTags        AssetTag[]
-  shareLinks       ShareLink[]
-  analyticsEvents  AnalyticsEvent[]
-  thumbnailForCollections Collection[] @relation("ThumbnailAsset")
-  videoFrameHashes VideoFrameHash[]
-
-
-  @@index([orgId])
-  @@index([status])
-  @@index([type])
-  @@map("assets")
-}
 
 model AssetFile {
   id                String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
