@@ -304,7 +304,7 @@ module.exports.getMediaAssets = async (request, reply) => {
         size: Number(originalFile?.sizeBytes || 0),
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
-        thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
+        thumbnail: (proxyFile || asset.type === 'image') ? `/api/media/${encodeURIComponent(asset.id)}/thumbnail` : null,
         metadata: {
           duration: asset.metadata?.technicalSpecs?.durationSeconds,
           b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
@@ -319,6 +319,7 @@ module.exports.getMediaAssets = async (request, reply) => {
             : null,
         },
         transcodingStatus: transcodeJob?.status || null,
+        uploadedByUserId: asset.uploadedByUserId,
       };
     });
 
@@ -388,7 +389,7 @@ module.exports.searchMediaAssets = async (request, reply) => {
           size: fileSize,
           uploadDate: asset.createdAt.toISOString(),
           url: fileUrl,
-          thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
+          thumbnail: (proxyFile || asset.type === 'image') ? `/api/media/${encodeURIComponent(asset.id)}/thumbnail` : null,
           tags: asset.aiTags || [],
           metadata: asset.metadata || {},
           customMetadata: {
@@ -738,7 +739,7 @@ module.exports.getMediaFile = async (request, reply) => {
               size: fileSize,
               uploadDate: fetchedAsset.createdAt.toISOString(),
               url: fileUrl,
-              thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
+              thumbnail: (proxyFile || fetchedAsset.type === 'image') ? `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail` : null,
               tags: fetchedAsset.aiTags || [],
               metadata: fetchedAsset.metadata || {},
               status: fetchedAsset.status,
@@ -750,6 +751,7 @@ module.exports.getMediaFile = async (request, reply) => {
               },
               transcodingStatus: transcodeJob?.status || "completed",
               compressionStatus: transcodeJob?.status || "completed",
+              uploadedByUserId: fetchedAsset.uploadedByUserId,
             }
           });
         }
@@ -863,6 +865,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
           const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
 
           const isVideo = part.mimetype.startsWith("video/");
+          const isAudio = part.mimetype.startsWith("audio/");
+          const shouldQueueTranscode = isVideo || isAudio;
 
           const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
           const assetType = Object.keys(typeMap).find(k => part.mimetype.startsWith(`${k}/`)) || 'document';
@@ -873,7 +877,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
               orgId: request.user.orgId,
               title: part.filename,
               type: assetType,
-              status: isVideo ? "processing" : "active",
+              status: shouldQueueTranscode ? "processing" : "active",
               uploadedByUserId: request.user.id,
               files: {
                 create: {
@@ -893,8 +897,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
             }
           });
 
-          // If it's a video, queue a compression job in Redis
-          if (isVideo) {
+          // If it's a video or audio, queue a compression job in Redis
+          if (shouldQueueTranscode) {
             try {
               // Create TranscodeJob in new architecture
               await request.server.prisma.transcodeJob.create({
@@ -905,16 +909,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
                 }
               });
 
-              // 5GB threshold for heavy queue
+              // 5GB threshold for heavy queue (videos only)
               const fiveGB = 5 * 1024 * 1024 * 1024;
-              const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+              const queueToUse = (isVideo && size >= fiveGB) ? heavyCompressionQueue : compressionQueue;
               
               await queueToUse.add("compress", {
                 assetId: newAsset.id, // For new webhook
                 key: b2Key,
                 preset: "medium", // Default to balanced H.264
               });
-              console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
+              console.log(`[Queue] Added ${isAudio ? 'audio' : 'video'} compression job for asset ${newAsset.id} to ${(isVideo && size >= fiveGB) ? 'heavy' : 'standard'} queue`);
             } catch (queueErr) {
               console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
             }
@@ -931,7 +935,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             tags: [],
             metadata: { technicalSpecs: durationSeconds ? { durationSeconds } : {} },
             // Report correct status to the frontend
-            compressionStatus: isVideo ? "queued" : "completed",
+            compressionStatus: shouldQueueTranscode ? "queued" : "completed",
             storageLocation: "b2",
           };
 
@@ -1182,6 +1186,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
     await b2Storage.completeMultipartUpload(session.key, session.uploadId, finalParts);
 
     const isVideo = session.mimeType.startsWith("video/");
+    const isAudio = session.mimeType.startsWith("audio/");
+    const shouldQueueTranscode = isVideo || isAudio;
     const cdnUrl = `/api/media/${session.key}/stream`;
 
     const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
@@ -1193,7 +1199,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
         orgId: request.user.orgId,
         title: session.fileName,
         type: assetType,
-        status: isVideo ? "processing" : "active",
+        status: shouldQueueTranscode ? "processing" : "active",
         uploadedByUserId: request.user.id,
         files: {
           create: {
@@ -1213,8 +1219,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
       }
     });
 
-    // Queue compression if it's a video
-    if (isVideo) {
+    // Queue compression if it's a video or audio
+    if (shouldQueueTranscode) {
       try {
         await request.server.prisma.transcodeJob.create({
           data: {
@@ -1225,13 +1231,13 @@ module.exports.completeResumableUpload = async (request, reply) => {
         });
 
         const fiveGB = BigInt(5 * 1024 * 1024 * 1024);
-        const queueToUse = BigInt(session.fileSize) >= fiveGB ? heavyCompressionQueue : compressionQueue;
+        const queueToUse = (isVideo && BigInt(session.fileSize) >= fiveGB) ? heavyCompressionQueue : compressionQueue;
         await queueToUse.add("compress", {
           assetId: newAsset.id,
           key: session.key,
           preset: "medium",
         });
-        console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${BigInt(session.fileSize) >= fiveGB ? 'heavy' : 'fast'} queue`);
+        console.log(`[Queue] Added ${isAudio ? 'audio' : 'video'} compression job for asset ${newAsset.id} to ${(isVideo && BigInt(session.fileSize) >= fiveGB) ? 'heavy' : 'fast'} queue`);
       } catch (queueErr) {
         console.error(`[Queue] Failed to queue job for asset ${newAsset.id}:`, queueErr.message);
       }
@@ -1250,7 +1256,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       thumbnail: null,
       tags: [],
       metadata: { technicalSpecs: session.durationSeconds ? { durationSeconds: session.durationSeconds } : {} },
-      compressionStatus: isVideo ? "queued" : "completed",
+      compressionStatus: shouldQueueTranscode ? "queued" : "completed",
       storageLocation: "b2",
     };
 
@@ -1314,6 +1320,17 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         data: { status: 'completed' }
       });
 
+      const asset = await request.server.prisma.asset.findUnique({
+        where: { id: newAssetId },
+        include: { metadata: true, files: true }
+      });
+
+      if (!asset) {
+        throw new Error(`Asset ${newAssetId} not found`);
+      }
+
+      const isAudio = asset.type === 'audio';
+
       if (compressedKey) {
         // Retrieve actual proxy file size via HEAD request (microscopic bandwidth)
         const proxySize = await b2Storage.getFileSize(compressedKey);
@@ -1322,10 +1339,10 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
           data: {
             assetId: newAssetId,
             fileClass: "proxy",
-            fileName: compressedKey.split('/').pop() || 'compressed.mp4',
+            fileName: compressedKey.split('/').pop() || (isAudio ? 'compressed.mp3' : 'compressed.mp4'),
             filePath: compressedKey,
             sizeBytes: BigInt(proxySize || 0),
-            mimeType: 'video/mp4',
+            mimeType: isAudio ? 'audio/mpeg' : 'video/mp4',
             cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
           }
         });
@@ -1333,11 +1350,6 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
 
       // -- DUPLICATE VERIFICATION TIER 1, 2, 3 --
       
-      const asset = await request.server.prisma.asset.findUnique({
-        where: { id: newAssetId },
-        include: { metadata: true, files: true }
-      });
-
       let duplicateOf = [];
       const originalFile = asset.files.find(f => f.fileClass === 'original');
       const durationSeconds = asset.metadata?.technicalSpecs?.durationSeconds;
@@ -1357,8 +1369,8 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         if (exactMatch) duplicateOf.push(exactMatch.id);
       }
 
-      // If not an exact match, run the visual check
-      if (duplicateOf.length === 0) {
+      // If not an exact match, run the visual check (only for non-audio assets)
+      if (duplicateOf.length === 0 && asset.type !== 'audio') {
         // Tier 2: Metadata Filter (Find Suspects)
         const whereClause = { 
           id: { not: newAssetId },
@@ -1471,8 +1483,8 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
 
       console.log(`[Webhook] Asset ${newAssetId} marked ${newStatus}. Duplicates found: ${duplicateOf.length}`);
 
-      // 3. Auto-Cleanup: Delete the extra temporary thumbnails from B2 to save storage, EXCEPT thumb1!
-      if (baseKey) {
+      // 3. Auto-Cleanup: Delete the extra temporary thumbnails from B2 to save storage, EXCEPT thumb1! (Only for non-audio assets)
+      if (asset.type !== 'audio' && baseKey) {
         for (let i = 2; i <= 5; i++) {
           try {
             await b2Storage.deleteFile(`${baseKey}_thumb${i}.jpg`);

@@ -7,6 +7,7 @@ import fs from 'fs';
 import os from 'os';
 // @ts-ignore
 import B2StorageService from './b2-storage.cjs';
+import { v4 as uuidv4 } from 'uuid';
 
 // 1. Initialize DB and Cache connections (reusing config)
 const redisConnection = new Redis({
@@ -49,22 +50,95 @@ const processCompressionJob = async (job: Job) => {
       throw new Error("COCONUT_API_KEY is not set in the .env file!");
     }
 
+    const asset = assetId ? await prisma.asset.findUnique({
+      where: { id: assetId },
+      include: { metadata: true }
+    }) : null;
+
+    const isAudio = asset?.type === 'audio';
+
+// Apply duration limit only for video assets (audio is exempt)
+const maxDurationStr = process.env.COCONUT_MAX_DURATION_SECONDS;
+if (!isAudio && maxDurationStr && assetId && asset) {
+      const maxDuration = parseInt(maxDurationStr, 10);
+      if (!isNaN(maxDuration)) {
+        try {
+          const technicalSpecs = asset.metadata?.technicalSpecs as any;
+          const durationSeconds = technicalSpecs?.durationSeconds;
+          if (durationSeconds && durationSeconds > maxDuration) {
+            // console.log(`[Job ${job.id}] Asset duration ${durationSeconds}s exceeds limits of ${maxDuration}s. Skipping transcoding and marking as failed.`);
+            // Compute the would‑be compressed key to clean up any stale file
+            const partsTmp = key.split('/');
+            const filenameTmp = partsTmp.pop() || '';
+            const compressedFilenameTmp = filenameTmp.startsWith('raw-') ? filenameTmp.replace('raw-', `compressed-${assetId}-${uuidv4()}-`) : `compressed-${assetId}-${uuidv4()}-${filenameTmp}`;
+            const compressedKeyTmp = partsTmp.length > 0 ? `${partsTmp.join('/')}/${compressedFilenameTmp}` : compressedFilenameTmp;
+            // Delete possible stale object
+            try { await b2Storage.deleteFile(compressedKeyTmp); } catch (e) { console.error(`[Job ${job.id}] Failed to delete stale compressed file:`, (e as any).message); }
+            await prisma.transcodeJob.updateMany({
+              where: { assetId: assetId, provider: "coconut" },
+              data: { status: 'failed' }
+            });
+            await prisma.asset.update({
+              where: { id: assetId },
+              data: { status: 'failed', compressedKey: null }
+            });
+            return;
+          }
+        } catch (dbErr: any) {
+          console.error(`[Job ${job.id}] Failed to check asset duration:`, dbErr.message);
+        }
+      }
+    }
+
     // Generate a Presigned GET URL so Coconut can read the raw file
     const sourceUrl = await b2Storage.getPresignedUrl(key, 86400); // URL valid for 24 hours
 
     // Generate compressed key by replacing 'raw-' with 'compressed-'
     const parts = key.split('/');
     const filename = parts.pop() || '';
-    const compressedFilename = filename.startsWith('raw-') ? filename.replace('raw-', 'compressed-') : `compressed-${filename}`;
-    const compressedKey = parts.length > 0 ? `${parts.join('/')}/${compressedFilename}` : compressedFilename;
+    // Add a UUID to guarantee a unique compressed object per upload
+    const compressedFilename = filename.startsWith('raw-') ? filename.replace('raw-', `compressed-${assetId}-${uuidv4()}-`) : `compressed-${assetId}-${uuidv4()}-${filename}`;
 
-    // Generate Presigned PUT URLs for the video AND the 5 storyboard thumbnails
-    const outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400); 
-    const thumbUrl1 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400);
-    const thumbUrl2 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400);
-    const thumbUrl3 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400);
-    const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
-    const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
+    // Swap extension to .mp3 for audio proxy files
+    const proxyFilename = isAudio
+      ? (compressedFilename.replace(/\.[^/.]+$/, "") + ".mp3")
+      : compressedFilename;
+    // Determine a logical folder based on the media type (video or audio)
+    const typeFolder = isAudio ? 'audio' : 'video';
+    // Build the final compressed key with a deterministic prefix
+    const compressedKey = parts.length > 0
+      ? `${typeFolder}/${parts.join('/')}/${proxyFilename}`
+      : `${typeFolder}/${proxyFilename}`;
+
+
+    // Persist the deterministic compressed key in the Asset record
+    await prisma.asset.update({
+      where: { id: assetId },
+      data: { compressedKey: compressedKey }
+    }).catch(err => console.error(`[Job ${job.id}] Failed to save compressedKey:`, err.message));
+    const outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400);
+
+    let outputs: any = {};
+    if (isAudio) {
+      outputs = {
+        'mp3': { url: outputUrl }
+      };
+    } else {
+      const thumbUrl1 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400);
+      const thumbUrl2 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400);
+      const thumbUrl3 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400);
+      const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
+      const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
+
+      outputs = {
+        'mp4:1080p': { url: outputUrl },
+        'jpg:300x#10%': { url: thumbUrl1 },
+        'jpg:300x#30%': { url: thumbUrl2 },
+        'jpg:300x#50%': { url: thumbUrl3 },
+        'jpg:300x#70%': { url: thumbUrl4 },
+        'jpg:300x#90%': { url: thumbUrl5 }
+      };
+    }
 
     // Pass the webhook URL so Coconut tells us when it's done
     const webhookHost = process.env.WEBHOOK_HOST || 'https://qa.noahcloud.ai';
@@ -79,14 +153,7 @@ const processCompressionJob = async (job: Job) => {
       },
       body: JSON.stringify({
         input: { url: sourceUrl },
-         outputs: {
-          'mp4:1080p': { url: outputUrl },
-          'jpg:300x#10%': { url: thumbUrl1 },
-          'jpg:300x#30%': { url: thumbUrl2 },
-          'jpg:300x#50%': { url: thumbUrl3 },
-          'jpg:300x#70%': { url: thumbUrl4 },
-          'jpg:300x#90%': { url: thumbUrl5 }
-        },
+        outputs,
         notification: {
           type: 'http',
           url: webhookUrl,
@@ -118,7 +185,7 @@ const processCompressionJob = async (job: Job) => {
         where: { assetId: assetId, provider: "coconut" },
         data: { status: 'failed' }
       }).catch((dbErr) => console.error('Failed to write failure status to transcode job:', dbErr));
-      
+
       await prisma.asset.update({
         where: { id: assetId },
         data: { status: 'failed' }
