@@ -283,3 +283,62 @@ module.exports.findFolderData = async (request, reply) => {
         });
     }
 };
+
+module.exports.linkProjectSource = async (request, reply) => {
+    try {
+        const { projectId } = request.params;
+        const { sourceableType, assetId, folderId } = request.body;
+
+        if (!sourceableType || !['ASSET', 'FOLDER'].includes(sourceableType)) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Valid sourceableType (ASSET or FOLDER) is required.'
+            });
+        }
+
+        if (sourceableType === 'ASSET' && !assetId) {
+            return reply.code(400).send({
+                success: false,
+                message: 'assetId is required when sourceableType is ASSET.'
+            });
+        }
+
+        if (sourceableType === 'FOLDER' && !folderId) {
+            return reply.code(400).send({
+                success: false,
+                message: 'folderId is required when sourceableType is FOLDER.'
+            });
+        }
+
+        const projectSource = await prisma.projectSource.create({
+            data: {
+                projectId,
+                sourceableType,
+                assetId: sourceableType === 'ASSET' ? assetId : null,
+                folderId: sourceableType === 'FOLDER' ? folderId : null,
+            }
+        });
+
+        return reply.code(201).send({
+            success: true,
+            message: 'Source linked to project successfully.',
+            data: projectSource
+        });
+
+    } catch (error) {
+        console.error(error);
+        
+        // Handle unique constraint violation (P2002) for duplicate links
+        if (error.code === 'P2002') {
+             return reply.code(409).send({
+                success: false,
+                message: 'This source is already linked to the project.'
+            });
+        }
+
+        return reply.code(500).send({
+            success: false,
+            message: 'Internal Server Error'
+        });
+    }
+};

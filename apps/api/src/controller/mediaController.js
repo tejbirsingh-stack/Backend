@@ -230,6 +230,7 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
 
 //2. Get media assets - return real uploaded files
 module.exports.getMediaAssets = async (request, reply) => {
+  console.log("getMediaAssets called");
 
   try {
     const {
@@ -238,16 +239,14 @@ module.exports.getMediaAssets = async (request, reply) => {
       sortOrder,
       limit = 20,
       offset = 0,
-      ownerId,
-      ownerType
+      orgId,
     } = request.query;
 
 
 
     // Build where condition for New Architecture
     const where = {
-      ownerId: ownerId,
-      ownerType: ownerType,
+      orgId: orgId,
       deletedAt: null,
     };
 
@@ -326,7 +325,7 @@ module.exports.getMediaAssets = async (request, reply) => {
 
     return reply.send({
       success: true,
-      ownerId,
+      orgId,
       total: transformedAssets.length,
       assets: transformedAssets,
     });
@@ -402,14 +401,6 @@ module.exports.searchMediaAssets = async (request, reply) => {
         transcodingStatus: transcodeJob?.status || null,
       };
     });
-
-    if (!query || !String(query).trim()) {
-      return reply.code(400).send({
-        success: false,
-        error: "Search query is required",
-        assets: [],
-      });
-    }
 
     return reply.send({
       success: true,
@@ -544,20 +535,24 @@ module.exports.softDelete = async (request, reply) => {
 
     // Transform files using the same structure as active files
     const transformed = dbAssets.map(asset => {
-      const fileSize = Number(asset.fileSize);
+      const originalFile = asset.files.find(f => f.fileClass === 'original');
+      const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
+      const transcodeJob = asset.transcodeJobs.find(j => j.provider === 'coconut');
+
+      const fileSize = Number(originalFile?.sizeBytes || 0);
       const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
-      const normalizedType = normalizeAssetType(asset.mimeType);
+      const normalizedType = asset.type;
 
       return {
         id: asset.id,
-        name: asset.fileName,
+        name: asset.title,
         type: normalizedType,
         size: fileSize,
         uploadDate: asset.createdAt.toISOString(),
         deletedAt: asset.deletedAt ? asset.deletedAt.toISOString() : new Date().toISOString(),
         url: fileUrl,
-        thumbnail: normalizedType === "image" ? fileUrl : null,
-        tags: asset.metadata?.tags || [],
+        thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
+        tags: asset.aiTags || [],
         metadata: asset.metadata || {},
         compressionStatus: asset.transcodingStatus || "completed",
         storageLocation: asset.metadata?.storageLocation || "local",
@@ -583,6 +578,8 @@ module.exports.softDelete = async (request, reply) => {
 module.exports.restoreSoftDelete = async (request, reply) => {
   try {
     const { filename } = request.params;
+
+    let restoredFromDb = false;
 
     // 1. If it's a database UUID, restore in PostgreSQL database
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
@@ -636,16 +633,35 @@ module.exports.deletePermanently = async (request, reply) => {
     let deletedFromLocal = false;
     let deletedFromB2 = false;
 
-    // Also delete from database if it's a UUID
-    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+    // Try deleting local duplicates just in case
+    let filePath = await resolveMediaFilePath(request, filename);
+    while (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      deletedFromLocal = true;
+      filePath = await resolveMediaFilePath(request, filename);
+    }
+
+    if (b2Storage.isEnabled()) {
       try {
-        await request.server.prisma.asset.delete({
-          where: { id: filename }
-        });
-      } catch (dbErr) {
-        console.warn("Could not delete asset from database during permanent delete:", dbErr.message);
+        const b2Files = await b2Storage.listTrashFiles("uploads/");
+        const activeFiles = await b2Storage.searchFiles(filename);
+
+        const allB2Files = [...b2Files, ...activeFiles];
+        const exactMatch = allB2Files.find(f => f.id === filename || f.key === filename || f.key.endsWith(filename));
+
+        if (exactMatch) {
+          await b2Storage.permanentlyDeleteFile(exactMatch.key);
+          deletedFromB2 = true;
+        } else {
+          const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+          await b2Storage.permanentlyDeleteFile(cleanKey);
+          deletedFromB2 = true;
+        }
+      } catch (b2Error) {
+        console.warn(`Failed to permanently delete key ${filename} from B2:`, b2Error.message);
       }
     }
+
     if (!deletedFromLocal && !deletedFromB2) {
       return reply.code(404).send({
         success: false,
@@ -656,7 +672,7 @@ module.exports.deletePermanently = async (request, reply) => {
     // Also delete from database if it's a UUID
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
       try {
-        await request.server.prisma.mediaAsset.delete({
+        await request.server.prisma.asset.delete({
           where: { id: filename }
         });
       } catch (dbErr) {
@@ -727,28 +743,6 @@ module.exports.getMediaFile = async (request, reply) => {
             },
             transcodingStatus: transcodeJob?.status || "completed",
             compressionStatus: transcodeJob?.status || "completed",
-          }
-        });
-      }
-
-      if (dbAsset) {
-        const fileSize = Number(dbAsset.fileSize);
-        const fileUrl = `/api/media/${encodeURIComponent(dbAsset.id)}/stream`;
-        const normalizedType = normalizeAssetType(dbAsset.mimeType);
-
-        return reply.send({
-          success: true,
-          asset: {
-            id: dbAsset.id,
-            name: dbAsset.fileName,
-            type: normalizedType,
-            size: fileSize,
-            uploadDate: dbAsset.createdAt.toISOString(),
-            url: fileUrl,
-            thumbnail: normalizedType === "image" ? fileUrl : null,
-            tags: dbAsset.metadata?.tags || [],
-            metadata: dbAsset.metadata || {},
-            compressionStatus: dbAsset.transcodingStatus || "completed",
           }
         });
       }
@@ -834,6 +828,35 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
         console.log(`Streaming directly to B2: ${b2Key}`);
 
+        let size = 0;
+        part.file.on('data', (chunk) => {
+          size += chunk.length;
+        });
+
+        let b2Result;
+        try {
+          b2Result = await b2Storage.uploadStream(
+            part.file,
+            b2Key,
+            part.mimetype,
+            {
+              originalName: part.filename,
+            },
+            (progress) => {
+              console.log(`[B2 Upload Progress] ${part.filename}: ${progress.loaded} / ${totalFileSize || size}`);
+              sendProgress(progress.loaded, totalFileSize || progress.total || size || 0);
+            }
+          );
+        } catch (err) {
+          console.error("Direct B2 stream failed:", err);
+          throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
+        }
+
+        const b2Url = b2Result?.url || null;
+        const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
+
+        const isVideo = part.mimetype.startsWith("video/");
+
         const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
         const assetType = Object.keys(typeMap).find(k => part.mimetype.startsWith(`${k}/`)) || 'document';
 
@@ -890,94 +913,18 @@ module.exports.uploadMediaFile = async (request, reply) => {
           }
         }
 
-        console.log(`Streaming directly to B2: ${filename}`);
-
-        let size = 0;
-        part.file.on('data', (chunk) => {
-          size += chunk.length;
-        });
-
-        let b2Result;
-        try {
-          b2Result = await b2Storage.uploadStream(
-            part.file,
-            b2Key,
-            part.mimetype,
-            {
-              originalName: part.filename,
-            },
-            (progress) => {
-              console.log(`[B2 Upload Progress] ${part.filename}: ${progress.loaded} / ${totalFileSize || size}`);
-              sendProgress(progress.loaded, totalFileSize || progress.total || size || 0);
-            }
-          );
-        } catch (err) {
-          console.error("Direct B2 stream failed:", err);
-          throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
-        }
-
-        const b2Url = b2Result?.url || null;
-        const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
-
-        const isVideo = part.mimetype.startsWith("video/");
-
-        // Write the media asset to PostgreSQL database
-        const dbAsset = await request.server.prisma.mediaAsset.create({
-          data: {
-            orgId: request.user.orgId,
-            fileName: part.filename,
-            filePath: b2Key,
-            fileSize: BigInt(size),
-            originalSize: BigInt(size),
-            mimeType: part.mimetype,
-            durationSeconds: durationSeconds,
-            b2FileId: b2Result?.fileId || null,
-            cdnUrl: fileUrl,
-            uploadedByUserId: request.user.id,
-            // Without Coconut compression, mark all videos ready immediately
-            status: "ready", // isVideo ? "processing" : "ready",
-            transcodingStatus: isVideo ? "completed" : null,
-            metadata: {
-              tags: [],
-              storageLocation: "b2",
-              b2Url,
-              b2Key,
-            }
-          }
-        });
-
-        /* Disabled Coconut compression functionality API per user request
-        // If it's a video, queue a compression job in Redis
-        if (isVideo) {
-          try {
-            // 5GB threshold for heavy queue
-            const fiveGB = 5 * 1024 * 1024 * 1024;
-            const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
-            
-            await queueToUse.add("compress", {
-              mediaAssetId: dbAsset.id,
-              key: b2Key,
-              preset: "medium", // Default to balanced H.264
-            });
-            console.log(`[Queue] Added video compression job for asset ${dbAsset.id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
-          } catch (queueErr) {
-            console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
-          }
-        }
-        */
-
         const fileInfo = {
-          id: dbAsset.id,
-          name: dbAsset.fileName,
-          type: normalizeAssetType(dbAsset.mimeType),
-          size: Number(dbAsset.fileSize),
-          uploadDate: dbAsset.createdAt.toISOString(),
-          url: `/api/media/${encodeURIComponent(dbAsset.id)}/stream`,
-          thumbnail: normalizeAssetType(dbAsset.mimeType) === "image" ? `/api/media/${encodeURIComponent(dbAsset.id)}/stream` : null,
+          id: newAsset.id,
+          name: newAsset.title,
+          type: newAsset.type,
+          size: Number(size),
+          uploadDate: newAsset.createdAt.toISOString(),
+          url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
+          thumbnail: newAsset.type === "image" ? `/api/media/${encodeURIComponent(newAsset.id)}/stream` : null,
           tags: [],
-          metadata: dbAsset.metadata || {},
+          metadata: { technicalSpecs: durationSeconds ? { durationSeconds } : {} },
           // Report correct status to the frontend
-          compressionStatus: "completed", // isVideo ? "queued" : "completed",
+          compressionStatus: isVideo ? "queued" : "completed",
           storageLocation: "b2",
         };
 
@@ -1055,7 +1002,7 @@ module.exports.deleteMediaFile = async (request, reply) => {
     } else {
       return reply.code(400).send({
         success: false,
-        error: "Failed to soft delete asset in database",
+        error: "Invalid file ID for soft delete",
       });
     }
   } catch (error) {

@@ -1,4 +1,4 @@
-const { storeWorkplace, findAllWorkspaces, createFolder, findWorkspaceMedia, createProject, findFolderData } = require('../controller');
+const { storeWorkplace, findAllWorkspaces, createFolder, findWorkspaceMedia, createProject, findFolderData, linkProjectSource } = require('../controller');
 const { authenticate } = require('../middleware/auth-middleware')
 
 module.exports = async function (fastify) {
@@ -11,6 +11,7 @@ module.exports = async function (fastify) {
     fastify.post('/folder/add/:workspaceId', createFolder);
     fastify.get('/folder/find-all-data/:id', findFolderData);
     fastify.post('/project/add/:workspaceId', createProject);
+    fastify.post('/project/link-source/:projectId', linkProjectSource);
 
     // fastify.get('/folder/find-all', findAllFolders);
     // fastify.get('/folder/find-by-id/:id', findFolderById);
