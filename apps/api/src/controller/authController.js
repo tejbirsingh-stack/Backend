@@ -941,7 +941,7 @@ module.exports.resetPassword = async (request, reply) => {
 
 //10. Google Login Hander
 module.exports.googleLogin = async (request, reply) => {
-  const { idToken } = request.body;
+  const { idToken } = request.body || {};
   const clientId = process.env.GOOGLE_CLIENT_ID || "967923512322-0oullb620hh9se1ff0prs8stvbspi829.apps.googleusercontent.com";
   const googleClient = new OAuth2Client(clientId);
 

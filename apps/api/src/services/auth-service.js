@@ -5,7 +5,12 @@ const { authenticator } = require("otplib");
 const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
 const dns = require("dns").promises;
-const { config } = require("../config/index");
+let config;
+try {
+  config = require("../config/index.js").config;
+} catch (e) {
+  config = process.env;
+}
 
 function getExpiryMilliseconds(expiryStr) {
   if (!expiryStr || typeof expiryStr !== "string") return 2 * 60 * 1000;

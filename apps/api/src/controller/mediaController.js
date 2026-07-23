@@ -764,55 +764,6 @@ module.exports.getMediaFile = async (request, reply) => {
             assetTags: { include: { tag: true } },
             collectionAssets: { include: { collection: true } }
           }
-          
-          const fileSize = Number(originalFile?.sizeBytes || 0);
-          const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
-          const normalizedType = fetchedAsset.type;
-
-          return reply.send({
-            success: true,
-            asset: {
-              id: fetchedAsset.id,
-              name: fetchedAsset.title,
-              type: normalizedType,
-              size: fileSize,
-              uploadDate: fetchedAsset.createdAt.toISOString(),
-              url: fileUrl,
-              thumbnail: (proxyFile || fetchedAsset.type === 'image') ? `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail` : null,
-              tags: fetchedAsset.aiTags || [],
-              metadata: fetchedAsset.metadata || {},
-              status: fetchedAsset.status,
-              customMetadata: {
-                ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
-                transcodingProgress: transcodeJob?.status === 'processing' 
-                  ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
-                  : null,
-              },
-              transcodingStatus: transcodeJob?.status || "completed",
-              compressionStatus: transcodeJob?.status || "completed",
-              uploadedByUserId: fetchedAsset.uploadedByUserId,
-            }
-          });
-        }
-
-        const storedName = resolveMediaFilename(filename);
-        const filePath = await resolveMediaFilePath(request, filename);
-        if (!filePath || !fs.existsSync(filePath)) {
-          return reply.code(404).send({ success: false, error: "File not found" });
-        }
-
-        const stats = fs.statSync(filePath);
-        const mimeType = inferMimeType(storedName || filename);
-        const asset = toFrontendAssetShape({
-          id: storedName || filename,
-          name: (storedName || filename).replace(/^\d+-/, ""),
-          mimeType,
-          size: stats.size,
-          uploadDate: stats.mtime.toISOString(),
-          tags: [],
-          metadata: {},
-          compressionStatus: "completed",
->>>>>>> origin/Annotation-Backend-22July2026
         });
       }
 
