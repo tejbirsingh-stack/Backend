@@ -70,7 +70,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
             // Compute the would‑be compressed key to clean up any stale file
             const partsTmp = key.split('/');
             const filenameTmp = partsTmp.pop() || '';
-            const compressedFilenameTmp = filenameTmp.startsWith('raw-') ? filenameTmp.replace('raw-', `compressed-${assetId}-${uuidv4()}-`) : `compressed-${assetId}-${uuidv4()}-${filenameTmp}`;
+            const compressedFilenameTmp = filenameTmp.startsWith('raw-') ? filenameTmp.replace('raw-', 'compressed-') : `compressed-${filenameTmp}`;
             const compressedKeyTmp = partsTmp.length > 0 ? `${partsTmp.join('/')}/${compressedFilenameTmp}` : compressedFilenameTmp;
             // Delete possible stale object
             try { await b2Storage.deleteFile(compressedKeyTmp); } catch (e) { console.error(`[Job ${job.id}] Failed to delete stale compressed file:`, (e as any).message); }
@@ -96,19 +96,17 @@ if (!isAudio && maxDurationStr && assetId && asset) {
     // Generate compressed key by replacing 'raw-' with 'compressed-'
     const parts = key.split('/');
     const filename = parts.pop() || '';
-    // Add a UUID to guarantee a unique compressed object per upload
-    const compressedFilename = filename.startsWith('raw-') ? filename.replace('raw-', `compressed-${assetId}-${uuidv4()}-`) : `compressed-${assetId}-${uuidv4()}-${filename}`;
+    const compressedFilename = filename.startsWith('raw-') ? filename.replace('raw-', 'compressed-') : `compressed-${filename}`;
 
     // Swap extension to .mp3 for audio proxy files
     const proxyFilename = isAudio
       ? (compressedFilename.replace(/\.[^/.]+$/, "") + ".mp3")
       : compressedFilename;
-    // Determine a logical folder based on the media type (video or audio)
-    const typeFolder = isAudio ? 'audio' : 'video';
-    // Build the final compressed key with a deterministic prefix
+      
+    // Build the final compressed key (keeping it in the same directory as the raw file)
     const compressedKey = parts.length > 0
-      ? `${typeFolder}/${parts.join('/')}/${proxyFilename}`
-      : `${typeFolder}/${proxyFilename}`;
+      ? `${parts.join('/')}/${proxyFilename}`
+      : proxyFilename;
 
 
     // Persist the deterministic compressed key in the Asset record

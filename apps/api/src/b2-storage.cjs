@@ -277,7 +277,7 @@ class B2StorageService {
       // If no key provided, generate one
       if (!key) {
         const ext = path.extname(filePath);
-        key = `uploads/${uuidv4()}${ext}`;
+        key = `noah-uploads/${uuidv4()}${ext}`;
       }
       
       // Upload to B2
@@ -657,7 +657,7 @@ await upload.done();
     try {
       const command = new ListObjectsV2Command({
         Bucket: this.bucket,
-        Prefix: 'uploads/', // Only search in uploads
+        Prefix: 'noah-uploads/', // Only search in noah-uploads
         MaxKeys: maxKeys,
       });
       
@@ -671,7 +671,7 @@ await upload.done();
           return filename.includes(searchLower);
         })
         .map(obj => {
-          const folderPath = this.extractFolderFromKey(obj.Key, 'uploads/');
+          const folderPath = this.extractFolderFromKey(obj.Key, 'noah-uploads/');
           return {
             id: path.basename(obj.Key),
             name: path.basename(obj.Key).replace(/^\d+-/, ""),

@@ -609,7 +609,7 @@ module.exports.restoreSoftDelete = async (request, reply) => {
       // 2. Also try restoring from B2 if B2 is enabled
       if (b2Storage.isEnabled()) {
         try {
-          const b2Files = await b2Storage.listTrashFiles("uploads/");
+          const b2Files = await b2Storage.listTrashFiles("noah-uploads/");
           const exactMatch = b2Files.find(f => f.id === filename || f.name === filename || f.key.endsWith(filename));
 
           if (exactMatch) {
@@ -651,7 +651,7 @@ module.exports.deletePermanently = async (request, reply) => {
 
       if (b2Storage.isEnabled()) {
         try {
-          const b2Files = await b2Storage.listTrashFiles("uploads/");
+          const b2Files = await b2Storage.listTrashFiles("noah-uploads/");
           const activeFiles = await b2Storage.searchFiles(filename);
           
           const allB2Files = [...b2Files, ...activeFiles];
@@ -661,7 +661,7 @@ module.exports.deletePermanently = async (request, reply) => {
             await b2Storage.permanentlyDeleteFile(exactMatch.key);
             deletedFromB2 = true;
           } else {
-            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+            const cleanKey = filename.startsWith("noah-uploads/") ? filename : `noah-uploads/${filename}`;
             await b2Storage.permanentlyDeleteFile(cleanKey);
             deletedFromB2 = true;
           }
@@ -831,9 +831,11 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
       for await (const part of parts) {
         if (part.file) {
+          const type = normalizeAssetType(part.mimetype);
+          const typeFolder = type === 'image' ? 'images' : type;
           const folderName = `${Date.now()}`;
           const filename = `raw-${part.filename}`;
-          const b2Key = `uploads/${isolationTier}/${today}/${folderName}/${filename}`; 
+          const b2Key = `noah-uploads/${typeFolder}/${today}/${folderName}/${filename}`; 
           
           console.log(`Streaming directly to B2: ${b2Key}`);
           
@@ -861,8 +863,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
           }
 
-          const b2Url = b2Result?.url || null;
-          const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
+          const fileUrl = `/api/media/${b2Key}/stream`;
 
           const isVideo = part.mimetype.startsWith("video/");
           const isAudio = part.mimetype.startsWith("audio/");
@@ -1037,7 +1038,9 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     const sessionId = require("uuid").v4();
     const dateStr = new Date().toISOString().split("T")[0];
     const timestamp = Date.now();
-    const b2Key = `uploads/internal/${dateStr}/${timestamp}/raw-${fileName}`;
+    const reqType = normalizeAssetType(mimeType);
+    const typeFolder = reqType === 'image' ? 'images' : reqType;
+    const b2Key = `noah-uploads/${typeFolder}/${dateStr}/${timestamp}/raw-${fileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
@@ -1194,7 +1197,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const assetType = Object.keys(typeMap).find(k => session.mimeType.startsWith(`${k}/`)) || 'document';
 
     // Save the asset metadata in PostgreSQL via Prisma (New Architecture)
-    const newAsset = await request.server.prisma.asset.create({
+    throw new Error("Payload: " + JSON.stringify({orgId: request.user.orgId, title: part.filename, type: assetType, status: shouldQueueTranscode ? "processing" : "active", uploadedByUserId: request.user.id, files: {create: {fileClass: "original", fileName: filename, filePath: b2Key, sizeBytes: size.toString(), mimeType: part.mimetype, cdnUrl: fileUrl}}, metadata: {create: {technicalSpecs: durationSeconds ? {durationSeconds} : {}}}}));
+          const newAsset = await request.server.prisma.asset.create({
       data: {
         orgId: request.user.orgId,
         title: session.fileName,
