@@ -1197,8 +1197,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const assetType = Object.keys(typeMap).find(k => session.mimeType.startsWith(`${k}/`)) || 'document';
 
     // Save the asset metadata in PostgreSQL via Prisma (New Architecture)
-    throw new Error("Payload: " + JSON.stringify({orgId: request.user.orgId, title: part.filename, type: assetType, status: shouldQueueTranscode ? "processing" : "active", uploadedByUserId: request.user.id, files: {create: {fileClass: "original", fileName: filename, filePath: b2Key, sizeBytes: size.toString(), mimeType: part.mimetype, cdnUrl: fileUrl}}, metadata: {create: {technicalSpecs: durationSeconds ? {durationSeconds} : {}}}}));
-          const newAsset = await request.server.prisma.asset.create({
+    const newAsset = await request.server.prisma.asset.create({
       data: {
         orgId: request.user.orgId,
         title: session.fileName,
