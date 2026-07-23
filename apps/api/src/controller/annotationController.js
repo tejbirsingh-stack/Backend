@@ -1,5 +1,8 @@
 // Get Annotations Media 
 const emailService = require('../services/email-service');
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 module.exports.getMediaAnnotations = async (request, reply) => {
     try {
         const { mediaId } = request.params;
@@ -97,29 +100,60 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
         if (data && data.text && data.text.trim().length > 0) {
             (async () => {
                 try {
-                    // Fetch commenter and video details
+                    const commentText = data.text;
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
-                    const video = await request.server.prisma.asset.findUnique({ where: { id: mediaId }, select: { title: true } });
+                    const video = await request.server.prisma.asset.findUnique({ 
+                        where: { id: mediaId }, 
+                        select: { 
+                            title: true,
+                            uploadedBy: {
+                                select: {
+                                    id: true,
+                                    name: true,
+                                    email: true
+                                }
+                            }
+                        } 
+                    });
                     
                     if (!video) return;
 
                     const commenterName = commenter?.name || 'A team member';
                     const videoName = video.title || 'a video';
-                    const commentText = data.text;
                     const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${mediaId}`;
 
-                    // Fetch all users in the same organization
-                    const orgUsers = await request.server.prisma.user.findMany({ 
+                    // Fetch organization users to check for @mentions
+                    const orgUsers = await request.server.prisma.user.findMany({
                         where: { orgId: orgId },
                         select: { id: true, name: true, email: true }
                     });
 
-                    // Email everyone except the person who wrote the comment
-                    for (const u of orgUsers) {
-                        if (u.id !== userId && u.email) {
-                            await emailService.sendNewAnnotationEmail(
+                    // Find who is mentioned in commentText (e.g. "@Anil Jangra")
+                    const mentionedUsers = orgUsers.filter(u => {
+                        if (!u.name || !u.email || u.id === userId) return false;
+                        const nameEscaped = escapeRegExp(u.name);
+                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
+                        return mentionPattern.test(commentText);
+                    });
+
+                    if (mentionedUsers.length > 0) {
+                        for (const u of mentionedUsers) {
+                            await emailService.sendMentionNotificationEmail(
                                 u.email,
                                 u.name || 'User',
+                                commenterName,
+                                videoName,
+                                commentText,
+                                videoUrl
+                            );
+                        }
+                    } else {
+                        // Fallback to uploader if no mentions
+                        const uploader = video.uploadedBy;
+                        if (uploader && uploader.id !== userId && uploader.email) {
+                            await emailService.sendNewAnnotationEmail(
+                                uploader.email,
+                                uploader.name || 'User',
                                 commenterName,
                                 videoName,
                                 commentText,
@@ -177,26 +211,60 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
         if (data && data.text && data.text.trim().length > 0 && data.text !== (existing.data?.text || '')) {
             (async () => {
                 try {
+                    const commentText = data.text;
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
-                    const video = await request.server.prisma.asset.findUnique({ where: { id: existing.assetId }, select: { title: true } });
+                    const video = await request.server.prisma.asset.findUnique({ 
+                        where: { id: existing.assetId }, 
+                        select: { 
+                            title: true,
+                            uploadedBy: {
+                                select: {
+                                    id: true,
+                                    name: true,
+                                    email: true
+                                }
+                            }
+                        } 
+                    });
                     
                     if (!video) return;
 
                     const commenterName = commenter?.name || 'A team member';
                     const videoName = video.title || 'a video';
-                    const commentText = data.text;
                     const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${existing.assetId}`;
 
-                    const orgUsers = await request.server.prisma.user.findMany({ 
+                    // Fetch organization users to check for @mentions
+                    const orgUsers = await request.server.prisma.user.findMany({
                         where: { orgId: request.user.orgId },
                         select: { id: true, name: true, email: true }
                     });
 
-                    for (const u of orgUsers) {
-                        if (u.id !== userId && u.email) {
-                            await emailService.sendNewAnnotationEmail(
+                    // Find who is mentioned in commentText (e.g. "@Anil Jangra")
+                    const mentionedUsers = orgUsers.filter(u => {
+                        if (!u.name || !u.email || u.id === userId) return false;
+                        const nameEscaped = escapeRegExp(u.name);
+                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
+                        return mentionPattern.test(commentText);
+                    });
+
+                    if (mentionedUsers.length > 0) {
+                        for (const u of mentionedUsers) {
+                            await emailService.sendMentionNotificationEmail(
                                 u.email,
                                 u.name || 'User',
+                                commenterName,
+                                videoName,
+                                commentText,
+                                videoUrl
+                            );
+                        }
+                    } else {
+                        // Fallback to uploader if no mentions
+                        const uploader = video.uploadedBy;
+                        if (uploader && uploader.id !== userId && uploader.email) {
+                            await emailService.sendNewAnnotationEmail(
+                                uploader.email,
+                                uploader.name || 'User',
                                 commenterName,
                                 videoName,
                                 commentText,
