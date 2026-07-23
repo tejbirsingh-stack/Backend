@@ -1,3 +1,5 @@
+const { sendNotificationToUser } = require('./realtimeController');
+
 const getNotifications = async (request, reply) => {
   try {
     const userId = request.user.id;
@@ -57,7 +59,17 @@ const createNotification = async (fastify, userId, orgId, type, title, message, 
       }
     });
     
-    // We will emit WebSocket event here later
+    // Emit real-time WebSocket event to recipient user
+    sendNotificationToUser(userId, {
+      id: notification.id,
+      title: notification.title,
+      message: notification.message,
+      time: new Date(notification.createdAt).toLocaleDateString() + ' ' + new Date(notification.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+      unread: !notification.isRead,
+      type: notification.type,
+      relatedEntityId: notification.relatedEntityId
+    });
+
     return notification;
   } catch (error) {
     console.error("Error creating notification:", error);

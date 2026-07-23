@@ -645,7 +645,10 @@ module.exports.restoreSoftDelete = async (request, reply) => {
     // 2. Also try restoring from B2 if B2 is enabled
     if (b2Storage.isEnabled()) {
       try {
-        const b2Files = await b2Storage.listTrashFiles("uploads/");
+        const b2Files = [
+          ...(await b2Storage.listTrashFiles("noah-uploads/")),
+          ...(await b2Storage.listTrashFiles("uploads/"))
+        ];
         const exactMatch = b2Files.find(f => f.id === filename || f.name === filename || f.key.endsWith(filename));
 
         if (exactMatch) {
@@ -679,7 +682,10 @@ module.exports.deletePermanently = async (request, reply) => {
 
     if (b2Storage.isEnabled()) {
       try {
-        const b2Files = await b2Storage.listTrashFiles("uploads/");
+        const b2Files = [
+          ...(await b2Storage.listTrashFiles("noah-uploads/")),
+          ...(await b2Storage.listTrashFiles("uploads/"))
+        ];
         const activeFiles = await b2Storage.searchFiles(filename);
 
         const allB2Files = [...b2Files, ...activeFiles];
@@ -689,7 +695,7 @@ module.exports.deletePermanently = async (request, reply) => {
           await b2Storage.permanentlyDeleteFile(exactMatch.key);
           deletedFromB2 = true;
         } else {
-          const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+          const cleanKey = filename.startsWith("noah-uploads/") || filename.startsWith("uploads/") ? filename : `noah-uploads/${filename}`;
           await b2Storage.permanentlyDeleteFile(cleanKey);
           deletedFromB2 = true;
         }
@@ -886,10 +892,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const filename = `raw-${part.filename}`;
         const isImage = part.mimetype.startsWith("image/");
         const isAudio = part.mimetype.startsWith("audio/");
-        const subFolder = isImage ? "images" : isAudio ? "audios" : null;
-        const b2Key = subFolder
-          ? `uploads/${subFolder}/${isolationTier}/${today}/${folderName}/${filename}`
-          : `uploads/${isolationTier}/${today}/${folderName}/${filename}`;
+        const isVideo = part.mimetype.startsWith("video/");
+        const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "documents";
+        const b2Key = `noah-uploads/${subFolder}/${today}/${folderName}/${filename}`;
 
         console.log(`Streaming directly to B2: ${b2Key}`);
 
@@ -920,7 +925,6 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const b2Url = b2Result?.url || null;
         const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
 
-        const isVideo = part.mimetype.startsWith("video/");
 
         const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
         const assetType = Object.keys(typeMap).find(k => part.mimetype.startsWith(`${k}/`)) || 'document';
@@ -1286,10 +1290,9 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     const timestamp = Date.now();
     const isImage = mimeType.startsWith("image/");
     const isAudio = mimeType.startsWith("audio/");
-    const subFolder = isImage ? "images" : isAudio ? "audios" : null;
-    const b2Key = subFolder
-      ? `uploads/${subFolder}/internal/${dateStr}/${timestamp}/raw-${fileName}`
-      : `uploads/internal/${dateStr}/${timestamp}/raw-${fileName}`;
+    const isVideo = mimeType.startsWith("video/");
+    const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "documents";
+    const b2Key = `noah-uploads/${subFolder}/${dateStr}/${timestamp}/raw-${fileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);

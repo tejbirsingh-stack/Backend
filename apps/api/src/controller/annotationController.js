@@ -1,5 +1,6 @@
 // Get Annotations Media 
 const emailService = require('../services/email-service');
+const { createNotification } = require('./notificationController');
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -106,6 +107,7 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                         where: { id: mediaId }, 
                         select: { 
                             title: true,
+                            type: true,
                             uploadedBy: {
                                 select: {
                                     id: true,
@@ -119,7 +121,8 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                     if (!video) return;
 
                     const commenterName = commenter?.name || 'A team member';
-                    const videoName = video.title || 'a video';
+                    const mediaType = video.type === 'audio' ? 'audio' : video.type === 'image' ? 'image' : 'video';
+                    const videoName = video.title || `a ${mediaType}`;
                     const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${mediaId}`;
 
                     // Fetch organization users to check for @mentions
@@ -146,18 +149,38 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                                 commentText,
                                 videoUrl
                             );
+                            await createNotification(
+                                request.server,
+                                u.id,
+                                orgId,
+                                'mention',
+                                'You were mentioned',
+                                `${commenterName} mentioned you on "${videoName}": "${commentText}"`,
+                                mediaId
+                            );
                         }
                     } else {
                         // Fallback to uploader if no mentions
                         const uploader = video.uploadedBy;
-                        if (uploader && uploader.id !== userId && uploader.email) {
-                            await emailService.sendNewAnnotationEmail(
-                                uploader.email,
-                                uploader.name || 'User',
-                                commenterName,
-                                videoName,
-                                commentText,
-                                videoUrl
+                        if (uploader && uploader.id !== userId) {
+                            if (uploader.email) {
+                                await emailService.sendNewAnnotationEmail(
+                                    uploader.email,
+                                    uploader.name || 'User',
+                                    commenterName,
+                                    videoName,
+                                    commentText,
+                                    videoUrl
+                                );
+                            }
+                            await createNotification(
+                                request.server,
+                                uploader.id,
+                                orgId,
+                                'annotation_added',
+                                `New comment on your ${mediaType}`,
+                                `${commenterName} commented on "${videoName}": "${commentText}"`,
+                                mediaId
                             );
                         }
                     }
@@ -217,6 +240,7 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                         where: { id: existing.assetId }, 
                         select: { 
                             title: true,
+                            type: true,
                             uploadedBy: {
                                 select: {
                                     id: true,
@@ -230,7 +254,8 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                     if (!video) return;
 
                     const commenterName = commenter?.name || 'A team member';
-                    const videoName = video.title || 'a video';
+                    const mediaType = video.type === 'audio' ? 'audio' : video.type === 'image' ? 'image' : 'video';
+                    const videoName = video.title || `a ${mediaType}`;
                     const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${existing.assetId}`;
 
                     // Fetch organization users to check for @mentions
@@ -257,18 +282,38 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                                 commentText,
                                 videoUrl
                             );
+                            await createNotification(
+                                request.server,
+                                u.id,
+                                request.user.orgId,
+                                'mention',
+                                'You were mentioned',
+                                `${commenterName} mentioned you on "${videoName}": "${commentText}"`,
+                                existing.assetId
+                            );
                         }
                     } else {
                         // Fallback to uploader if no mentions
                         const uploader = video.uploadedBy;
-                        if (uploader && uploader.id !== userId && uploader.email) {
-                            await emailService.sendNewAnnotationEmail(
-                                uploader.email,
-                                uploader.name || 'User',
-                                commenterName,
-                                videoName,
-                                commentText,
-                                videoUrl
+                        if (uploader && uploader.id !== userId) {
+                            if (uploader.email) {
+                                await emailService.sendNewAnnotationEmail(
+                                    uploader.email,
+                                    uploader.name || 'User',
+                                    commenterName,
+                                    videoName,
+                                    commentText,
+                                    videoUrl
+                                );
+                            }
+                            await createNotification(
+                                request.server,
+                                uploader.id,
+                                request.user.orgId,
+                                'annotation_added',
+                                `New comment on your ${mediaType}`,
+                                `${commenterName} commented on "${videoName}": "${commentText}"`,
+                                existing.assetId
                             );
                         }
                     }
