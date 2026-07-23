@@ -3,6 +3,7 @@
 const fs = require("fs");
 const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
+const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -298,7 +299,18 @@ module.exports.getMediaAssets = async (request, reply) => {
       const transcodeJob = asset.transcodeJobs[0];
 
       const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
-      const tagList = asset.assetTags?.map(at => at.tag?.name).filter(Boolean) || asset.aiTags || [];
+
+      const dbTags = (asset.assetTags && asset.assetTags.length > 0)
+        ? asset.assetTags.map(at => at.tag?.name).filter(Boolean)
+        : [];
+      const customProps = asset.metadata?.customProperties
+        ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties)
+        : {};
+      const tagList = dbTags.length > 0
+        ? dbTags
+        : (Array.isArray(asset.aiTags) && asset.aiTags.length > 0
+            ? asset.aiTags
+            : (Array.isArray(customProps.tags) ? customProps.tags : []));
 
       return {
         id: asset.id,
@@ -751,11 +763,25 @@ module.exports.getMediaFile = async (request, reply) => {
       request.query.meta === "true" || request.query.meta === "1";
 
     if (wantsMeta) {
-      // Look up by UUID first
       let fetchedAsset;
       if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
         fetchedAsset = await request.server.prisma.asset.findUnique({
           where: { id: filename },
+          include: {
+            files: true,
+            metadata: true,
+            transcodeJobs: true,
+            uploadedBy: { select: { id: true, name: true, email: true } },
+            assetTags: { include: { tag: true } },
+            collectionAssets: { include: { collection: true } }
+          }
+        });
+      }
+
+      if (!fetchedAsset) {
+        const cleanTitle = filename.replace(/\.[^/.]+$/, '');
+        fetchedAsset = await request.server.prisma.asset.findFirst({
+          where: { OR: [{ title: filename }, { title: cleanTitle }] },
           include: {
             files: true,
             metadata: true,
@@ -776,7 +802,17 @@ module.exports.getMediaFile = async (request, reply) => {
         const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
         const normalizedType = fetchedAsset.type;
 
-        const tagList = fetchedAsset.assetTags?.map(at => at.tag?.name).filter(Boolean) || fetchedAsset.aiTags || [];
+        const dbTags = (fetchedAsset.assetTags && fetchedAsset.assetTags.length > 0)
+          ? fetchedAsset.assetTags.map(at => at.tag?.name).filter(Boolean)
+          : [];
+        const customProps = fetchedAsset.metadata?.customProperties
+          ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties)
+          : {};
+        const tagList = dbTags.length > 0
+          ? dbTags
+          : (Array.isArray(fetchedAsset.aiTags) && fetchedAsset.aiTags.length > 0
+              ? fetchedAsset.aiTags
+              : (Array.isArray(customProps.tags) ? customProps.tags : []));
         const folderInfo = fetchedAsset.collectionAssets?.[0]?.collection || null;
 
         return reply.send({
@@ -925,6 +961,28 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
         const assetType = Object.keys(typeMap).find(k => part.mimetype.startsWith(`${k}/`)) || 'document';
 
+        let specs = durationSeconds ? { durationSeconds } : {};
+        if (request.query.technicalSpecs) {
+          try { specs = { ...specs, ...JSON.parse(request.query.technicalSpecs) }; } catch (e) { }
+        }
+
+        try {
+          if (b2Storage.isEnabled()) {
+            const presignedUrl = await b2Storage.getPresignedUrl(b2Key, 3600);
+            if (presignedUrl) {
+              const serverExif = await extractServerSideMetadata(presignedUrl);
+              if (serverExif && Object.keys(serverExif).length > 0) {
+                Object.assign(specs, serverExif);
+                if (serverExif.exif) {
+                  specs.exif = { ...(specs.exif || {}), ...serverExif.exif };
+                }
+              }
+            }
+          }
+        } catch (exifErr) {
+          console.warn("[ExifTool] Could not extract EXIF in single upload:", exifErr.message);
+        }
+
         // Write to the New Architecture
         const newAsset = await request.server.prisma.asset.create({
           data: {
@@ -945,13 +1003,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             },
             metadata: {
               create: {
-                technicalSpecs: (() => {
-                  let specs = durationSeconds ? { durationSeconds } : {};
-                  if (request.query.technicalSpecs) {
-                    try { specs = { ...specs, ...JSON.parse(request.query.technicalSpecs) }; } catch (e) { }
-                  }
-                  return specs;
-                })()
+                technicalSpecs: specs
               }
             }
           }
@@ -993,7 +1045,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
           url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
           thumbnail: newAsset.type === "image" ? `/api/media/${encodeURIComponent(newAsset.id)}/stream` : null,
           tags: [],
-          metadata: { technicalSpecs: durationSeconds ? { durationSeconds } : {} },
+          metadata: { technicalSpecs: specs },
           // Report correct status to the frontend
           compressionStatus: isVideo ? "queued" : "completed",
           storageLocation: "b2",
@@ -1459,6 +1511,27 @@ module.exports.completeResumableUpload = async (request, reply) => {
       ...(technicalSpecs || {})
     };
 
+    // Extract EXIF & camera metadata server-side using ExifTool
+    try {
+      if (b2Storage.isEnabled()) {
+        const presignedUrl = await b2Storage.getPresignedUrl(session.key, 3600);
+        if (presignedUrl) {
+          const serverExif = await extractServerSideMetadata(presignedUrl);
+          if (serverExif && Object.keys(serverExif).length > 0) {
+            Object.assign(mergedTechSpecs, serverExif);
+            if (serverExif.exif) {
+              mergedTechSpecs.exif = {
+                ...(mergedTechSpecs.exif || {}),
+                ...serverExif.exif
+              };
+            }
+          }
+        }
+      }
+    } catch (exifErr) {
+      console.warn("[ExifTool] Could not extract server-side EXIF metadata during upload:", exifErr.message);
+    }
+
     const assetTitle = title || session.title || session.fileName;
     const assetSummary = summary || session.summary || "";
 
@@ -1493,12 +1566,14 @@ module.exports.completeResumableUpload = async (request, reply) => {
     });
 
     // Link Tags if provided
+    const resolvedTagNames = [];
     const finalTagIds = tagIds || session.tagIds;
     if (Array.isArray(finalTagIds) && finalTagIds.length > 0) {
       try {
         for (const tagItem of finalTagIds) {
           if (!tagItem || typeof tagItem !== 'string') continue;
           let targetTagId = tagItem;
+          let tagName = tagItem.trim();
 
           // If tagItem is a tag name rather than a UUID, find or create the Tag record
           if (!tagItem.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
@@ -1513,7 +1588,13 @@ module.exports.completeResumableUpload = async (request, reply) => {
               }
             });
             targetTagId = tagRecord.id;
+            tagName = tagRecord.name;
+          } else {
+            const tagRecord = await request.server.prisma.tag.findUnique({ where: { id: tagItem } });
+            if (tagRecord) tagName = tagRecord.name;
           }
+
+          resolvedTagNames.push(tagName);
 
           // Link asset with tag in asset_tags table
           await request.server.prisma.assetTag.upsert({
@@ -1587,7 +1668,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       uploadDate: newAsset.createdAt.toISOString(),
       url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
       thumbnail: null,
-      tags: [],
+      tags: resolvedTagNames,
       metadata: { technicalSpecs: mergedTechSpecs },
       compressionStatus: shouldQueueTranscode ? "queued" : "completed",
       storageLocation: "b2",

@@ -26,12 +26,7 @@ function getExpiryMilliseconds(expiryStr) {
 }
 
 const globalForPrisma = globalThis;
-// Force clear the global instance to load the newly generated client
-if (globalForPrisma.prisma) {
-  try { globalForPrisma.prisma.$disconnect(); } catch (e) {}
-  delete globalForPrisma.prisma;
-}
-const prisma = new PrismaClient();
+const prisma = globalForPrisma.prisma || new PrismaClient();
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
 const FREE_EMAIL_DOMAINS = new Set([
