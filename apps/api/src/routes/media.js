@@ -208,6 +208,7 @@ const {
   restoreSoftDelete, 
   deletePermanently, 
   getMediaFile, 
+  updateAssetTags,
   uploadMediaFile, 
   deleteMediaFile,
   requestPermanentDelete,
@@ -261,6 +262,10 @@ module.exports = function (fastify, opts, done) {
 
   //9. GET /api/media/:filename — file bytes for players
   fastify.get("/:filename", getMediaFile);
+
+  //9.1 POST and PATCH /api/media/:filename/tags — update asset tags
+  fastify.post("/:filename/tags", { preValidation: [fastify.authenticate] }, updateAssetTags);
+  fastify.patch("/:filename/tags", { preValidation: [fastify.authenticate] }, updateAssetTags);
 
   //10. Upload media asset
   fastify.post("/upload", { preHandler: [fastify.authenticate] }, uploadMediaFile);

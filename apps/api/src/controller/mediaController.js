@@ -19,12 +19,12 @@ const queueRedisConnection = new Redis({
 });
 
 // Initialize the BullMQ queue
-const compressionQueue = new Queue("compression-jobs", { 
-  connection: queueRedisConnection 
+const compressionQueue = new Queue("compression-jobs", {
+  connection: queueRedisConnection
 });
 
 // Initialize "Heavy" Queue for massive 5GB+ files
-const heavyCompressionQueue = new Queue("compression-jobs-heavy", { 
+const heavyCompressionQueue = new Queue("compression-jobs-heavy", {
   connection: queueRedisConnection,
 });
 
@@ -102,10 +102,10 @@ function getUploadsDir() {
   return path.join(__dirname, "../../uploads");
 }
 
-function getAllFiles(dirPath, arrayOfFiles = []){
-  const files = fs.readdirSync(dirPath);                                        
-  files.forEach(function(file){
-    if(fs.statSync(dirPath + "/" + file).isDirectory()){
+function getAllFiles(dirPath, arrayOfFiles = []) {
+  const files = fs.readdirSync(dirPath);
+  files.forEach(function (file) {
+    if (fs.statSync(dirPath + "/" + file).isDirectory()) {
       arrayOfFiles = getAllFiles(dirPath + "/" + file, arrayOfFiles);
     } else {
       arrayOfFiles.push(path.join(dirPath, "/", file));
@@ -243,7 +243,7 @@ module.exports.getMediaAssets = async (request, reply) => {
       orgId,
     } = request.query;
 
-   
+
 
     // Build where condition for New Architecture
     const where = {
@@ -282,6 +282,8 @@ module.exports.getMediaAssets = async (request, reply) => {
       include: {
         files: true,
         metadata: true,
+        uploadedBy: { select: { id: true, name: true, email: true } },
+        assetTags: { include: { tag: true } },
         transcodeJobs: {
           where: { provider: 'coconut' },
           orderBy: { createdAt: 'desc' },
@@ -296,6 +298,7 @@ module.exports.getMediaAssets = async (request, reply) => {
       const transcodeJob = asset.transcodeJobs[0];
 
       const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+      const tagList = asset.assetTags?.map(at => at.tag?.name).filter(Boolean) || asset.aiTags || [];
 
       return {
         id: asset.id,
@@ -306,16 +309,20 @@ module.exports.getMediaAssets = async (request, reply) => {
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
         thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
+        uploadedBy: asset.uploadedBy || null,
+        tags: tagList,
         metadata: {
           duration: asset.metadata?.technicalSpecs?.durationSeconds,
           b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
-          storageLocation: 'b2'
+          storageLocation: 'b2',
+          technicalSpecs: asset.metadata?.technicalSpecs || {}
         },
         status: asset.status,
         customMetadata: {
           ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
+          technicalSpecs: asset.metadata?.technicalSpecs || {},
           originalFilePath: originalFile?.filePath,
-          transcodingProgress: transcodeJob?.status === 'processing' 
+          transcodingProgress: transcodeJob?.status === 'processing'
             ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
             : null,
         },
@@ -345,99 +352,99 @@ module.exports.getMediaAssets = async (request, reply) => {
 
 //3. Search media assets
 module.exports.searchMediaAssets = async (request, reply) => {
-    try {
-      const { q: query = "" } = request.query;
-      const userId = request.user.id;
+  try {
+    const { q: query = "" } = request.query;
+    const userId = request.user.id;
 
-      if (!query || !String(query).trim()) {
-        return reply.code(400).send({
-          success: false,
-          error: "Search query is required",
-          assets: [],
-        });
-      }
-
-      // Query database for assets matching the search string, scoped to the logged-in user
-      const dbAssets = await request.server.prisma.asset.findMany({
-        where: {
-          uploadedByUserId: userId,
-          deletedAt: null,
-          title: {
-            contains: String(query),
-            mode: 'insensitive'
-          }
-        },
-        include: { files: true, metadata: true, transcodeJobs: true },
-        orderBy: {
-          createdAt: 'desc'
-        }
-      });
-
-      const transformedAssets = dbAssets.map(asset => {
-        const originalFile = asset.files.find(f => f.fileClass === 'original');
-        const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
-        const transcodeJob = asset.transcodeJobs.find(j => j.provider === 'coconut');
-        
-        const fileSize = Number(originalFile?.sizeBytes || 0);
-        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
-        const normalizedType = asset.type;
-
-        return {
-          id: asset.id,
-          name: asset.title,
-          type: normalizedType,
-          size: fileSize,
-          uploadDate: asset.createdAt.toISOString(),
-          url: fileUrl,
-          thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
-          tags: asset.aiTags || [],
-          metadata: asset.metadata || {},
-          customMetadata: {
-            ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
-            transcodingProgress: transcodeJob?.status === 'processing' 
-              ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
-              : null,
-          },
-          compressionStatus: transcodeJob?.status || "completed",
-          transcodingStatus: transcodeJob?.status || null,
-        };
-      });
-
-      return reply.send({
-        success: true,
-        assets: transformedAssets,
-        query: String(query),
-        count: transformedAssets.length,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      return reply.code(500).send({
+    if (!query || !String(query).trim()) {
+      return reply.code(400).send({
         success: false,
-        error: error.message,
+        error: "Search query is required",
         assets: [],
       });
     }
+
+    // Query database for assets matching the search string, scoped to the logged-in user
+    const dbAssets = await request.server.prisma.asset.findMany({
+      where: {
+        uploadedByUserId: userId,
+        deletedAt: null,
+        title: {
+          contains: String(query),
+          mode: 'insensitive'
+        }
+      },
+      include: { files: true, metadata: true, transcodeJobs: true },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+
+    const transformedAssets = dbAssets.map(asset => {
+      const originalFile = asset.files.find(f => f.fileClass === 'original');
+      const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
+      const transcodeJob = asset.transcodeJobs.find(j => j.provider === 'coconut');
+
+      const fileSize = Number(originalFile?.sizeBytes || 0);
+      const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+      const normalizedType = asset.type;
+
+      return {
+        id: asset.id,
+        name: asset.title,
+        type: normalizedType,
+        size: fileSize,
+        uploadDate: asset.createdAt.toISOString(),
+        url: fileUrl,
+        thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
+        tags: asset.aiTags || [],
+        metadata: asset.metadata || {},
+        customMetadata: {
+          ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
+          transcodingProgress: transcodeJob?.status === 'processing'
+            ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
+            : null,
+        },
+        compressionStatus: transcodeJob?.status || "completed",
+        transcodingStatus: transcodeJob?.status || null,
+      };
+    });
+
+    return reply.send({
+      success: true,
+      assets: transformedAssets,
+      query: String(query),
+      count: transformedAssets.length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: error.message,
+      assets: [],
+    });
+  }
 };
 
 //4. Stream file for preview/playback (video player uses this URL)
 module.exports.fileStreamPreview = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      return await handleMediaRedirectOrServe(request, reply, filename, false);
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: "Failed to stream file",
-        message: error.message,
-      });
-    }
+  try {
+    const { filename } = request.params;
+    return await handleMediaRedirectOrServe(request, reply, filename, false);
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: "Failed to stream file",
+      message: error.message,
+    });
+  }
 };
 
 // 4b. Stream thumbnail image directly by asset ID
 module.exports.getThumbnail = async (request, reply) => {
   try {
     const { id } = request.params;
-    
+
     // Fast path for non-UUIDs (e.g. if an old client sends a file path)
     if (!id || !id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
       return reply.code(404).send({ error: "Invalid Asset ID" });
@@ -447,11 +454,11 @@ module.exports.getThumbnail = async (request, reply) => {
       where: { id },
       include: { files: true }
     });
-    
+
     if (!asset) {
       return reply.code(404).send({ error: "Asset not found" });
     }
-    
+
     let thumbKey = null;
     if (asset.type === 'image') {
       const original = asset.files.find(f => f.fileClass === 'original');
@@ -460,11 +467,11 @@ module.exports.getThumbnail = async (request, reply) => {
       const proxy = asset.files.find(f => f.fileClass === 'proxy');
       if (proxy) thumbKey = `${proxy.filePath}_thumb1.jpg`;
     }
-    
+
     if (!thumbKey) {
       return reply.code(404).send({ error: "Thumbnail not found" });
     }
-    
+
     if (b2Storage.isEnabled()) {
       const freshUrl = await b2Storage.getPresignedUrl(thumbKey);
       if (freshUrl) {
@@ -486,780 +493,808 @@ module.exports.getThumbnail = async (request, reply) => {
 
 //5. Download file (browser saves to disk)
 module.exports.downloadFile = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      const { raw } = request.query;
-      
-      let b2Key = null;
+  try {
+    const { filename } = request.params;
+    const { raw } = request.query;
 
-      if (filename && filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        // Look up the Asset and get its file (proxy or original depending on raw flag)
-        const asset = await request.server.prisma.asset.findUnique({
-          where: { id: filename },
-          include: { files: true }
-        });
-        if (asset && asset.files.length > 0) {
-          const original = asset.files.find(f => f.fileClass === 'original');
-          const proxy = asset.files.find(f => f.fileClass === 'proxy');
-          
-          if (raw === 'true') {
-            b2Key = original ? original.filePath : null;
-          } else {
-            b2Key = proxy ? proxy.filePath : original?.filePath;
-          }
+    let b2Key = null;
+
+    if (filename && filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      // Look up the Asset and get its file (proxy or original depending on raw flag)
+      const asset = await request.server.prisma.asset.findUnique({
+        where: { id: filename },
+        include: { files: true }
+      });
+      if (asset && asset.files.length > 0) {
+        const original = asset.files.find(f => f.fileClass === 'original');
+        const proxy = asset.files.find(f => f.fileClass === 'proxy');
+
+        if (raw === 'true') {
+          b2Key = original ? original.filePath : null;
+        } else {
+          b2Key = proxy ? proxy.filePath : original?.filePath;
         }
       }
-
-      if (b2Key) {
-        return await handleMediaRedirectOrServe(request, reply, b2Key, true);
-      }
-      
-      return await handleMediaRedirectOrServe(request, reply, filename, true);
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: "Failed to download file",
-        message: error.message,
-      });
     }
+
+    if (b2Key) {
+      return await handleMediaRedirectOrServe(request, reply, b2Key, true);
+    }
+
+    return await handleMediaRedirectOrServe(request, reply, filename, true);
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: "Failed to download file",
+      message: error.message,
+    });
+  }
 };
 
 //6. List soft-deleted files (Trash)
 module.exports.softDelete = async (request, reply) => {
-    try {
-      const userId = request.user.id;
+  try {
+    const userId = request.user.id;
 
-      const liveUser = await request.server.prisma.user.findUnique({
-        where: { id: userId },
-        include: { roleRelation: true }
-      });
-      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
-      const userRole = rawRoleName.trim().toLowerCase();
-      
-      let whereClause = {
-        orgId: request.user.orgId,
-        status: { in: ['trash'] },
-        deletedAt: { not: null }
-      };
+    const liveUser = await request.server.prisma.user.findUnique({
+      where: { id: userId },
+      include: { roleRelation: true }
+    });
+    const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+    const userRole = rawRoleName.trim().toLowerCase();
 
-      if (userRole === 'editor' || userRole === 'collaborator' || userRole === 'viewer') {
-        whereClause.OR = [
-          { uploadedByUserId: userId },
-          { deletedByUserId: userId }
-        ];
-      } else {
-        whereClause.OR = [
-          { uploadedByUserId: userId },
-          { deletedByUserId: userId } // Admin sees files they deleted, or they uploaded
-        ];
-      }
+    let whereClause = {
+      orgId: request.user.orgId,
+      status: { in: ['trash'] },
+      deletedAt: { not: null }
+    };
 
-      // Fetch soft-deleted assets from PostgreSQL database
-      const dbAssets = await request.server.prisma.asset.findMany({
-        where: whereClause,
-        include: { files: true, metadata: true, transcodeJobs: true },
-        orderBy: {
-          deletedAt: 'desc'
-        }
-      });
-      
-      // Transform files using the same structure as active files
-      const transformed = dbAssets.map(asset => {
-        const originalFile = asset.files.find(f => f.fileClass === 'original');
-        const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
-        const transcodeJob = asset.transcodeJobs.find(j => j.provider === 'coconut');
-
-        const fileSize = Number(originalFile?.sizeBytes || 0);
-        const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
-        const normalizedType = asset.type;
-        
-        return {
-          id: asset.id,
-          name: asset.title,
-          type: normalizedType,
-          size: fileSize,
-          uploadDate: asset.createdAt.toISOString(),
-          deletedAt: asset.deletedAt ? asset.deletedAt.toISOString() : new Date().toISOString(),
-          url: fileUrl,
-          thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
-          tags: asset.aiTags || [],
-          metadata: asset.metadata || {},
-          compressionStatus: asset.transcodingStatus || "completed",
-          storageLocation: asset.metadata?.storageLocation || "local",
-          isTrash: true,
-        };
-      });
-
-      return reply.send({
-        success: true,
-        assets: transformed,
-      });
-    } catch (error) {
-      console.error("Error retrieving trash assets:", error);
-      return reply.code(500).send({
-        success: false,
-        error: "Failed to retrieve trash assets",
-        message: error.message,
-      });
+    if (userRole === 'editor' || userRole === 'collaborator' || userRole === 'viewer') {
+      whereClause.OR = [
+        { uploadedByUserId: userId },
+        { deletedByUserId: userId }
+      ];
+    } else {
+      whereClause.OR = [
+        { uploadedByUserId: userId },
+        { deletedByUserId: userId } // Admin sees files they deleted, or they uploaded
+      ];
     }
+
+    // Fetch soft-deleted assets from PostgreSQL database
+    const dbAssets = await request.server.prisma.asset.findMany({
+      where: whereClause,
+      include: { files: true, metadata: true, transcodeJobs: true },
+      orderBy: {
+        deletedAt: 'desc'
+      }
+    });
+
+    // Transform files using the same structure as active files
+    const transformed = dbAssets.map(asset => {
+      const originalFile = asset.files.find(f => f.fileClass === 'original');
+      const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
+      const transcodeJob = asset.transcodeJobs.find(j => j.provider === 'coconut');
+
+      const fileSize = Number(originalFile?.sizeBytes || 0);
+      const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+      const normalizedType = asset.type;
+
+      return {
+        id: asset.id,
+        name: asset.title,
+        type: normalizedType,
+        size: fileSize,
+        uploadDate: asset.createdAt.toISOString(),
+        deletedAt: asset.deletedAt ? asset.deletedAt.toISOString() : new Date().toISOString(),
+        url: fileUrl,
+        thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
+        tags: asset.aiTags || [],
+        metadata: asset.metadata || {},
+        compressionStatus: asset.transcodingStatus || "completed",
+        storageLocation: asset.metadata?.storageLocation || "local",
+        isTrash: true,
+      };
+    });
+
+    return reply.send({
+      success: true,
+      assets: transformed,
+    });
+  } catch (error) {
+    console.error("Error retrieving trash assets:", error);
+    return reply.code(500).send({
+      success: false,
+      error: "Failed to retrieve trash assets",
+      message: error.message,
+    });
+  }
 };
 
 //7. Restore a soft-deleted file------used for restoring soft deleted files
 module.exports.restoreSoftDelete = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      
-      let restoredFromDb = false;
+  try {
+    const { filename } = request.params;
 
-      // 1. If it's a database UUID, restore in PostgreSQL database
-      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        try {
-          const asset = await request.server.prisma.asset.findUnique({ where: { id: filename }});
-          if (asset) {
-            let updateData = {
-              deletedAt: null,
-              status: "active",
-              deletedByUserId: null
-            };
+    let restoredFromDb = false;
 
-            await request.server.prisma.asset.update({
-              where: { id: filename },
-              data: updateData
-            });
-            restoredFromDb = true;
-          }
-        } catch (dbErr) {
-          console.warn("Could not restore asset in database:", dbErr.message);
+    // 1. If it's a database UUID, restore in PostgreSQL database
+    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      try {
+        const asset = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+        if (asset) {
+          let updateData = {
+            deletedAt: null,
+            status: "active",
+            deletedByUserId: null
+          };
+
+          await request.server.prisma.asset.update({
+            where: { id: filename },
+            data: updateData
+          });
+          restoredFromDb = true;
         }
+      } catch (dbErr) {
+        console.warn("Could not restore asset in database:", dbErr.message);
       }
-
-      // 2. Also try restoring from B2 if B2 is enabled
-      if (b2Storage.isEnabled()) {
-        try {
-          const b2Files = await b2Storage.listTrashFiles("uploads/");
-          const exactMatch = b2Files.find(f => f.id === filename || f.name === filename || f.key.endsWith(filename));
-
-          if (exactMatch) {
-            await b2Storage.restoreFile(exactMatch.key);
-          }
-        } catch (b2Error) {
-          console.warn("Could not restore file from B2:", b2Error.message);
-        }
-      }
-
-      return reply.send({
-        success: true,
-        message: restoredFromDb ? "File restored successfully" : "File restore attempted"
-      });
-    } catch (error) {
-      console.error("Error restoring file:", error);
-      return reply.code(500).send({
-        success: false,
-        error: error.message
-      });
     }
+
+    // 2. Also try restoring from B2 if B2 is enabled
+    if (b2Storage.isEnabled()) {
+      try {
+        const b2Files = await b2Storage.listTrashFiles("uploads/");
+        const exactMatch = b2Files.find(f => f.id === filename || f.name === filename || f.key.endsWith(filename));
+
+        if (exactMatch) {
+          await b2Storage.restoreFile(exactMatch.key);
+        }
+      } catch (b2Error) {
+        console.warn("Could not restore file from B2:", b2Error.message);
+      }
+    }
+
+    return reply.send({
+      success: true,
+      message: restoredFromDb ? "File restored successfully" : "File restore attempted"
+    });
+  } catch (error) {
+    console.error("Error restoring file:", error);
+    return reply.code(500).send({
+      success: false,
+      error: error.message
+    });
+  }
 }
 
 //8. Permanently delete a file from B2
 module.exports.deletePermanently = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      
-      let deletedFromLocal = false;
-      let deletedFromB2 = false;
+  try {
+    const { filename } = request.params;
 
-      // Try deleting local duplicates just in case
-      let filePath = await resolveMediaFilePath(request, filename);
-      while (filePath && fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-        deletedFromLocal = true;
-        filePath = await resolveMediaFilePath(request, filename);
+    let deletedFromLocal = false;
+    let deletedFromB2 = false;
+
+    // Try deleting local duplicates just in case
+    let filePath = await resolveMediaFilePath(request, filename);
+    while (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      deletedFromLocal = true;
+      filePath = await resolveMediaFilePath(request, filename);
+    }
+
+    if (b2Storage.isEnabled()) {
+      try {
+        const b2Files = await b2Storage.listTrashFiles("uploads/");
+        const activeFiles = await b2Storage.searchFiles(filename);
+
+        const allB2Files = [...b2Files, ...activeFiles];
+        const exactMatch = allB2Files.find(f => f.id === filename || f.key === filename || f.key.endsWith(filename));
+
+        if (exactMatch) {
+          await b2Storage.permanentlyDeleteFile(exactMatch.key);
+          deletedFromB2 = true;
+        } else {
+          const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
+          await b2Storage.permanentlyDeleteFile(cleanKey);
+          deletedFromB2 = true;
+        }
+      } catch (b2Error) {
+        console.warn(`Failed to permanently delete key ${filename} from B2:`, b2Error.message);
       }
+    }
 
-      if (b2Storage.isEnabled()) {
-        try {
-          const b2Files = await b2Storage.listTrashFiles("uploads/");
-          const activeFiles = await b2Storage.searchFiles(filename);
-          
-          const allB2Files = [...b2Files, ...activeFiles];
-          const exactMatch = allB2Files.find(f => f.id === filename || f.key === filename || f.key.endsWith(filename));
+    let dbDeleted = false;
+    let assetToDelete = null;
 
-          if (exactMatch) {
-            await b2Storage.permanentlyDeleteFile(exactMatch.key);
-            deletedFromB2 = true;
-          } else {
-            const cleanKey = filename.startsWith("uploads/") ? filename : `uploads/${filename}`;
-            await b2Storage.permanentlyDeleteFile(cleanKey);
-            deletedFromB2 = true;
+    // First delete from database if it's a UUID
+    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      try {
+        assetToDelete = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+        if (assetToDelete) {
+          await request.server.prisma.asset.delete({
+            where: { id: filename }
+          });
+          dbDeleted = true;
+          if (assetToDelete.deletedByUserId) {
+            await createNotification(request.server, assetToDelete.deletedByUserId, assetToDelete.orgId, 'deletion_approved', 'Permanently Deleted', `Your asset ${assetToDelete.title} has been permanently deleted.`, assetToDelete.id);
           }
-        } catch (b2Error) {
-          console.warn(`Failed to permanently delete key ${filename} from B2:`, b2Error.message);
         }
+      } catch (dbErr) {
+        console.warn("Could not delete asset from database during permanent delete:", dbErr.message);
       }
- 
-      let dbDeleted = false;
-      let assetToDelete = null;
+    }
 
-      // First delete from database if it's a UUID
-      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        try {
-          assetToDelete = await request.server.prisma.asset.findUnique({ where: { id: filename }});
-          if (assetToDelete) {
-            await request.server.prisma.asset.delete({
-              where: { id: filename }
-            });
-            dbDeleted = true;
-            if (assetToDelete.deletedByUserId) {
-              await createNotification(request.server, assetToDelete.deletedByUserId, assetToDelete.orgId, 'deletion_approved', 'Permanently Deleted', `Your asset ${assetToDelete.title} has been permanently deleted.`, assetToDelete.id);
-            }
-          }
-        } catch (dbErr) {
-          console.warn("Could not delete asset from database during permanent delete:", dbErr.message);
-        }
-      }
-
-      if (!deletedFromLocal && !deletedFromB2 && !dbDeleted) {
-        return reply.code(404).send({
-          success: false,
-          error: "File not found on local disk, B2 storage, or Database",
-        });
-      }
-
-
-      return reply.send({
-        success: true,
-        message: "File permanently deleted",
-        deletedFrom: {
-          local: deletedFromLocal,
-          b2: deletedFromB2,
-        }
-      });
-    } catch (error) {
-      return reply.code(500).send({
+    if (!deletedFromLocal && !deletedFromB2 && !dbDeleted) {
+      return reply.code(404).send({
         success: false,
-        error: error.message,
+        error: "File not found on local disk, B2 storage, or Database",
       });
     }
+
+
+    return reply.send({
+      success: true,
+      message: "File permanently deleted",
+      deletedFrom: {
+        local: deletedFromLocal,
+        b2: deletedFromB2,
+      }
+    });
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: error.message,
+    });
+  }
 }
 
 //9. GET /api/media/:filename — file bytes for players
 module.exports.getMediaFile = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      const wantsMeta =
-        request.query.meta === "true" || request.query.meta === "1";
+  try {
+    const { filename } = request.params;
+    const wantsMeta =
+      request.query.meta === "true" || request.query.meta === "1";
 
-      if (wantsMeta) {
-        // Look up by UUID first
-        let fetchedAsset;
-        if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-          fetchedAsset = await request.server.prisma.asset.findUnique({
-            where: { id: filename },
-            include: { files: true, metadata: true, transcodeJobs: true }
-          });
-        }
-
-        if (fetchedAsset) {
-          const originalFile = fetchedAsset.files.find(f => f.fileClass === 'original');
-          const proxyFile = fetchedAsset.files.find(f => f.fileClass === 'proxy');
-          const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
-          
-          const fileSize = Number(originalFile?.sizeBytes || 0);
-          const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
-          const normalizedType = fetchedAsset.type;
-
-          return reply.send({
-            success: true,
-            asset: {
-              id: fetchedAsset.id,
-              name: fetchedAsset.title,
-              type: normalizedType,
-              size: fileSize,
-              uploadDate: fetchedAsset.createdAt.toISOString(),
-              url: fileUrl,
-              thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
-              tags: fetchedAsset.aiTags || [],
-              metadata: fetchedAsset.metadata || {},
-              status: fetchedAsset.status,
-              customMetadata: {
-                ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
-                transcodingProgress: transcodeJob?.status === 'processing' 
-                  ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
-                  : null,
-              },
-              transcodingStatus: transcodeJob?.status || "completed",
-              compressionStatus: transcodeJob?.status || "completed",
-            }
-          });
-        }
-
-        const storedName = resolveMediaFilename(filename);
-        const filePath = await resolveMediaFilePath(request, filename);
-        if (!filePath || !fs.existsSync(filePath)) {
-          return reply.code(404).send({ success: false, error: "File not found" });
-        }
-
-        const stats = fs.statSync(filePath);
-        const mimeType = inferMimeType(storedName || filename);
-        const asset = toFrontendAssetShape({
-          id: storedName || filename,
-          name: (storedName || filename).replace(/^\d+-/, ""),
-          mimeType,
-          size: stats.size,
-          uploadDate: stats.mtime.toISOString(),
-          tags: [],
-          metadata: {},
-          compressionStatus: "completed",
+    if (wantsMeta) {
+      // Look up by UUID first
+      let fetchedAsset;
+      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+        fetchedAsset = await request.server.prisma.asset.findUnique({
+          where: { id: filename },
+          include: {
+            files: true,
+            metadata: true,
+            transcodeJobs: true,
+            uploadedBy: { select: { id: true, name: true, email: true } },
+            assetTags: { include: { tag: true } },
+            collectionAssets: { include: { collection: true } }
+          }
         });
-
-        return reply.send({ success: true, asset });
       }
 
-      return await handleMediaRedirectOrServe(request, reply, filename, false);
-    } catch (error) {
-      return reply.code(500).send({
-        success: false,
-        error: "Failed to serve file",
-        message: error.message,
+      if (fetchedAsset) {
+        const originalFile = fetchedAsset.files.find(f => f.fileClass === 'original');
+        const proxyFile = fetchedAsset.files.find(f => f.fileClass === 'proxy');
+        const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
+
+        const fileSize = Number(originalFile?.sizeBytes || 0);
+        const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
+        const normalizedType = fetchedAsset.type;
+
+        const tagList = fetchedAsset.assetTags?.map(at => at.tag?.name).filter(Boolean) || fetchedAsset.aiTags || [];
+        const folderInfo = fetchedAsset.collectionAssets?.[0]?.collection || null;
+
+        return reply.send({
+          success: true,
+          asset: {
+            id: fetchedAsset.id,
+            name: fetchedAsset.title,
+            type: normalizedType,
+            size: fileSize,
+            uploadDate: fetchedAsset.createdAt.toISOString(),
+            url: fileUrl,
+            thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
+            tags: tagList,
+            metadata: fetchedAsset.metadata || {},
+            status: fetchedAsset.status,
+            uploadedBy: fetchedAsset.uploadedBy || null,
+            folder: folderInfo,
+            customMetadata: {
+              ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
+              transcodingProgress: transcodeJob?.status === 'processing'
+                ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
+                : null,
+            },
+            transcodingStatus: transcodeJob?.status || "completed",
+            compressionStatus: transcodeJob?.status || "completed",
+          }
+        });
+      }
+
+      const storedName = resolveMediaFilename(filename);
+      const filePath = await resolveMediaFilePath(request, filename);
+      if (!filePath || !fs.existsSync(filePath)) {
+        return reply.code(404).send({ success: false, error: "File not found" });
+      }
+
+      const stats = fs.statSync(filePath);
+      const mimeType = inferMimeType(storedName || filename);
+      const asset = toFrontendAssetShape({
+        id: storedName || filename,
+        name: (storedName || filename).replace(/^\d+-/, ""),
+        mimeType,
+        size: stats.size,
+        uploadDate: stats.mtime.toISOString(),
+        tags: [],
+        metadata: {},
+        compressionStatus: "completed",
       });
+
+      return reply.send({ success: true, asset });
     }
+
+    return await handleMediaRedirectOrServe(request, reply, filename, false);
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: "Failed to serve file",
+      message: error.message,
+    });
+  }
 };
 
 //10. Upload media asset
 module.exports.uploadMediaFile = async (request, reply) => {
-    try {
-      if (!b2Storage.isEnabled()) {
-        return reply.code(500).send({
-          success: false,
-          message: "Cloud storage is not configured. Local storage is disabled.",
-        });
-      }
-
-      const totalFileSize = Number(request.query.fileSize) || Number(request.headers['x-file-size']) || 0;
-      const durationSeconds = request.query.durationSeconds ? Number(request.query.durationSeconds) : null;
-
-      // Write headers for NDJSON streaming immediately to flush them to the browser
-      reply.raw.writeHead(200, {
-        "Content-Type": "application/x-ndjson",
-        "Transfer-Encoding": "chunked",
-        "X-Content-Type-Options": "nosniff",
-        "Access-Control-Allow-Origin": request.headers.origin || "*",
-        "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-File-Size, X-Request-Id",
+  try {
+    if (!b2Storage.isEnabled()) {
+      return reply.code(500).send({
+        success: false,
+        message: "Cloud storage is not configured. Local storage is disabled.",
       });
-
-      const sendProgress = (loaded, total) => {
-        if (!reply.raw.writableEnded) {
-          reply.raw.write(JSON.stringify({ type: "progress", loaded, total }) + "\n");
-        }
-      };
-
-      // Send initial progress immediately to flush the stream connection
-      sendProgress(0, totalFileSize);
-
-      const role = (request.user && request.user.role) ? request.user.role : "member";
-      const isolationTier = (role === "super_admin" || role === "admin" || role === "system_admin") ? "internal" : "external";
-      
-      // Generate data-based subfolder (YYYY-MM-DD)
-      const today = new Date().toISOString().split("T")[0];
-
-      const parts = request.parts();
-      const uploadedFiles = [];
-
-      for await (const part of parts) {
-        if (part.file) {
-          const folderName = `${Date.now()}`;
-          const filename = `raw-${part.filename}`;
-          const b2Key = `uploads/${isolationTier}/${today}/${folderName}/${filename}`; 
-          
-          console.log(`Streaming directly to B2: ${b2Key}`);
-          
-          let size = 0;
-          part.file.on('data', (chunk) => {
-            size += chunk.length;
-          });
-          
-          let b2Result;
-          try {
-            b2Result = await b2Storage.uploadStream(
-              part.file,
-              b2Key,
-              part.mimetype,
-              {
-                originalName: part.filename,
-              },
-              (progress) => {
-                console.log(`[B2 Upload Progress] ${part.filename}: ${progress.loaded} / ${totalFileSize || size}`);
-                sendProgress(progress.loaded, totalFileSize || progress.total || size || 0);
-              }
-            );
-          } catch (err) {
-            console.error("Direct B2 stream failed:", err);
-            throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
-          }
-
-          const b2Url = b2Result?.url || null;
-          const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
-
-          const isVideo = part.mimetype.startsWith("video/");
-
-          const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
-          const assetType = Object.keys(typeMap).find(k => part.mimetype.startsWith(`${k}/`)) || 'document';
-
-          // Write to the New Architecture
-          const newAsset = await request.server.prisma.asset.create({
-            data: {
-              orgId: request.user.orgId,
-              title: part.filename,
-              type: assetType,
-              status: isVideo ? "processing" : "active",
-              uploadedByUserId: request.user.id,
-              files: {
-                create: {
-                  fileClass: "original",
-                  fileName: filename,
-                  filePath: b2Key,
-                  sizeBytes: BigInt(size),
-                  mimeType: part.mimetype,
-                  cdnUrl: fileUrl
-                }
-              },
-              metadata: {
-                create: {
-                  technicalSpecs: durationSeconds ? { durationSeconds } : {}
-                }
-              }
-            }
-          });
-
-          // If it's a video, queue a compression job in Redis
-          if (isVideo) {
-            try {
-              // Create TranscodeJob in new architecture
-              await request.server.prisma.transcodeJob.create({
-                data: {
-                  assetId: newAsset.id,
-                  provider: "coconut",
-                  status: "queued"
-                }
-              });
-
-              // 5GB threshold for heavy queue
-              const fiveGB = 5 * 1024 * 1024 * 1024;
-              const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
-              
-              await queueToUse.add("compress", {
-                assetId: newAsset.id, // For new webhook
-                key: b2Key,
-                preset: "medium", // Default to balanced H.264
-              });
-              console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
-            } catch (queueErr) {
-              console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
-            }
-          }
-
-          const fileInfo = {
-            id: newAsset.id,
-            name: newAsset.title,
-            type: newAsset.type,
-            size: Number(size),
-            uploadDate: newAsset.createdAt.toISOString(),
-            url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
-            thumbnail: newAsset.type === "image" ? `/api/media/${encodeURIComponent(newAsset.id)}/stream` : null,
-            tags: [],
-            metadata: { technicalSpecs: durationSeconds ? { durationSeconds } : {} },
-            // Report correct status to the frontend
-            compressionStatus: isVideo ? "queued" : "completed",
-            storageLocation: "b2",
-          };
-
-
-          uploadedFiles.push(fileInfo);
-          console.log(`File streamed directly to B2 and saved to DB: ${part.filename} (${size} bytes)`);
-        }
-      }
-
-      if (uploadedFiles.length === 0) {
-        if (!reply.raw.writableEnded) {
-          reply.raw.write(JSON.stringify({ type: "error", message: "No files uploaded" }) + "\n");
-          reply.raw.end();
-        }
-        reply.sent = true;
-        return;
-      }
-
-      if (!reply.raw.writableEnded) {
-        reply.raw.write(JSON.stringify({
-          type: "complete",
-          asset: uploadedFiles[0],
-          files: uploadedFiles,
-          uploadedTo: {
-            local: false,
-            b2: true,
-          },
-        }) + "\n");
-        reply.raw.end();
-      }
-      reply.sent = true;
-
-    } catch (error) {
-      console.error("Upload error:", error);
-      if (!reply.raw.writableEnded) {
-        reply.raw.write(JSON.stringify({
-          type: "error",
-          message: "Upload failed",
-          error: error.message,
-        }) + "\n");
-        reply.raw.end();
-      }
-      reply.sent = true;
     }
+
+    const totalFileSize = Number(request.query.fileSize) || Number(request.headers['x-file-size']) || 0;
+    const durationSeconds = request.query.durationSeconds ? Number(request.query.durationSeconds) : null;
+
+    // Write headers for NDJSON streaming immediately to flush them to the browser
+    reply.raw.writeHead(200, {
+      "Content-Type": "application/x-ndjson",
+      "Transfer-Encoding": "chunked",
+      "X-Content-Type-Options": "nosniff",
+      "Access-Control-Allow-Origin": request.headers.origin || "*",
+      "Access-Control-Allow-Credentials": "true",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With, Accept, Origin, X-File-Size, X-Request-Id",
+    });
+
+    const sendProgress = (loaded, total) => {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(JSON.stringify({ type: "progress", loaded, total }) + "\n");
+      }
+    };
+
+    // Send initial progress immediately to flush the stream connection
+    sendProgress(0, totalFileSize);
+
+    const role = (request.user && request.user.role) ? request.user.role : "member";
+    const isolationTier = (role === "super_admin" || role === "admin" || role === "system_admin") ? "internal" : "external";
+
+    // Generate data-based subfolder (YYYY-MM-DD)
+    const today = new Date().toISOString().split("T")[0];
+
+    const parts = request.parts();
+    const uploadedFiles = [];
+
+    for await (const part of parts) {
+      if (part.file) {
+        const folderName = `${Date.now()}`;
+        const filename = `raw-${part.filename}`;
+        const isImage = part.mimetype.startsWith("image/");
+        const isAudio = part.mimetype.startsWith("audio/");
+        const subFolder = isImage ? "images" : isAudio ? "audios" : null;
+        const b2Key = subFolder
+          ? `uploads/${subFolder}/${isolationTier}/${today}/${folderName}/${filename}`
+          : `uploads/${isolationTier}/${today}/${folderName}/${filename}`;
+
+        console.log(`Streaming directly to B2: ${b2Key}`);
+
+        let size = 0;
+        part.file.on('data', (chunk) => {
+          size += chunk.length;
+        });
+
+        let b2Result;
+        try {
+          b2Result = await b2Storage.uploadStream(
+            part.file,
+            b2Key,
+            part.mimetype,
+            {
+              originalName: part.filename,
+            },
+            (progress) => {
+              console.log(`[B2 Upload Progress] ${part.filename}: ${progress.loaded} / ${totalFileSize || size}`);
+              sendProgress(progress.loaded, totalFileSize || progress.total || size || 0);
+            }
+          );
+        } catch (err) {
+          console.error("Direct B2 stream failed:", err);
+          throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
+        }
+
+        const b2Url = b2Result?.url || null;
+        const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
+
+        const isVideo = part.mimetype.startsWith("video/");
+
+        const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
+        const assetType = Object.keys(typeMap).find(k => part.mimetype.startsWith(`${k}/`)) || 'document';
+
+        // Write to the New Architecture
+        const newAsset = await request.server.prisma.asset.create({
+          data: {
+            orgId: request.user.orgId,
+            title: part.filename,
+            type: assetType,
+            status: isVideo ? "processing" : "active",
+            uploadedByUserId: request.user.id,
+            files: {
+              create: {
+                fileClass: "original",
+                fileName: filename,
+                filePath: b2Key,
+                sizeBytes: BigInt(size),
+                mimeType: part.mimetype,
+                cdnUrl: fileUrl
+              }
+            },
+            metadata: {
+              create: {
+                technicalSpecs: (() => {
+                  let specs = durationSeconds ? { durationSeconds } : {};
+                  if (request.query.technicalSpecs) {
+                    try { specs = { ...specs, ...JSON.parse(request.query.technicalSpecs) }; } catch (e) { }
+                  }
+                  return specs;
+                })()
+              }
+            }
+          }
+        });
+
+        // If it's a video, queue a compression job in Redis
+        if (isVideo) {
+          try {
+            // Create TranscodeJob in new architecture
+            await request.server.prisma.transcodeJob.create({
+              data: {
+                assetId: newAsset.id,
+                provider: "coconut",
+                status: "queued"
+              }
+            });
+
+            // 5GB threshold for heavy queue
+            const fiveGB = 5 * 1024 * 1024 * 1024;
+            const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+
+            await queueToUse.add("compress", {
+              assetId: newAsset.id, // For new webhook
+              key: b2Key,
+              preset: "medium", // Default to balanced H.264
+            });
+            console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
+          } catch (queueErr) {
+            console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
+          }
+        }
+
+        const fileInfo = {
+          id: newAsset.id,
+          name: newAsset.title,
+          type: newAsset.type,
+          size: Number(size),
+          uploadDate: newAsset.createdAt.toISOString(),
+          url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
+          thumbnail: newAsset.type === "image" ? `/api/media/${encodeURIComponent(newAsset.id)}/stream` : null,
+          tags: [],
+          metadata: { technicalSpecs: durationSeconds ? { durationSeconds } : {} },
+          // Report correct status to the frontend
+          compressionStatus: isVideo ? "queued" : "completed",
+          storageLocation: "b2",
+        };
+
+
+        uploadedFiles.push(fileInfo);
+        console.log(`File streamed directly to B2 and saved to DB: ${part.filename} (${size} bytes)`);
+      }
+    }
+
+    if (uploadedFiles.length === 0) {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(JSON.stringify({ type: "error", message: "No files uploaded" }) + "\n");
+        reply.raw.end();
+      }
+      reply.sent = true;
+      return;
+    }
+
+    if (!reply.raw.writableEnded) {
+      reply.raw.write(JSON.stringify({
+        type: "complete",
+        asset: uploadedFiles[0],
+        files: uploadedFiles,
+        uploadedTo: {
+          local: false,
+          b2: true,
+        },
+      }) + "\n");
+      reply.raw.end();
+    }
+    reply.sent = true;
+
+  } catch (error) {
+    console.error("Upload error:", error);
+    if (!reply.raw.writableEnded) {
+      reply.raw.write(JSON.stringify({
+        type: "error",
+        message: "Upload failed",
+        error: error.message,
+      }) + "\n");
+      reply.raw.end();
+    }
+    reply.sent = true;
+  }
 }
 
 
 //11. Delete media asset
 module.exports.deleteMediaFile = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      const userRole = request.user?.role || 'Viewer';
-      
-      // If it's a database UUID, handle deletion logic based on role
-      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        try {
-          // Find the asset first to get uploadedByUserId
-          const assetToUpdate = await request.server.prisma.asset.findUnique({ where: { id: filename } });
-          
-          if (!assetToUpdate) {
-             return reply.code(404).send({ success: false, error: "Asset not found" });
-          }
+  try {
+    const { filename } = request.params;
+    const userRole = request.user?.role || 'Viewer';
 
-          const liveUser = await request.server.prisma.user.findUnique({
-            where: { id: request.user.id },
-            include: { roleRelation: true }
-          });
-          const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
-          const userRole = rawRoleName.trim().toLowerCase();
+    // If it's a database UUID, handle deletion logic based on role
+    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      try {
+        // Find the asset first to get uploadedByUserId
+        const assetToUpdate = await request.server.prisma.asset.findUnique({ where: { id: filename } });
 
-          // 1. Super Admin: Permanent Delete Directly
-          if (userRole === 'super admin' || userRole === 'superadmin') {
-            return await module.exports.deletePermanently(request, reply);
-          }
-
-          // Admin and Editor will fall through to Soft Delete
-
-          // 3. Editor: Soft Delete (goes to Trash normally)
-          const asset = await request.server.prisma.asset.update({
-            where: { id: filename },
-            data: { 
-              status: "trash",
-              deletedAt: new Date(),
-              deletedByUserId: request.user.id
-            }
-          });
-          
-          // Notify the original uploader if someone else deleted it
-          if (asset.uploadedByUserId && asset.uploadedByUserId !== request.user.id) {
-            await createNotification(
-              request.server, 
-              asset.uploadedByUserId, 
-              asset.orgId, 
-              'deletion_alert', 
-              'File Moved to Trash', 
-              `${request.user.name} (${userRole}) moved your file '${asset.title}' to the Trash.`, 
-              asset.id
-            );
-          }
-          
-          return reply.send({
-            success: true,
-            message: "File deleted successfully",
-          });
-        } catch (dbErr) {
-          console.warn("Could not soft delete asset in database:", dbErr.message);
-          return reply.code(500).send({
-            success: false,
-            error: "Failed to soft delete asset in database",
-          });
+        if (!assetToUpdate) {
+          return reply.code(404).send({ success: false, error: "Asset not found" });
         }
-      } else {
-        return reply.code(400).send({
+
+        const liveUser = await request.server.prisma.user.findUnique({
+          where: { id: request.user.id },
+          include: { roleRelation: true }
+        });
+        const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+        const userRole = rawRoleName.trim().toLowerCase();
+
+        // 1. Super Admin: Permanent Delete Directly
+        if (userRole === 'super admin' || userRole === 'superadmin') {
+          return await module.exports.deletePermanently(request, reply);
+        }
+
+        // Admin and Editor will fall through to Soft Delete
+
+        // 3. Editor: Soft Delete (goes to Trash normally)
+        const asset = await request.server.prisma.asset.update({
+          where: { id: filename },
+          data: {
+            status: "trash",
+            deletedAt: new Date(),
+            deletedByUserId: request.user.id
+          }
+        });
+
+        // Notify the original uploader if someone else deleted it
+        if (asset.uploadedByUserId && asset.uploadedByUserId !== request.user.id) {
+          await createNotification(
+            request.server,
+            asset.uploadedByUserId,
+            asset.orgId,
+            'deletion_alert',
+            'File Moved to Trash',
+            `${request.user.name} (${userRole}) moved your file '${asset.title}' to the Trash.`,
+            asset.id
+          );
+        }
+
+        return reply.send({
+          success: true,
+          message: "File deleted successfully",
+        });
+      } catch (dbErr) {
+        console.warn("Could not soft delete asset in database:", dbErr.message);
+        return reply.code(500).send({
           success: false,
-          error: "Invalid file ID for soft delete",
+          error: "Failed to soft delete asset in database",
         });
       }
-    } catch (error) {
-      return reply.code(500).send({
+    } else {
+      return reply.code(400).send({
         success: false,
-        error: error.message,
+        error: "Invalid file ID for soft delete",
       });
     }
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: error.message,
+    });
+  }
 };
 
 //11.1 Request Permanent Delete (From Trash, user initiates or cron does)
 module.exports.requestPermanentDelete = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        const asset = await request.server.prisma.asset.update({
-          where: { id: filename },
-          data: { status: "pending_admin_review" },
-          include: { deletedBy: { include: { roleRelation: true } } }
-        });
-        const userName = asset.deletedBy?.name || request.user?.name || 'User';
-        const roleName = asset.deletedBy?.roleRelation?.name || request.user?.role || 'Unknown Role';
-        await notifyRole(request.server, asset.orgId, 'Admin', 'approval_request', 'Manual Deletion Request', `${userName} (${roleName}) requested permanent deletion for file: '${asset.title}'. Please review.`, asset.id);
-        return reply.send({ success: true, message: "Deletion requested for admin review" });
-      }
-      return reply.code(400).send({ success: false, error: "Invalid file ID" });
-    } catch (error) {
-      return reply.code(500).send({ success: false, error: error.message });
+  try {
+    const { filename } = request.params;
+    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      const asset = await request.server.prisma.asset.update({
+        where: { id: filename },
+        data: { status: "pending_admin_review" },
+        include: { deletedBy: { include: { roleRelation: true } } }
+      });
+      const userName = asset.deletedBy?.name || request.user?.name || 'User';
+      const roleName = asset.deletedBy?.roleRelation?.name || request.user?.role || 'Unknown Role';
+      await notifyRole(request.server, asset.orgId, 'Admin', 'approval_request', 'Manual Deletion Request', `${userName} (${roleName}) requested permanent deletion for file: '${asset.title}'. Please review.`, asset.id);
+      return reply.send({ success: true, message: "Deletion requested for admin review" });
     }
+    return reply.code(400).send({ success: false, error: "Invalid file ID" });
+  } catch (error) {
+    return reply.code(500).send({ success: false, error: error.message });
+  }
 };
 
 //11.1.1 Get Pending Deletions
 module.exports.getPendingDeletions = async (request, reply) => {
-    try {
-      const liveUser = await request.server.prisma.user.findUnique({
-        where: { id: request.user.id },
-        include: { roleRelation: true }
-      });
-      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
-      const userRole = rawRoleName.trim().toLowerCase();
+  try {
+    const liveUser = await request.server.prisma.user.findUnique({
+      where: { id: request.user.id },
+      include: { roleRelation: true }
+    });
+    const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+    const userRole = rawRoleName.trim().toLowerCase();
 
-      let statusFilter = null;
-      
-      if (userRole === 'super admin' || userRole === 'superadmin') {
-        statusFilter = 'pending_super_admin';
-      } else if (userRole === 'admin') {
-        statusFilter = 'pending_admin_review';
-      } else {
-        return reply.code(403).send({ success: false, error: 'Unauthorized to view pending deletions' });
-      }
+    let statusFilter = null;
 
-      const assets = await request.server.prisma.asset.findMany({
-        where: { 
-          status: statusFilter,
-          orgId: request.user?.orgId 
-        },
-        include: {
-          deletedBy: {
-            include: { roleRelation: true }
-          }
-        },
-        orderBy: { deletedAt: 'desc' }
-      });
-
-      return reply.send({ success: true, data: assets });
-    } catch (error) {
-      return reply.code(500).send({ success: false, error: error.message });
+    if (userRole === 'super admin' || userRole === 'superadmin') {
+      statusFilter = 'pending_super_admin';
+    } else if (userRole === 'admin') {
+      statusFilter = 'pending_admin_review';
+    } else {
+      return reply.code(403).send({ success: false, error: 'Unauthorized to view pending deletions' });
     }
+
+    const assets = await request.server.prisma.asset.findMany({
+      where: {
+        status: statusFilter,
+        orgId: request.user?.orgId
+      },
+      include: {
+        deletedBy: {
+          include: { roleRelation: true }
+        }
+      },
+      orderBy: { deletedAt: 'desc' }
+    });
+
+    return reply.send({ success: true, data: assets });
+  } catch (error) {
+    return reply.code(500).send({ success: false, error: error.message });
+  }
 };
 
 //11.2 Admin Approve Delete (Moves to Super Admin Review)
 module.exports.adminApproveDelete = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      
-      const liveUser = await request.server.prisma.user.findUnique({
-        where: { id: request.user.id },
-        include: { roleRelation: true }
-      });
-      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
-      const userRole = rawRoleName.trim().toLowerCase();
+  try {
+    const { filename } = request.params;
 
-      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        if (userRole === 'admin') {
-          const asset = await request.server.prisma.asset.update({
-            where: { id: filename },
-            data: { status: "pending_super_admin" }
-          });
-          const userName = request.user?.name || 'Admin';
-          await notifyRole(request.server, asset.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) approved deletion for file: '${asset.title}'. Final approval needed.`, asset.id);
-          return reply.send({ success: true, message: "Approved by Admin, waiting for Super Admin" });
-        } else if (userRole === 'super admin' || userRole === 'superadmin') {
-          // If a Super Admin accepts, the file is permanently deleted.
-          return await module.exports.deletePermanently(request, reply);
-        } else {
-          return reply.code(403).send({ success: false, error: "Unauthorized to approve deletion" });
-        }
+    const liveUser = await request.server.prisma.user.findUnique({
+      where: { id: request.user.id },
+      include: { roleRelation: true }
+    });
+    const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+    const userRole = rawRoleName.trim().toLowerCase();
+
+    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      if (userRole === 'admin') {
+        const asset = await request.server.prisma.asset.update({
+          where: { id: filename },
+          data: { status: "pending_super_admin" }
+        });
+        const userName = request.user?.name || 'Admin';
+        await notifyRole(request.server, asset.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) approved deletion for file: '${asset.title}'. Final approval needed.`, asset.id);
+        return reply.send({ success: true, message: "Approved by Admin, waiting for Super Admin" });
+      } else if (userRole === 'super admin' || userRole === 'superadmin') {
+        // If a Super Admin accepts, the file is permanently deleted.
+        return await module.exports.deletePermanently(request, reply);
+      } else {
+        return reply.code(403).send({ success: false, error: "Unauthorized to approve deletion" });
       }
-      return reply.code(400).send({ success: false, error: "Invalid file ID" });
-    } catch (error) {
-      return reply.code(500).send({ success: false, error: error.message });
     }
+    return reply.code(400).send({ success: false, error: "Invalid file ID" });
+  } catch (error) {
+    return reply.code(500).send({ success: false, error: error.message });
+  }
 };
 
 //11.3 Reject Delete (Moves back to Trash or Active depending on role)
 module.exports.rejectDelete = async (request, reply) => {
-    try {
-      const { filename } = request.params;
-      
-      const liveUser = await request.server.prisma.user.findUnique({
-        where: { id: request.user.id },
-        include: { roleRelation: true }
-      });
-      const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
-      const userRole = rawRoleName.trim().toLowerCase();
+  try {
+    const { filename } = request.params;
 
-      if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-        
-        let updateData = {};
-        let message = "";
-        
-        if (userRole === 'super admin' || userRole === 'superadmin') {
-          // User requested that if Super Admin rejects an Editor's file, it goes to Editor's trash, not Admin's.
-          // By setting status to 'trash', it will appear in the trash of whoever deleted it (Editor or Admin).
-          updateData = { 
-            status: "trash",
-            deletedAt: new Date()
-          };
-          message = "Deletion rejected by Super Admin, returned to Trash";
-        } else if (userRole === 'admin') {
-          // If Admin rejects, it goes back to Trash with a reset 30-day timer
-          updateData = { 
-            status: "trash",
-            deletedAt: new Date()
-          };
-          message = "Deletion rejected by Admin, returned to Trash";
-        } else {
-           return reply.code(403).send({ success: false, error: "Unauthorized to reject deletion" });
-        }
+    const liveUser = await request.server.prisma.user.findUnique({
+      where: { id: request.user.id },
+      include: { roleRelation: true }
+    });
+    const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+    const userRole = rawRoleName.trim().toLowerCase();
 
-        const asset = await request.server.prisma.asset.update({
-          where: { id: filename },
-          data: updateData
-        });
-        
-        if (asset.deletedByUserId) {
-          await createNotification(request.server, asset.deletedByUserId, asset.orgId, 'deletion_rejected', 'Deletion Rejected', `Your permanent deletion request for ${asset.title} was rejected.`, asset.id);
-        }
-        
-        // Also notify the original uploader if it was made active
-        if (updateData.status === 'active' && asset.uploadedByUserId && asset.uploadedByUserId !== asset.deletedByUserId) {
-          await createNotification(request.server, asset.uploadedByUserId, asset.orgId, 'deletion_rejected', 'File Restored', `Your file ${asset.title} has been restored to Active status by Super Admin.`, asset.id);
-        }
+    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
 
-        return reply.send({ success: true, message });
+      let updateData = {};
+      let message = "";
+
+      if (userRole === 'super admin' || userRole === 'superadmin') {
+        // User requested that if Super Admin rejects an Editor's file, it goes to Editor's trash, not Admin's.
+        // By setting status to 'trash', it will appear in the trash of whoever deleted it (Editor or Admin).
+        updateData = {
+          status: "trash",
+          deletedAt: new Date()
+        };
+        message = "Deletion rejected by Super Admin, returned to Trash";
+      } else if (userRole === 'admin') {
+        // If Admin rejects, it goes back to Trash with a reset 30-day timer
+        updateData = {
+          status: "trash",
+          deletedAt: new Date()
+        };
+        message = "Deletion rejected by Admin, returned to Trash";
+      } else {
+        return reply.code(403).send({ success: false, error: "Unauthorized to reject deletion" });
       }
-      return reply.code(400).send({ success: false, error: "Invalid file ID" });
-    } catch (error) {
-      return reply.code(500).send({ success: false, error: error.message });
+
+      const asset = await request.server.prisma.asset.update({
+        where: { id: filename },
+        data: updateData
+      });
+
+      if (asset.deletedByUserId) {
+        await createNotification(request.server, asset.deletedByUserId, asset.orgId, 'deletion_rejected', 'Deletion Rejected', `Your permanent deletion request for ${asset.title} was rejected.`, asset.id);
+      }
+
+      // Also notify the original uploader if it was made active
+      if (updateData.status === 'active' && asset.uploadedByUserId && asset.uploadedByUserId !== asset.deletedByUserId) {
+        await createNotification(request.server, asset.uploadedByUserId, asset.orgId, 'deletion_rejected', 'File Restored', `Your file ${asset.title} has been restored to Active status by Super Admin.`, asset.id);
+      }
+
+      return reply.send({ success: true, message });
     }
+    return reply.code(400).send({ success: false, error: "Invalid file ID" });
+  } catch (error) {
+    return reply.code(500).send({ success: false, error: error.message });
+  }
 };
 
 //12. Initialize a Resumable Multipart Upload Session
 module.exports.initiateResumableUpload = async (request, reply) => {
-  const { fileName, fileSize, mimeType, durationSeconds } = request.body || {};
+  const { fileName, fileSize, mimeType, durationSeconds, title, summary, tagIds, folderId, technicalSpecs } = request.body || {};
   if (!fileName || !fileSize || !mimeType) {
     return reply.status(400).send({ message: "fileName, fileSize, and mimeType are required" });
   }
 
-  try{
+  try {
     const sessionId = require("uuid").v4();
     const dateStr = new Date().toISOString().split("T")[0];
     const timestamp = Date.now();
-    const b2Key = `uploads/internal/${dateStr}/${timestamp}/raw-${fileName}`;
+    const isImage = mimeType.startsWith("image/");
+    const isAudio = mimeType.startsWith("audio/");
+    const subFolder = isImage ? "images" : isAudio ? "audios" : null;
+    const b2Key = subFolder
+      ? `uploads/${subFolder}/internal/${dateStr}/${timestamp}/raw-${fileName}`
+      : `uploads/internal/${dateStr}/${timestamp}/raw-${fileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
@@ -1272,6 +1307,11 @@ module.exports.initiateResumableUpload = async (request, reply) => {
       fileSize: Number(fileSize),
       mimeType,
       durationSeconds: durationSeconds ? Number(durationSeconds) : null,
+      title: title || fileName,
+      summary: summary || "",
+      tagIds: tagIds || [],
+      folderId: folderId || null,
+      technicalSpecs: technicalSpecs || {},
       parts: [],
     };
 
@@ -1279,16 +1319,16 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     await redisClient.setex(`upload:session:${sessionId}`, 86400, JSON.stringify(sessionData));
     return { sessionId, uploadId, key: b2Key };
 
-  } catch(error) {
+  } catch (error) {
     console.error("Failed to initiate resumable upload:", error);
     return reply.status(500).send({ message: "Failed to initiate upload session", error: error.message });
   }
 }
 
 //13.  Upload an individual raw binary chunk
- module.exports.uploadChunk = async (request, reply) => {
+module.exports.uploadChunk = async (request, reply) => {
   const { sessionId } = request.query;
-  
+
   const partNumber = parseInt(request.query.partNumber, 10);
 
   if (!sessionId || isNaN(partNumber)) {
@@ -1324,12 +1364,12 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     // Add ETag to session parts
     session.parts = session.parts.filter(p => p.PartNumber !== partNumber);
     session.parts.push({ PartNumber: partNumber, ETag: partResult.ETag });
-      
+
     // Save updated session to Redis
     await redisClient.setex(`upload:session:${sessionId}`, 86400, JSON.stringify(session));
 
     return { success: true, partNumber, etag: partResult.ETag };
-    
+
   } catch (error) {
     console.error(`Failed to upload chunk ${partNumber}:`, error);
     return reply.status(500).send({ message: `Failed to upload chunk ${partNumber}`, error: error.message });
@@ -1365,8 +1405,8 @@ module.exports.getChunkUploadUrl = async (request, reply) => {
 //14. Check which chunks have been successfully uploaded
 module.exports.getUploadStatus = async (request, reply) => {
   const { sessionId } = request.params;
-  try{
-     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
+  try {
+    const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
     if (!sessionRaw) {
       return reply.status(404).send({ message: "Upload session not found" });
     }
@@ -1386,7 +1426,7 @@ module.exports.getUploadStatus = async (request, reply) => {
 
 //15. Complete Multipart Upload Session and Create Database Record
 module.exports.completeResumableUpload = async (request, reply) => {
-  const { sessionId, parts } = request.body || {};
+  const { sessionId, parts, title, summary, tagIds, folderId, technicalSpecs } = request.body || {};
   if (!sessionId) {
     return reply.status(400).send({ message: "sessionId is required" })
   }
@@ -1413,11 +1453,23 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
     const assetType = Object.keys(typeMap).find(k => session.mimeType.startsWith(`${k}/`)) || 'document';
 
+    // Merge technical specs from request body and upload session
+    const mergedTechSpecs = {
+      fileSize: Number(session.fileSize),
+      sizeBytes: Number(session.fileSize),
+      ...(session.technicalSpecs || {}),
+      ...(session.durationSeconds ? { durationSeconds: session.durationSeconds } : {}),
+      ...(technicalSpecs || {})
+    };
+
+    const assetTitle = title || session.title || session.fileName;
+    const assetSummary = summary || session.summary || "";
+
     // Save the asset metadata in PostgreSQL via Prisma (New Architecture)
     const newAsset = await request.server.prisma.asset.create({
       data: {
         orgId: request.user.orgId,
-        title: session.fileName,
+        title: assetTitle,
         type: assetType,
         status: isVideo ? "processing" : "active",
         uploadedByUserId: request.user.id,
@@ -1433,11 +1485,75 @@ module.exports.completeResumableUpload = async (request, reply) => {
         },
         metadata: {
           create: {
-            technicalSpecs: session.durationSeconds ? { durationSeconds: session.durationSeconds } : {}
+            technicalSpecs: mergedTechSpecs,
+            customProperties: {
+              summary: assetSummary,
+              originallyCreated: mergedTechSpecs.originallyCreated || null
+            }
           }
         }
       }
     });
+
+    // Link Tags if provided
+    const finalTagIds = tagIds || session.tagIds;
+    if (Array.isArray(finalTagIds) && finalTagIds.length > 0) {
+      try {
+        for (const tagItem of finalTagIds) {
+          if (!tagItem || typeof tagItem !== 'string') continue;
+          let targetTagId = tagItem;
+
+          // If tagItem is a tag name rather than a UUID, find or create the Tag record
+          if (!tagItem.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+            const tagRecord = await request.server.prisma.tag.upsert({
+              where: {
+                unique_tag_per_org: { orgId: request.user.orgId, name: tagItem.trim() }
+              },
+              update: {},
+              create: {
+                orgId: request.user.orgId,
+                name: tagItem.trim()
+              }
+            });
+            targetTagId = tagRecord.id;
+          }
+
+          // Link asset with tag in asset_tags table
+          await request.server.prisma.assetTag.upsert({
+            where: {
+              assetId_tagId: {
+                assetId: newAsset.id,
+                tagId: targetTagId
+              }
+            },
+            update: {},
+            create: {
+              assetId: newAsset.id,
+              tagId: targetTagId,
+              addedById: request.user.id
+            }
+          });
+        }
+      } catch (tagErr) {
+        console.warn(`[AssetTag] Could not associate tags with asset ${newAsset.id}:`, tagErr.message);
+      }
+    }
+
+    // Link Collection / Folder if provided
+    const finalFolderId = folderId || session.folderId;
+    if (finalFolderId && finalFolderId !== "none" && finalFolderId !== "root") {
+      try {
+        await request.server.prisma.collectionAsset.create({
+          data: {
+            assetId: newAsset.id,
+            collectionId: finalFolderId,
+            addedById: request.user.id
+          }
+        });
+      } catch (folderErr) {
+        console.warn(`[CollectionAsset] Could not associate folder with asset ${newAsset.id}:`, folderErr.message);
+      }
+    }
 
     // Queue compression if it's a video
     if (isVideo) {
@@ -1475,7 +1591,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
       thumbnail: null,
       tags: [],
-      metadata: { technicalSpecs: session.durationSeconds ? { durationSeconds: session.durationSeconds } : {} },
+      metadata: { technicalSpecs: mergedTechSpecs },
       compressionStatus: isVideo ? "queued" : "completed",
       storageLocation: "b2",
     };
@@ -1498,10 +1614,10 @@ module.exports.abortResumableUpload = async (request, reply) => {
 
   try {
     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
-    
+
     if (sessionRaw) {
       const session = JSON.parse(sessionRaw);
-      
+
       // Tell B2 to delete the partial uploaded chunks
       try {
         await b2Storage.abortMultipartUpload(session.key, session.uploadId);
@@ -1558,7 +1674,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
       }
 
       // -- DUPLICATE VERIFICATION TIER 1, 2, 3 --
-      
+
       const asset = await request.server.prisma.asset.findUnique({
         where: { id: newAssetId },
         include: { metadata: true, files: true }
@@ -1572,7 +1688,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
       // Tier 1: Exact Checksum Match
       if (checksum && originalFile?.sizeBytes) {
         const exactMatch = await request.server.prisma.asset.findFirst({
-          where : {
+          where: {
             id: { not: newAssetId },
             orgId: asset.orgId,
             deletedAt: null,
@@ -1586,12 +1702,12 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
       // If not an exact match, run the visual check
       if (duplicateOf.length === 0) {
         // Tier 2: Metadata Filter (Find Suspects)
-        const whereClause = { 
+        const whereClause = {
           id: { not: newAssetId },
           orgId: asset.orgId,
           deletedAt: null
         };
-        
+
         const potentialSuspects = await request.server.prisma.asset.findMany({
           where: whereClause,
           include: { metadata: true }
@@ -1606,13 +1722,13 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
 
         // Tier 3: Storyboard pHash (The Visual Math)
         const baseKey = compressedKey || originalFile?.filePath;
-        
+
         if (baseKey) {
           // 1. Download and Hash the 5 thumbnails Coconut just created
           for (let i = 1; i <= 5; i++) {
             const thumbKey = `${baseKey}_thumb${i}.jpg`;
             const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600); // 1-hour link
-            
+
             if (thumbUrl) {
               try {
                 let fetchResponse = null;
@@ -1628,14 +1744,14 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
                     throw new Error(`Failed to fetch thumbnail (Status: ${res.status})`);
                   }
                 }
-                
+
                 if (!fetchResponse) throw new Error("Thumbnail not found in B2 after 3 attempts");
 
                 const arrayBuffer = await fetchResponse.arrayBuffer();
                 const buffer = Buffer.from(arrayBuffer);
 
                 const hashStr = await imageHashAsync({ data: buffer, name: 'thumb.jpg' }, 16, true);
-                
+
                 await request.server.prisma.videoFrameHash.create({
                   data: {
                     assetId: newAssetId,
@@ -1643,7 +1759,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
                     hashValue: hashStr
                   }
                 });
-              } catch(e) {
+              } catch (e) {
                 console.error(`[Webhook] Failed to hash thumb ${i}:`, e.message);
               }
             }
@@ -1661,7 +1777,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
               GROUP BY vfh."assetId"
               HAVING COUNT(*) >= 3
             `, newAssetId, suspectIds);
-            
+
             duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
           }
         }
@@ -1670,7 +1786,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
       // Determine final status and metadata
       const newStatus = duplicateOf.length > 0 ? 'duplicate' : 'active';
       const currentCustomProps = typeof asset.metadata?.customProperties === 'object' ? asset.metadata.customProperties : {};
-      
+
       const updatedCustomProps = {
         ...currentCustomProps,
         duplicates: duplicateOf
@@ -1729,7 +1845,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
     try {
       await request.server.prisma.transcodeJob.updateMany({
         where: { assetId: newAssetId, provider: "coconut" },
-        data: { 
+        data: {
           status: 'failed',
           providerMetadata: event
         }
@@ -1778,9 +1894,65 @@ module.exports.checkDuplicateMediaFile = async (request, reply) => {
     }
 
     return reply.send({ isDuplicate: false });
-
   } catch (error) {
-    request.log.error(error);
-    return reply.code(500).send({ error: "Failed to check for duplicates" });
+    console.error("Error checking duplicate media file:", error);
+    return reply.code(500).send({ error: "Failed to check duplicate file" });
+  }
+};
+
+module.exports.updateAssetTags = async (request, reply) => {
+  try {
+    const { filename: assetId } = request.params;
+    const { tags = [] } = request.body || {};
+
+    const tagIds = [];
+    for (const rawTag of tags) {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawTag);
+      let tagObj = null;
+      if (isUuid) {
+        tagObj = await request.server.prisma.tag.findUnique({ where: { id: rawTag } });
+      }
+      if (!tagObj) {
+        const orgId = request.user?.orgId;
+        if (orgId) {
+          tagObj = await request.server.prisma.tag.upsert({
+            where: {
+              unique_tag_per_org: {
+                orgId: orgId,
+                name: rawTag.trim()
+              }
+            },
+            update: {},
+            create: {
+              orgId: orgId,
+              name: rawTag.trim()
+            }
+          });
+        } else {
+          tagObj = await request.server.prisma.tag.findFirst({ where: { name: rawTag.trim() } });
+        }
+      }
+      if (tagObj) tagIds.push(tagObj.id);
+    }
+
+    // Delete existing links for asset
+    await request.server.prisma.assetTag.deleteMany({ where: { assetId } });
+
+    // Insert new link rows
+    if (tagIds.length > 0) {
+      await request.server.prisma.assetTag.createMany({
+        data: tagIds.map(tId => ({
+          assetId,
+          tagId: tId,
+          addedById: request.user?.id || null
+        })),
+        skipDuplicates: true
+      });
+    }
+
+    return reply.send({ success: true, tags });
+  } catch (error) {
+    console.error("Failed to update asset tags:", error);
+    return reply.status(500).send({ success: false, error: error.message });
   }
 };
