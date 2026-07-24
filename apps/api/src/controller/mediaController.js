@@ -1196,9 +1196,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
         }
         
         const isImage = actualMimeType.startsWith("image/");
-        const isAudio = actualMimeType.startsWith("audio/");
-        const isVideo = actualMimeType.startsWith("video/");
-        const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "files";
+        const isMimeAudio = actualMimeType.startsWith("audio/");
+        const isMimeVideo = actualMimeType.startsWith("video/");
+        const subFolder = isImage ? "images" : isMimeAudio ? "audios" : isMimeVideo ? "videos" : "files";
         
         const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${uniqueId}/${filename}`;
 
