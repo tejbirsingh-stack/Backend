@@ -222,7 +222,8 @@ const {
   completeResumableUpload,
   abortResumableUpload,
   handleCoconutWebhook,
-  getThumbnail
+  getThumbnail,
+  retryTranscode
   // checkDuplicateMediaFile
 } = require('../controller');
 
@@ -281,6 +282,9 @@ module.exports = function (fastify, opts, done) {
 
   //11.3 Reject Delete
   fastify.post("/:filename/reject", { preValidation: [fastify.authenticate] }, rejectDelete);
+
+  //11.4 Retry Transcode
+  fastify.post("/:id/retry-transcode", { preValidation: [fastify.authenticate] }, retryTranscode);
   
   fastify.get("/pending-deletions", { preValidation: [fastify.authenticate] }, getPendingDeletions);
 

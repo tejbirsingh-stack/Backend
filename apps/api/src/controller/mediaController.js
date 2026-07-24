@@ -69,6 +69,14 @@ function inferMimeType(filename = "") {
   if (ext.endsWith(".gif")) return "image/gif";
   if (ext.endsWith(".mp3") || ext.endsWith(".wav") || ext.endsWith(".m4a")) return "audio/mpeg";
   if (ext.endsWith(".pdf")) return "application/pdf";
+  if (ext.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (ext.endsWith(".doc")) return "application/msword";
+  if (ext.endsWith(".rtf")) return "application/rtf";
+  if (ext.endsWith(".txt")) return "text/plain";
+  if (ext.endsWith(".pproj")) return "application/vnd.adobe.premiere";
+  if (ext.endsWith(".drp")) return "application/x-resolve-project";
+  if (ext.endsWith(".aep")) return "application/vnd.adobe.aftereffects.project";
+  if (ext.endsWith(".fcp") || ext.endsWith(".fcpxmld")) return "application/x-final-cut-pro";
   return "application/octet-stream";
 }
 
@@ -883,18 +891,46 @@ module.exports.uploadMediaFile = async (request, reply) => {
     // Generate data-based subfolder (YYYY-MM-DD)
     const today = new Date().toISOString().split("T")[0];
 
+    // Fetch organization info to use in the B2 path
+    let orgSlug = 'unknown-org';
+    if (request.user && request.user.orgId) {
+      try {
+        const org = await request.server.prisma.organization.findUnique({
+          where: { id: request.user.orgId },
+          select: { name: true }
+        });
+        if (org && org.name) {
+          // Create a URL-safe version of the organization name
+          orgSlug = org.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        }
+      } catch (err) {
+        console.warn("Failed to fetch organization name for upload path:", err.message);
+      }
+    }
+
     const parts = request.parts();
     const uploadedFiles = [];
 
     for await (const part of parts) {
       if (part.file) {
-        const folderName = `${Date.now()}`;
-        const filename = `raw-${part.filename}`;
-        const isImage = part.mimetype.startsWith("image/");
-        const isAudio = part.mimetype.startsWith("audio/");
-        const isVideo = part.mimetype.startsWith("video/");
-        const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "documents";
-        const b2Key = `noah-uploads/${subFolder}/${today}/${folderName}/${filename}`;
+        const userId = request.user?.id || 'unknown';
+        const shortUserId = userId.split('-')[0];
+        const usernameSlug = request.user?.name ? request.user.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : 'user';
+        const userIdentifier = `${usernameSlug}-${shortUserId}`;
+        const uniqueId = Date.now().toString();
+        const filename = `${uniqueId}-raw-${part.filename}`;
+        
+        let actualMimeType = part.mimetype;
+        if (!actualMimeType || actualMimeType === 'application/octet-stream') {
+          actualMimeType = inferMimeType(part.filename);
+        }
+        
+        const isImage = actualMimeType.startsWith("image/");
+        const isAudio = actualMimeType.startsWith("audio/");
+        const isVideo = actualMimeType.startsWith("video/");
+        const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "files";
+        
+        const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${uniqueId}/${filename}`;
 
         console.log(`Streaming directly to B2: ${b2Key}`);
 
@@ -927,7 +963,10 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
 
         const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
-        const assetType = Object.keys(typeMap).find(k => part.mimetype.startsWith(`${k}/`)) || 'document';
+        const assetType = Object.keys(typeMap).find(k => actualMimeType.startsWith(`${k}/`)) || 'document';
+        // Re-evaluate isVideo and isAudio based on actualMimeType in case it was incorrectly classified
+        const isActuallyVideo = actualMimeType.startsWith("video/");
+        const isActuallyAudio = actualMimeType.startsWith("audio/");
 
         // Write to the New Architecture
         const newAsset = await request.server.prisma.asset.create({
@@ -935,7 +974,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             orgId: request.user.orgId,
             title: part.filename,
             type: assetType,
-            status: isVideo ? "processing" : "active",
+            status: (isActuallyVideo || isActuallyAudio) ? "processing" : "active",
             uploadedByUserId: request.user.id,
             files: {
               create: {
@@ -1286,13 +1325,40 @@ module.exports.initiateResumableUpload = async (request, reply) => {
 
   try {
     const sessionId = require("uuid").v4();
-    const dateStr = new Date().toISOString().split("T")[0];
-    const timestamp = Date.now();
-    const isImage = mimeType.startsWith("image/");
-    const isAudio = mimeType.startsWith("audio/");
-    const isVideo = mimeType.startsWith("video/");
-    const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "documents";
-    const b2Key = `noah-uploads/${subFolder}/${dateStr}/${timestamp}/raw-${fileName}`;
+
+    // Fetch organization info to use in the B2 path
+    let orgSlug = 'unknown-org';
+    if (request.user && request.user.orgId) {
+      try {
+        const org = await request.server.prisma.organization.findUnique({
+          where: { id: request.user.orgId },
+          select: { name: true }
+        });
+        if (org && org.name) {
+          // Create a URL-safe version of the organization name
+          orgSlug = org.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+        }
+      } catch (err) {
+        console.warn("Failed to fetch organization name for resumable upload path:", err.message);
+      }
+    }
+
+    const userId = request.user?.id || 'unknown';
+    const shortUserId = userId.split('-')[0];
+    const usernameSlug = request.user?.name ? request.user.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : 'user';
+    const userIdentifier = `${usernameSlug}-${shortUserId}`;
+    
+    let actualSessionMimeType = mimeType;
+    if (!actualSessionMimeType || actualSessionMimeType === 'application/octet-stream') {
+      actualSessionMimeType = inferMimeType(fileName);
+    }
+    const isImage = actualSessionMimeType.startsWith("image/");
+    const isAudio = actualSessionMimeType.startsWith("audio/");
+    const isVideo = actualSessionMimeType.startsWith("video/");
+    const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "files";
+
+    const uniqueId = Date.now().toString();
+    const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${uniqueId}/${uniqueId}-raw-${fileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
@@ -1445,13 +1511,17 @@ module.exports.completeResumableUpload = async (request, reply) => {
 
     await b2Storage.completeMultipartUpload(session.key, session.uploadId, finalParts);
 
-    const isVideo = session.mimeType.startsWith("video/");
-    const isAudio = session.mimeType.startsWith("audio/");
+    let actualSessionMimeType = session.mimeType;
+    if (!actualSessionMimeType || actualSessionMimeType === 'application/octet-stream') {
+      actualSessionMimeType = inferMimeType(session.fileName);
+    }
+    const isVideo = actualSessionMimeType.startsWith("video/");
+    const isAudio = actualSessionMimeType.startsWith("audio/");
     const shouldQueueTranscode = isVideo || isAudio;
     const cdnUrl = `/api/media/${session.key}/stream`;
 
     const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
-    const assetType = Object.keys(typeMap).find(k => session.mimeType.startsWith(`${k}/`)) || 'document';
+    const assetType = Object.keys(typeMap).find(k => actualSessionMimeType.startsWith(`${k}/`)) || 'document';
 
     // Merge technical specs from request body and upload session
     const mergedTechSpecs = {
@@ -1959,6 +2029,100 @@ module.exports.updateAssetTags = async (request, reply) => {
     return reply.send({ success: true, tags });
   } catch (error) {
     console.error("Failed to update asset tags:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+module.exports.retryTranscode = async (request, reply) => {
+  try {
+    const { id } = request.params;
+    const orgId = request.user?.orgId;
+    if (!orgId) {
+      return reply.status(403).send({ error: "No organization attached to user." });
+    }
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id },
+      include: { files: true, metadata: true }
+    });
+
+    if (!asset || asset.orgId !== orgId) {
+      return reply.status(404).send({ error: "Media asset not found" });
+    }
+
+    if (asset.type !== 'video' && asset.type !== 'audio') {
+      return reply.status(400).send({ error: "Only video and audio assets can be transcoded." });
+    }
+
+    const job = await request.server.prisma.transcodeJob.findFirst({
+      where: { assetId: id, provider: "coconut" }
+    });
+
+    // Duration Check
+    const maxDurationStr = process.env.COCONUT_MAX_DURATION_SECONDS;
+    if (asset.type !== 'audio' && maxDurationStr) {
+      const maxDuration = parseInt(maxDurationStr, 10);
+      if (!isNaN(maxDuration)) {
+        let metadata = asset.metadata;
+        if (typeof metadata?.customProperties === 'string') {
+           // Prisma stringified it, so try to parse if needed, but technicalSpecs should be an object
+        }
+        const technicalSpecs = metadata?.technicalSpecs;
+        const durationSeconds = technicalSpecs?.durationSeconds;
+        if (durationSeconds && durationSeconds > maxDuration) {
+          // Immediately set asset and job to failed, and return error
+          if (job) {
+            await request.server.prisma.transcodeJob.update({
+              where: { id: job.id },
+              data: { status: 'failed', providerMetadata: { error: 'Duration limit exceeded' } }
+            });
+          }
+          await request.server.prisma.asset.update({
+            where: { id },
+            data: { status: 'failed', compressedKey: null }
+          });
+          return reply.status(400).send({ error: `Asset duration exceeds maximum allowed limit of ${maxDuration} seconds for free tier.` });
+        }
+      }
+    }
+    
+    if (job) {
+      await request.server.prisma.transcodeJob.update({
+        where: { id: job.id },
+        data: { status: "queued", jobId: null, providerMetadata: {} }
+      });
+    } else {
+      await request.server.prisma.transcodeJob.create({
+        data: { assetId: id, provider: "coconut", status: "queued" }
+      });
+    }
+
+    // Reset asset status to active so it can be retried
+    await request.server.prisma.asset.update({
+      where: { id },
+      data: { status: "active" }
+    });
+
+    const originalFile = asset.files.find(f => f.fileClass === "original");
+    if (!originalFile) {
+      return reply.status(400).send({ error: "Original file not found for this asset." });
+    }
+
+    const size = Number(originalFile.sizeBytes);
+    const fiveGB = 5 * 1024 * 1024 * 1024;
+    const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+
+    await queueToUse.add("compress", {
+      assetId: id,
+      key: originalFile.filePath,
+      preset: "medium"
+    });
+    
+    console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
+
+    return reply.send({ success: true, message: "Transcode job queued" });
+  } catch (error) {
+    console.error("Failed to retry transcode:", error);
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
