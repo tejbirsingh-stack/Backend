@@ -263,16 +263,53 @@ export const fileUploadConfig = {
       'image/png',
       'image/gif',
       'image/webp',
+      'image/svg+xml',
+      'image/avif',
+      'image/bmp',
+      'image/vnd.adobe.photoshop',
+      'application/postscript',
+      'image/x-eps',
+      'image/x-exr',
+      'image/tiff',
+      'image/x-dpx',
+      'image/x-cineon',
+      'image/x-pcx',
+      'image/mpo',
       'video/mp4',
       'video/quicktime',
       'video/x-msvideo',
       'video/webm',
+      'video/x-matroska',
+      'video/x-m4v',
+      'video/mpeg',
+      'video/mp2t',
+      'video/ogg',
+      'application/mxf',
+      'video/mxf',
       'audio/mpeg',
       'audio/wav',
+      'audio/mp4',
+      'audio/aac',
+      'audio/flac',
+      'audio/aiff',
+      'audio/3gpp2',
+      'audio/x-ape',
+      'audio/basic',
       'audio/ogg',
       'application/pdf'
     ];
-    if (allowedMimeTypes.includes(file.mimetype)) {
+
+    const allowedExtensions = [
+      'jpg', 'jpeg', 'jpf', 'png', 'gif', 'webp', 'svg', 'avif', 'bmp',
+      'psd', 'psb', 'ai', 'eps', 'exr', 'openexr', 'tiff', 'tif', 'pcx', 'mpo', 'dpx', 'cin',
+      'mp4', 'm4v', 'mov', 'qt', 'avi', 'mkv', 'webm', 'ogg', 'mxf', 'mpeg', 'm2v', 'mpg', 'ts', 'gxf',
+      'mp3', 'wav', 'm4a', 'm4b', 'aac', 'flac', 'aiff', 'aif', 'aifc', '3g2', 'ape', 'au', 'mp2', 'oga',
+      'pdf'
+    ];
+
+    const ext = file.originalname?.split('.').pop()?.toLowerCase() || '';
+
+    if (allowedMimeTypes.includes(file.mimetype) || allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
       cb(new Error('Invalid file type'));

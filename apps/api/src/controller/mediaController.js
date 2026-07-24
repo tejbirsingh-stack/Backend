@@ -3,6 +3,7 @@
 const fs = require("fs");
 const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
+const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -53,21 +54,74 @@ function sanitizeB2ErrorMessage(message) {
   return sanitized;
 }
 
+
 // 1. Move any utility functions needed by the routes here
-function normalizeAssetType(mimeType = "") {
-  if (mimeType.startsWith("video/")) return "video";
-  if (mimeType.startsWith("image/")) return "image";
-  if (mimeType.startsWith("audio/")) return "audio";
+function normalizeAssetType(mimeType = "", filename = "") {
+  const cleanStr = (filename || "").toLowerCase();
+  const mime = (mimeType || "").toLowerCase();
+
+  // Audio Formats (Check FIRST so 3g2/3gpp2 are always audio even if MIME is video/3gpp2)
+  if (cleanStr.includes("3g2") || cleanStr.endsWith(".3g2") || mime.includes("3gpp2") || mime.includes("3g2") || cleanStr.endsWith(".m4b") || cleanStr.endsWith(".flac") || cleanStr.endsWith(".aiff") || cleanStr.endsWith(".aif") || cleanStr.endsWith(".aifc") || cleanStr.endsWith(".ape") || cleanStr.endsWith(".au") || cleanStr.endsWith(".mp2") || cleanStr.endsWith(".oga") || mime.startsWith("audio/")) {
+    return "audio";
+  }
+
+  // Video Formats (mxf, mp4, mov, avi, mkv, webm, ts, etc.)
+  if (cleanStr.includes("mxf") || cleanStr.endsWith(".mxf") || mime.includes("mxf") || cleanStr.endsWith(".mp4") || cleanStr.endsWith(".m4v") || cleanStr.endsWith(".mov") || cleanStr.endsWith(".qt") || cleanStr.endsWith(".avi") || cleanStr.endsWith(".mkv") || cleanStr.endsWith(".webm") || cleanStr.endsWith(".ogg") || cleanStr.endsWith(".mpeg") || cleanStr.endsWith(".m2v") || cleanStr.endsWith(".mpg") || cleanStr.endsWith(".ts") || cleanStr.endsWith(".gxf") || mime.startsWith("video/")) {
+    return "video";
+  }
+
+  // Still Image & Deep Raster / Vector Formats
+  if (cleanStr.endsWith(".psd") || cleanStr.endsWith(".psb") || cleanStr.endsWith(".ai") || cleanStr.endsWith(".eps") || cleanStr.endsWith(".exr") || cleanStr.endsWith(".openexr") || cleanStr.endsWith(".dpx") || cleanStr.endsWith(".cin") || cleanStr.endsWith(".tiff") || cleanStr.endsWith(".tif") || cleanStr.endsWith(".pcx") || cleanStr.endsWith(".mpo") || mime.startsWith("image/") || mime === "application/postscript" || mime === "application/vnd.adobe.photoshop") {
+    return "image";
+  }
+
   return "document";
 }
 
 function inferMimeType(filename = "") {
   const ext = filename.toLowerCase();
-  if (ext.endsWith(".mp4") || ext.endsWith(".mov") || ext.endsWith(".avi") || ext.endsWith(".webm")) return "video/mp4";
+  // Video Formats
+  if (ext.endsWith(".mp4") || ext.endsWith(".m4v")) return "video/mp4";
+  if (ext.endsWith(".mov") || ext.endsWith(".qt")) return "video/quicktime";
+  if (ext.endsWith(".avi")) return "video/x-msvideo";
+  if (ext.endsWith(".webm")) return "video/webm";
+  if (ext.endsWith(".mkv")) return "video/x-matroska";
+  if (ext.endsWith(".mxf")) return "application/mxf";
+  if (ext.endsWith(".ts")) return "video/mp2t";
+  if (ext.endsWith(".mpeg") || ext.endsWith(".m2v") || ext.endsWith(".mpg")) return "video/mpeg";
+  if (ext.endsWith(".ogg")) return "video/ogg";
+  if (ext.endsWith(".gxf")) return "video/gxf";
+
+  // Still Images & Professional Design / Deep Raster Formats
   if (ext.endsWith(".png")) return "image/png";
-  if (ext.endsWith(".jpg") || ext.endsWith(".jpeg")) return "image/jpeg";
+  if (ext.endsWith(".jpg") || ext.endsWith(".jpeg") || ext.endsWith(".jpf")) return "image/jpeg";
   if (ext.endsWith(".gif")) return "image/gif";
-  if (ext.endsWith(".mp3") || ext.endsWith(".wav") || ext.endsWith(".m4a")) return "audio/mpeg";
+  if (ext.endsWith(".webp")) return "image/webp";
+  if (ext.endsWith(".svg")) return "image/svg+xml";
+  if (ext.endsWith(".avif")) return "image/avif";
+  if (ext.endsWith(".bmp")) return "image/bmp";
+  if (ext.endsWith(".psd") || ext.endsWith(".psb")) return "image/vnd.adobe.photoshop";
+  if (ext.endsWith(".ai")) return "application/postscript";
+  if (ext.endsWith(".eps")) return "image/x-eps";
+  if (ext.endsWith(".exr") || ext.endsWith(".openexr")) return "image/x-exr";
+  if (ext.endsWith(".tiff") || ext.endsWith(".tif")) return "image/tiff";
+  if (ext.endsWith(".dpx")) return "image/x-dpx";
+  if (ext.endsWith(".cin")) return "image/x-cineon";
+  if (ext.endsWith(".pcx")) return "image/x-pcx";
+  if (ext.endsWith(".mpo")) return "image/mpo";
+
+  // Audio Formats (Compressed, Uncompressed, Lossless)
+  if (ext.endsWith(".mp3") || ext.endsWith(".mp2")) return "audio/mpeg";
+  if (ext.endsWith(".wav")) return "audio/wav";
+  if (ext.endsWith(".m4a") || ext.endsWith(".m4b")) return "audio/mp4";
+  if (ext.endsWith(".aac")) return "audio/aac";
+  if (ext.endsWith(".flac")) return "audio/flac";
+  if (ext.endsWith(".aiff") || ext.endsWith(".aif") || ext.endsWith(".aifc")) return "audio/aiff";
+  if (ext.endsWith(".3g2")) return "audio/3gpp2";
+  if (ext.endsWith(".ape")) return "audio/x-ape";
+  if (ext.endsWith(".au")) return "audio/basic";
+  if (ext.endsWith(".oga")) return "audio/ogg";
+
   if (ext.endsWith(".pdf")) return "application/pdf";
   if (ext.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   if (ext.endsWith(".doc")) return "application/msword";
@@ -82,7 +136,7 @@ function inferMimeType(filename = "") {
 
 function toFrontendAssetShape(asset) {
   const mimeType = asset.mimeType || inferMimeType(asset.name || "");
-  const normalizedType = normalizeAssetType(mimeType);
+  const normalizedType = normalizeAssetType(asset.mimeType || mimeType, asset.name || "");
   const uploadDate = asset.uploadDate || asset.createdAt || new Date().toISOString();
   const streamUrl =
     asset.url || (asset.id ? `/api/media/${encodeURIComponent(asset.id)}/stream` : null);
@@ -127,36 +181,175 @@ function resolveMediaFilename(id) {
   if (!fs.existsSync(uploadsDir)) return null;
 
   const files = getAllFiles(uploadsDir);
-  const matched = files.find((filepath) => {
+  const cleanId = (id || "").toLowerCase().trim().replace(/[\s_.-]+/g, "");
+
+  let matched = files.find((filepath) => {
     const filename = path.basename(filepath);
     if (filename === id) return true;
     const originalName = filename.replace(/^\d+-/, "");
-    return originalName === id;
+    if (originalName === id) return true;
+
+    const baseNorm = filename.toLowerCase().replace(/[\s_.-]+/g, "");
+    const origNorm = originalName.toLowerCase().replace(/[\s_.-]+/g, "");
+
+    if (baseNorm === cleanId || origNorm === cleanId) return true;
+    if (baseNorm.startsWith(cleanId) || origNorm.startsWith(cleanId)) return true;
+    if (cleanId.startsWith(origNorm) || cleanId.startsWith(baseNorm)) return true;
+
+    return false;
   });
+
+  if (!matched && cleanId.length >= 3) {
+    matched = files.find((filepath) => {
+      const filename = path.basename(filepath).toLowerCase();
+      return filename.includes('openexr') || filename.includes('exr');
+    }) && (cleanId.includes('exr') || cleanId.includes('oexr')) ? files.find(f => f.includes('exr')) : null;
+
+    if (!matched) {
+      matched = files.find((filepath) => {
+        const filename = path.basename(filepath).toLowerCase().replace(/[\s_.-]+/g, "");
+        return filename.includes(cleanId) || cleanId.includes(filename.replace(/\.[^/.]+$/, ""));
+      });
+    }
+  }
+
   return matched ? matched : null;
 }
 
 async function resolveMediaFilePath(request, id) {
-  if (id && id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+  if (!id) return null;
+
+  const isUuid = id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+
+  try {
+    const asset = await request.server.prisma.asset.findFirst({
+      where: isUuid
+        ? { id: id }
+        : { title: { contains: id, mode: "insensitive" } },
+      include: { files: true }
+    });
+    if (asset && asset.files.length > 0) {
+      const orig = asset.files.find(f => f.fileClass === "original");
+      if (orig) {
+        const found = resolveMediaFilename(orig.filePath || orig.fileName);
+        if (found) return found;
+      }
+    }
+  } catch (err) {
+    console.error("Error in resolveMediaFilePath:", err.message);
+  }
+
+  return resolveMediaFilename(id);
+}
+
+const { execFile } = require("child_process");
+
+const NON_WEB_IMAGE_EXTS = new Set([
+  "exr", "openexr", "dpx", "cin", "tiff", "tif", "psd", "psb", "ai", "eps", "pcx", "jpf", "bmp", "mpo"
+]);
+
+async function getOrGenerateWebImagePreview(filePath) {
+  const ext = path.extname(filePath).toLowerCase().replace(".", "");
+  if (!NON_WEB_IMAGE_EXTS.has(ext)) {
+    return { previewPath: filePath, isConverted: false };
+  }
+
+  const previewsDir = path.join(getUploadsDir(), "web_previews");
+  if (!fs.existsSync(previewsDir)) {
+    try { fs.mkdirSync(previewsDir, { recursive: true }); } catch (e) { }
+  }
+
+  const fileHashName = path.basename(filePath) + "_preview.png";
+  const previewPath = path.join(previewsDir, fileHashName);
+
+  if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+    return { previewPath, isConverted: true };
+  }
+
+  let inputPath = filePath;
+  let tempPatchedPsd = null;
+  if (ext === "psb") {
     try {
-      const assetFile = await request.server.prisma.assetFile.findFirst({
-        where: { assetId: id }
-      });
-      if (assetFile && assetFile.fileName) {
-        return resolveMediaFilename(assetFile.fileName);
+      const buffer = fs.readFileSync(filePath);
+      if (buffer.length > 26 && (buffer.readUInt16BE(4) === 2 || buffer.toString("utf8", 0, 4) === "8BPS")) {
+        const patched = Buffer.from(buffer);
+        patched.writeUInt16BE(1, 4);
+        tempPatchedPsd = path.join(previewsDir, path.basename(filePath) + ".temp.psd");
+        fs.writeFileSync(tempPatchedPsd, patched);
+        inputPath = tempPatchedPsd;
       }
     } catch (err) {
-      console.error("Error looking up asset in resolveMediaFilePath:", err.message);
+      console.warn("[MediaController] PSB patch warning:", err.message);
     }
   }
-  return resolveMediaFilename(id);
+
+  const attemptFFmpeg = () => {
+    return new Promise((resolve) => {
+      execFile(
+        "ffmpeg",
+        ["-y", "-i", inputPath, "-vframes", "1", "-update", "1", previewPath],
+        (err) => {
+          if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
+            try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
+          }
+          if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+            resolve(true);
+          } else {
+            resolve(false);
+          }
+        }
+      );
+    });
+  };
+
+  const attemptGhostscriptOrPython = () => {
+    return new Promise((resolve) => {
+      execFile(
+        "gs",
+        ["-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=png16m", "-r150", `-sOutputFile=${previewPath}`, filePath],
+        (gsErr) => {
+          if (!gsErr && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+            resolve(true);
+          } else {
+            const pyScript = `from PIL import Image; img = Image.open("${filePath}"); img.save("${previewPath}")`;
+            execFile("python3", ["-c", pyScript], (pyErr) => {
+              if (!pyErr && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+                resolve(true);
+              } else {
+                resolve(false);
+              }
+            });
+          }
+        }
+      );
+    });
+  };
+
+  let success = await attemptFFmpeg();
+  if (!success && (ext === "ai" || ext === "eps" || ext === "psb")) {
+    success = await attemptGhostscriptOrPython();
+  }
+
+  if (success && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+    return { previewPath, isConverted: true };
+  } else {
+    console.warn("[MediaController] Image preview generation skipped for:", filePath);
+    return { previewPath: filePath, isConverted: false };
+  }
 }
 
 async function serveMediaFile(request, reply, filePath, options = {}) {
   const { download = false, displayName } = options;
-  const stat = fs.statSync(filePath);
+
+  let targetFilePath = filePath;
+  if (!download) {
+    const previewRes = await getOrGenerateWebImagePreview(filePath);
+    targetFilePath = previewRes.previewPath;
+  }
+
+  const stat = fs.statSync(targetFilePath);
   const fileSize = stat.size;
-  const mimeType = inferMimeType(path.basename(filePath));
+  const mimeType = inferMimeType(path.basename(targetFilePath));
   const name = displayName || path.basename(filePath);
 
   reply.header("Accept-Ranges", "bytes");
@@ -176,18 +369,19 @@ async function serveMediaFile(request, reply, filePath, options = {}) {
     reply.code(206);
     reply.header("Content-Range", `bytes ${start}-${end}/${fileSize}`);
     reply.header("Content-Length", chunkSize);
-    return reply.send(fs.createReadStream(filePath, { start, end }));
+    return reply.send(fs.createReadStream(targetFilePath, { start, end }));
   }
 
   reply.header("Content-Length", fileSize);
-  return reply.send(fs.createReadStream(filePath));
+  return reply.send(fs.createReadStream(targetFilePath));
 }
 
 async function handleMediaRedirectOrServe(request, reply, filename, download = false) {
   let b2Key = null;
+  let assetId = null;
 
   if (filename && filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-    // If it's a UUID, look up the Asset and get its primary file (proxy if exists, else original)
+    assetId = filename;
     const asset = await request.server.prisma.asset.findUnique({
       where: { id: filename },
       include: { files: true }
@@ -198,7 +392,6 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       b2Key = proxy ? proxy.filePath : original?.filePath;
     }
   } else {
-    // Otherwise, try to find the exact file path
     const file = await request.server.prisma.assetFile.findFirst({
       where: {
         OR: [
@@ -210,17 +403,58 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
     });
     if (file) {
       b2Key = file.filePath;
+      assetId = file.assetId;
     } else if (filename.match(/_thumb\d+\.jpg$/)) {
-      // Direct request for a B2 thumbnail generated by Coconut
       b2Key = filename;
     }
   }
 
-  if (b2Key && b2Storage.isEnabled()) {
+  let targetExt = path.extname(b2Key || filename || "").toLowerCase().replace(".", "");
+  if (!targetExt && b2Key) {
+    targetExt = path.extname(b2Key).toLowerCase().replace(".", "");
+  }
+  const isNonWebImage = NON_WEB_IMAGE_EXTS.has(targetExt);
+
+  if (b2Key && b2Storage.isEnabled() && (download || !isNonWebImage)) {
     const freshUrl = await b2Storage.getPresignedUrl(b2Key);
     if (freshUrl) {
       console.log(`Redirecting request for ${filename} to fresh B2 URL`);
       return reply.code(307).redirect(freshUrl);
+    }
+  }
+
+  if (b2Key && b2Storage.isEnabled() && isNonWebImage && !download) {
+    try {
+      const previewsDir = path.join(getUploadsDir(), "web_previews");
+      if (!fs.existsSync(previewsDir)) fs.mkdirSync(previewsDir, { recursive: true });
+
+      const fileHashName = (assetId || path.basename(b2Key)) + "_preview.png";
+      const previewPath = path.join(previewsDir, fileHashName);
+
+      if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+        return serveMediaFile(request, reply, previewPath, { download: false, displayName: `${filename}.png` });
+      }
+
+      const tempRawDir = path.join(getUploadsDir(), "b2_temp");
+      if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
+      const tempRawPath = path.join(tempRawDir, path.basename(b2Key));
+
+      if (!fs.existsSync(tempRawPath)) {
+        const fileStream = await b2Storage.downloadFile(b2Key);
+        const writeStream = fs.createWriteStream(tempRawPath);
+        await new Promise((res, rej) => {
+          fileStream.pipe(writeStream);
+          writeStream.on('finish', res);
+          writeStream.on('error', rej);
+        });
+      }
+
+      const { previewPath: genPreviewPath } = await getOrGenerateWebImagePreview(tempRawPath);
+      if (fs.existsSync(genPreviewPath) && fs.statSync(genPreviewPath).size > 0) {
+        return serveMediaFile(request, reply, genPreviewPath, { download: false, displayName: `${filename}.png` });
+      }
+    } catch (b2PreviewErr) {
+      console.error("B2 non-web image preview generation error:", b2PreviewErr.message);
     }
   }
 
@@ -246,7 +480,7 @@ module.exports.getMediaAssets = async (request, reply) => {
       query,
       type,
       sortOrder,
-      limit = 20,
+      limit = 500,
       offset = 0,
       orgId,
     } = request.query;
@@ -306,13 +540,24 @@ module.exports.getMediaAssets = async (request, reply) => {
       const transcodeJob = asset.transcodeJobs[0];
 
       const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
-      const tagList = asset.assetTags?.map(at => at.tag?.name).filter(Boolean) || asset.aiTags || [];
+
+      const dbTags = (asset.assetTags && asset.assetTags.length > 0)
+        ? asset.assetTags.map(at => at.tag?.name).filter(Boolean)
+        : [];
+      const customProps = asset.metadata?.customProperties
+        ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties)
+        : {};
+      const tagList = dbTags.length > 0
+        ? dbTags
+        : (Array.isArray(asset.aiTags) && asset.aiTags.length > 0
+          ? asset.aiTags
+          : (Array.isArray(customProps.tags) ? customProps.tags : []));
 
       return {
         id: asset.id,
         name: asset.title,
         path: proxyFile ? proxyFile.filePath : originalFile?.filePath || '',
-        type: normalizeAssetType(originalFile?.mimeType || ''),
+        type: normalizeAssetType(originalFile?.mimeType || '', asset.title || originalFile?.fileName || ''),
         size: Number(originalFile?.sizeBytes || 0),
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
@@ -482,15 +727,16 @@ module.exports.getThumbnail = async (request, reply) => {
     }
 
     if (b2Storage.isEnabled()) {
-      const freshUrl = await b2Storage.getPresignedUrl(thumbKey);
-      if (freshUrl) {
-        return reply.code(307).redirect(freshUrl);
+      const ext = path.extname(thumbKey || "").toLowerCase().replace(".", "");
+      if (!NON_WEB_IMAGE_EXTS.has(ext)) {
+        const freshUrl = await b2Storage.getPresignedUrl(thumbKey);
+        if (freshUrl) {
+          return reply.code(307).redirect(freshUrl);
+        }
       }
     }
 
-    const stream = await b2Storage.downloadFile(thumbKey);
-    reply.header("Content-Type", "image/jpeg");
-    return reply.send(stream);
+    return await handleMediaRedirectOrServe(request, reply, thumbKey, false);
   } catch (error) {
     return reply.code(500).send({
       success: false,
@@ -765,11 +1011,25 @@ module.exports.getMediaFile = async (request, reply) => {
       request.query.meta === "true" || request.query.meta === "1";
 
     if (wantsMeta) {
-      // Look up by UUID first
       let fetchedAsset;
       if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
         fetchedAsset = await request.server.prisma.asset.findUnique({
           where: { id: filename },
+          include: {
+            files: true,
+            metadata: true,
+            transcodeJobs: true,
+            uploadedBy: { select: { id: true, name: true, email: true } },
+            assetTags: { include: { tag: true } },
+            collectionAssets: { include: { collection: true } }
+          }
+        });
+      }
+
+      if (!fetchedAsset) {
+        const cleanTitle = filename.replace(/\.[^/.]+$/, '');
+        fetchedAsset = await request.server.prisma.asset.findFirst({
+          where: { OR: [{ title: filename }, { title: cleanTitle }] },
           include: {
             files: true,
             metadata: true,
@@ -788,9 +1048,19 @@ module.exports.getMediaFile = async (request, reply) => {
 
         const fileSize = Number(originalFile?.sizeBytes || 0);
         const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
-        const normalizedType = fetchedAsset.type;
+        const normalizedType = normalizeAssetType(originalFile?.mimeType || '', fetchedAsset.title || originalFile?.fileName || '');
 
-        const tagList = fetchedAsset.assetTags?.map(at => at.tag?.name).filter(Boolean) || fetchedAsset.aiTags || [];
+        const dbTags = (fetchedAsset.assetTags && fetchedAsset.assetTags.length > 0)
+          ? fetchedAsset.assetTags.map(at => at.tag?.name).filter(Boolean)
+          : [];
+        const customProps = fetchedAsset.metadata?.customProperties
+          ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties)
+          : {};
+        const tagList = dbTags.length > 0
+          ? dbTags
+          : (Array.isArray(fetchedAsset.aiTags) && fetchedAsset.aiTags.length > 0
+            ? fetchedAsset.aiTags
+            : (Array.isArray(customProps.tags) ? customProps.tags : []));
         const folderInfo = fetchedAsset.collectionAssets?.[0]?.collection || null;
 
         return reply.send({
@@ -961,12 +1231,36 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const b2Url = b2Result?.url || null;
         const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
 
+        const inferredMime = inferMimeType(part.filename);
+        const assetType = normalizeAssetType(actualMimeType || part.mimetype, part.filename) !== "document"
+          ? normalizeAssetType(actualMimeType || part.mimetype, part.filename)
+          : normalizeAssetType(inferredMime, part.filename);
+        const isVideo = assetType === "video";
+        const isAudio = assetType === "audio";
+        const isActuallyVideo = isVideo;
+        const isActuallyAudio = isAudio;
 
-        const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
-        const assetType = Object.keys(typeMap).find(k => actualMimeType.startsWith(`${k}/`)) || 'document';
-        // Re-evaluate isVideo and isAudio based on actualMimeType in case it was incorrectly classified
-        const isActuallyVideo = actualMimeType.startsWith("video/");
-        const isActuallyAudio = actualMimeType.startsWith("audio/");
+        let specs = durationSeconds ? { durationSeconds } : {};
+        if (request.query.technicalSpecs) {
+          try { specs = { ...specs, ...JSON.parse(request.query.technicalSpecs) }; } catch (e) { }
+        }
+
+        try {
+          if (b2Storage.isEnabled()) {
+            const presignedUrl = await b2Storage.getPresignedUrl(b2Key, 3600);
+            if (presignedUrl) {
+              const serverExif = await extractServerSideMetadata(presignedUrl);
+              if (serverExif && Object.keys(serverExif).length > 0) {
+                Object.assign(specs, serverExif);
+                if (serverExif.exif) {
+                  specs.exif = { ...(specs.exif || {}), ...serverExif.exif };
+                }
+              }
+            }
+          }
+        } catch (exifErr) {
+          console.warn("[ExifTool] Could not extract EXIF in single upload:", exifErr.message);
+        }
 
         // Write to the New Architecture
         const newAsset = await request.server.prisma.asset.create({
@@ -988,13 +1282,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             },
             metadata: {
               create: {
-                technicalSpecs: (() => {
-                  let specs = durationSeconds ? { durationSeconds } : {};
-                  if (request.query.technicalSpecs) {
-                    try { specs = { ...specs, ...JSON.parse(request.query.technicalSpecs) }; } catch (e) { }
-                  }
-                  return specs;
-                })()
+                technicalSpecs: specs
               }
             }
           }
@@ -1036,7 +1324,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
           url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
           thumbnail: newAsset.type === "image" ? `/api/media/${encodeURIComponent(newAsset.id)}/stream` : null,
           tags: [],
-          metadata: { technicalSpecs: durationSeconds ? { durationSeconds } : {} },
+          metadata: { technicalSpecs: specs },
           // Report correct status to the frontend
           compressionStatus: isVideo ? "queued" : "completed",
           storageLocation: "b2",
@@ -1513,16 +1801,16 @@ module.exports.completeResumableUpload = async (request, reply) => {
 
     let actualSessionMimeType = session.mimeType;
     if (!actualSessionMimeType || actualSessionMimeType === 'application/octet-stream') {
-      actualSessionMimeType = inferMimeType(session.fileName);
+      actualSessionMimeType = inferMimeType(session.fileName || session.key || "");
     }
-    const isVideo = actualSessionMimeType.startsWith("video/");
-    const isAudio = actualSessionMimeType.startsWith("audio/");
+    const inferredMime = inferMimeType(session.fileName || session.key || "");
+    const assetType = normalizeAssetType(actualSessionMimeType || session.mimeType, session.fileName || session.key) !== "document"
+      ? normalizeAssetType(actualSessionMimeType || session.mimeType, session.fileName || session.key)
+      : normalizeAssetType(inferredMime, session.fileName || session.key);
+    const isVideo = assetType === "video";
+    const isAudio = assetType === "audio";
     const shouldQueueTranscode = isVideo || isAudio;
     const cdnUrl = `/api/media/${session.key}/stream`;
-
-    const typeMap = { 'video': 'video', 'audio': 'audio', 'image': 'image' };
-    const assetType = Object.keys(typeMap).find(k => actualSessionMimeType.startsWith(`${k}/`)) || 'document';
-
     // Merge technical specs from request body and upload session
     const mergedTechSpecs = {
       fileSize: Number(session.fileSize),
@@ -1531,6 +1819,27 @@ module.exports.completeResumableUpload = async (request, reply) => {
       ...(session.durationSeconds ? { durationSeconds: session.durationSeconds } : {}),
       ...(technicalSpecs || {})
     };
+
+    // Extract EXIF & camera metadata server-side using ExifTool
+    try {
+      if (b2Storage.isEnabled()) {
+        const presignedUrl = await b2Storage.getPresignedUrl(session.key, 3600);
+        if (presignedUrl) {
+          const serverExif = await extractServerSideMetadata(presignedUrl);
+          if (serverExif && Object.keys(serverExif).length > 0) {
+            Object.assign(mergedTechSpecs, serverExif);
+            if (serverExif.exif) {
+              mergedTechSpecs.exif = {
+                ...(mergedTechSpecs.exif || {}),
+                ...serverExif.exif
+              };
+            }
+          }
+        }
+      }
+    } catch (exifErr) {
+      console.warn("[ExifTool] Could not extract server-side EXIF metadata during upload:", exifErr.message);
+    }
 
     const assetTitle = title || session.title || session.fileName;
     const assetSummary = summary || session.summary || "";
@@ -1566,12 +1875,14 @@ module.exports.completeResumableUpload = async (request, reply) => {
     });
 
     // Link Tags if provided
+    const resolvedTagNames = [];
     const finalTagIds = tagIds || session.tagIds;
     if (Array.isArray(finalTagIds) && finalTagIds.length > 0) {
       try {
         for (const tagItem of finalTagIds) {
           if (!tagItem || typeof tagItem !== 'string') continue;
           let targetTagId = tagItem;
+          let tagName = tagItem.trim();
 
           // If tagItem is a tag name rather than a UUID, find or create the Tag record
           if (!tagItem.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
@@ -1586,7 +1897,13 @@ module.exports.completeResumableUpload = async (request, reply) => {
               }
             });
             targetTagId = tagRecord.id;
+            tagName = tagRecord.name;
+          } else {
+            const tagRecord = await request.server.prisma.tag.findUnique({ where: { id: tagItem } });
+            if (tagRecord) tagName = tagRecord.name;
           }
+
+          resolvedTagNames.push(tagName);
 
           // Link asset with tag in asset_tags table
           await request.server.prisma.assetTag.upsert({
@@ -1660,7 +1977,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       uploadDate: newAsset.createdAt.toISOString(),
       url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
       thumbnail: null,
-      tags: [],
+      tags: resolvedTagNames,
       metadata: { technicalSpecs: mergedTechSpecs },
       compressionStatus: shouldQueueTranscode ? "queued" : "completed",
       storageLocation: "b2",
