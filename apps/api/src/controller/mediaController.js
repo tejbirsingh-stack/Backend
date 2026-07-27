@@ -283,16 +283,27 @@ function decodePsdToBmpFile(psdPath, outputPath) {
     const magic = buffer.toString("utf8", 0, 4);
     if (magic !== "8BPS") return false;
 
+    const version = buffer.readUInt16BE(4); // 1 = PSD, 2 = PSB
+    const channels = buffer.readUInt16BE(12);
     const height = buffer.readUInt32BE(14);
     const width = buffer.readUInt32BE(18);
-    const channels = buffer.readUInt16BE(12);
 
-    if (width <= 0 || height <= 0 || width > 10000 || height > 10000) return false;
+    if (width <= 0 || height <= 0 || width > 30000 || height > 30000) return false;
 
     let offset = 26;
     const colorModeLen = buffer.readUInt32BE(offset); offset += 4 + colorModeLen;
     const imgResLen = buffer.readUInt32BE(offset); offset += 4 + imgResLen;
-    const layerMaskLen = buffer.readUInt32BE(offset); offset += 4 + layerMaskLen;
+
+    let layerMaskLen = 0;
+    if (version === 2) {
+      const high = buffer.readUInt32BE(offset);
+      const low = buffer.readUInt32BE(offset + 4);
+      layerMaskLen = high * 4294967296 + low;
+      offset += 8 + layerMaskLen;
+    } else {
+      layerMaskLen = buffer.readUInt32BE(offset);
+      offset += 4 + layerMaskLen;
+    }
 
     if (offset >= buffer.length) return false;
 
@@ -313,7 +324,8 @@ function decodePsdToBmpFile(psdPath, outputPath) {
         bgra[i * 4 + 3] = aOffset ? (buffer[aOffset + i] ?? 255) : 255;
       }
     } else if (compression === 1) {
-      const rleTableLen = height * channels * 2;
+      const bytesPerLineCount = version === 2 ? 4 : 2;
+      const rleTableLen = height * channels * bytesPerLineCount;
       let srcIdx = offset + rleTableLen;
 
       const decodedChannels = [];
@@ -448,9 +460,10 @@ async function getOrGenerateWebImagePreview(filePath) {
 
   const attemptFFmpeg = () => {
     return new Promise((resolve) => {
+      const demuxerArgs = (ext === "openexr" || ext === "exr") ? ["-f", "exr_pipe"] : (ext === "dpx" ? ["-f", "dpx_pipe"] : []);
       execFile(
         "ffmpeg",
-        ["-y", "-i", inputPath, "-vframes", "1", "-pix_fmt", "rgb24", "-update", "1", previewPath],
+        ["-y", ...demuxerArgs, "-i", inputPath, "-vframes", "1", "-pix_fmt", "rgb24", "-update", "1", previewPath],
         (err) => {
           if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
             if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
@@ -460,7 +473,7 @@ async function getOrGenerateWebImagePreview(filePath) {
           } else {
             execFile(
               "ffmpeg",
-              ["-y", "-i", inputPath, "-vframes", "1", "-update", "1", previewPath],
+              ["-y", ...demuxerArgs, "-i", inputPath, "-vframes", "1", "-update", "1", previewPath],
               (err2) => {
                 if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
                   try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
