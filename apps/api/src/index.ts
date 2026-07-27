@@ -11,6 +11,7 @@ import websocket from '@fastify/websocket';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import path from 'path';
+import { logSuccess, logError, ACTOR_TYPE, ACTIVITY_NAME } from './lib/audit-log.js';
 
 // Add global BigInt serializer to prevent fastify/JSON stringify errors
 (BigInt.prototype as any).toJSON = function () {
@@ -313,7 +314,9 @@ async function setupServer() {
     fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
 
     console.log('All routes registerd successfully')
+    logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);
   } catch (err: any) {
+    logError("All routes registered failed", '', null, err, null, ACTOR_TYPE.SYSTEM);
     logger.warn('Some routes could not be loaded', { error: err.message });
   }
 
