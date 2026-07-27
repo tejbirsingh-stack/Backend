@@ -246,11 +246,17 @@ class B2StorageService {
         fs.mkdirSync(dir, { recursive: true });
       }
 
+      if (response.Body && typeof response.Body.transformToByteArray === 'function') {
+        const byteArray = await response.Body.transformToByteArray();
+        fs.writeFileSync(downloadPath, Buffer.from(byteArray));
+        return downloadPath;
+      }
+
       const writer = fs.createWriteStream(downloadPath);
 
       return new Promise((resolve, reject) => {
         response.Body.pipe(writer);
-        writer.on('finish', resolve);
+        writer.on('finish', () => resolve(downloadPath));
         writer.on('error', reject);
       });
 
