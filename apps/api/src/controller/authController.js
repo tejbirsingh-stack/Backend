@@ -237,6 +237,16 @@ module.exports.register = async (request, reply) => {
         },
       });
       finalOrgId = organization.id;
+
+      // Automatically create a default workspace for the new organization
+      await request.server.prisma.workspace.create({
+        data: {
+          name: derivedOrgName + " Workspace",
+          description: "Default workspace for " + derivedOrgName,
+          color: "#4f46e5",
+          orgId: finalOrgId,
+        }
+      });
     }
 
     // Hash password

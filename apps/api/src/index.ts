@@ -12,6 +12,10 @@ import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import path from 'path';
 
+// Add global BigInt serializer to prevent fastify/JSON stringify errors
+(BigInt.prototype as any).toJSON = function () {
+  return this.toString();
+};
 
 // Mock Redis and Prisma for development
 // const Redis = null;

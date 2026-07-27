@@ -80,6 +80,7 @@ module.exports.findAllWorkspaces = async (request, reply) => {
 module.exports.findWorkspaceMedia = async (request, reply) => {
     try {
         const { id } = request.params;  //workspace Id
+
         const mediaAssets = await prisma.asset.findMany({
             where: {
                 ownerType: 'WORKSPACE',
@@ -89,6 +90,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
             include: {
                 files: true,
                 metadata: true,
+                sources: true,
             },
             orderBy: {
                 createdAt: 'desc',
@@ -100,6 +102,9 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 workspaceId: id,
                 parentId: null, // Get root folders only
             },
+            include: {
+                sources: true,
+            },
             orderBy: {
                 createdAt: 'desc',
             },
@@ -107,8 +112,26 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
 
         const projects = await prisma.project.findMany({
             where: {
-                ownerType: 'WORKSPACE',
                 workspaceId: id,
+                ownerType: 'WORKSPACE'
+            },
+            orderBy: {
+                createdAt: 'desc',
+            },
+        });
+
+        const allWorkspaceFolders = await prisma.folder.findMany({
+            where: { workspaceId: id },
+            select: { id: true }
+        });
+        const folderIds = allWorkspaceFolders.map(f => f.id);
+
+        const allProjects = await prisma.project.findMany({
+            where: {
+                OR: [
+                    { workspaceId: id },
+                    { folderId: { in: folderIds } }
+                ]
             },
             orderBy: {
                 createdAt: 'desc',
@@ -121,7 +144,8 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
             data: {
                 media: mediaAssets,
                 folders,
-                projects
+                projects,
+                allProjects
             }
         });
 
@@ -138,7 +162,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
 module.exports.createFolder = async (request, reply) => {
     try {
         const { workspaceId, ownerType } = request.params; // workspace (for now) & Project later 
-        const { name, parentId } = request.body;
+        const { name, parentId, color, linkedProjectId } = request.body;
         const { orgId, id: userId } = request.user;
 
         if (!name) {
@@ -167,8 +191,17 @@ module.exports.createFolder = async (request, reply) => {
         const folder = await prisma.folder.create({
             data: {
                 name,
+                color,
                 parentId,
                 workspaceId,
+                ...(linkedProjectId ? {
+                    sources: {
+                        create: {
+                            projectId: linkedProjectId,
+                            sourceableType: 'FOLDER'
+                        }
+                    }
+                } : {})
             },
         });
 
@@ -200,21 +233,63 @@ module.exports.createProject = async (request, reply) => {
             });
         }
 
-        // Determine owner type based on presence of folderId
-        const ownerType = folderId ? 'FOLDER' : 'WORKSPACE';
+        let finalFolderId = folderId;
+        let finalOwnerType = folderId ? 'FOLDER' : 'WORKSPACE';
+        let resolvedFolderName = null;
+
+        if (!folderId) {
+            // Determine year and month folders
+            const tzSetting = await prisma.systemTimezone.findFirst({
+                where: { type: 'workspace', enabled: true }
+            });
+            const timeZone = tzSetting ? tzSetting.timezone : 'Europe/London';
+
+            const now = new Date();
+            const year = new Intl.DateTimeFormat('en-US', { year: 'numeric', timeZone }).format(now);
+            const month = new Intl.DateTimeFormat('en-US', { month: 'long', timeZone }).format(now);
+
+            // 1. Find or create Year folder
+            let yearFolder = await prisma.folder.findFirst({
+                where: { workspaceId, name: year, parentId: null }
+            });
+
+            if (!yearFolder) {
+                yearFolder = await prisma.folder.create({
+                    data: { name: year, workspaceId, parentId: null }
+                });
+            }
+
+            // 2. Find or create Month folder
+            let monthFolder = await prisma.folder.findFirst({
+                where: { workspaceId, name: month, parentId: yearFolder.id }
+            });
+
+            if (!monthFolder) {
+                monthFolder = await prisma.folder.create({
+                    data: { name: month, workspaceId, parentId: yearFolder.id }
+                });
+            }
+
+            finalFolderId = monthFolder.id;
+            finalOwnerType = 'FOLDER';
+            resolvedFolderName = monthFolder.name;
+        }
+
         const project = await prisma.project.create({
             data: {
                 name,
-                ownerType,
-                workspaceId, // Always capture workspaceId for easier querying later
-                folderId: folderId || null,
+                ownerType: finalOwnerType,
+                workspaceId, 
+                folderId: finalFolderId || null,
             },
         });
 
         return reply.code(201).send({
             success: true,
             message: 'Project created successfully.',
-            data: project
+            data: project,
+            folderId: finalFolderId,
+            folderName: resolvedFolderName
         });
 
     } catch (error) {
@@ -227,10 +302,41 @@ module.exports.createProject = async (request, reply) => {
     }
 };
 
+module.exports.findAllProjects = async (request, reply) => {
+    try {
+        const { orgId } = request.user;
+        const projects = await prisma.project.findMany({
+            where: {
+                workspace: {
+                    orgId
+                }
+            },
+            include: {
+                workspace: {
+                    select: { name: true }
+                }
+            },
+            orderBy: {
+                createdAt: 'desc'
+            }
+        });
+
+        return reply.code(200).send({
+            success: true,
+            data: projects
+        });
+    } catch (error) {
+        console.error(error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Internal Server Error'
+        });
+    }
+};
+
 module.exports.findFolderData = async (request, reply) => {
     try {
         const { id } = request.params; // folderId
-
         const mediaAssets = await prisma.asset.findMany({
             where: {
                 ownerType: 'FOLDER',
@@ -240,6 +346,7 @@ module.exports.findFolderData = async (request, reply) => {
             include: {
                 files: true,
                 metadata: true,
+                sources: true,
             },
             orderBy: {
                 createdAt: 'desc',
@@ -249,6 +356,9 @@ module.exports.findFolderData = async (request, reply) => {
         const folders = await prisma.folder.findMany({
             where: {
                 parentId: id,
+            },
+            include: {
+                sources: true,
             },
             orderBy: {
                 createdAt: 'desc',
@@ -265,13 +375,59 @@ module.exports.findFolderData = async (request, reply) => {
             },
         });
 
+        const folderInfo = await prisma.folder.findUnique({
+            where: { id },
+            include: { sources: true }
+        });
+
         return reply.code(200).send({
             success: true,
             message: 'Folder contents fetched successfully.',
             data: {
+                folderInfo,
                 media: mediaAssets,
                 folders,
                 projects
+            }
+        });
+
+    } catch (error) {
+        console.error(error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Internal Server Error'
+        });
+    }
+};
+
+module.exports.findProjectData = async (request, reply) => {
+    try {
+        const { projectId } = request.params;
+
+        const projectSources = await prisma.projectSource.findMany({
+            where: {
+                projectId: projectId
+            },
+            include: {
+                asset: {
+                    include: {
+                        files: true,
+                        metadata: true
+                    }
+                },
+                folder: true
+            }
+        });
+
+        const projectAssets = projectSources.filter(ps => ps.sourceableType === 'ASSET' && ps.asset && ps.asset.deletedAt === null).map(ps => ps.asset);
+        const projectFolders = projectSources.filter(ps => ps.sourceableType === 'FOLDER' && ps.folder).map(ps => ps.folder);
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Project contents fetched successfully.',
+            data: {
+                media: projectAssets,
+                folders: projectFolders
             }
         });
 
@@ -327,10 +483,10 @@ module.exports.linkProjectSource = async (request, reply) => {
 
     } catch (error) {
         console.error(error);
-        
+
         // Handle unique constraint violation (P2002) for duplicate links
         if (error.code === 'P2002') {
-             return reply.code(409).send({
+            return reply.code(409).send({
                 success: false,
                 message: 'This source is already linked to the project.'
             });
@@ -339,6 +495,89 @@ module.exports.linkProjectSource = async (request, reply) => {
         return reply.code(500).send({
             success: false,
             message: 'Internal Server Error'
+        });
+    }
+};
+
+module.exports.updateFolder = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { name } = request.body;
+
+        if (!name) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Folder name is required.'
+            });
+        }
+
+        const folder = await prisma.folder.update({
+            where: { id },
+            data: { name }
+        });
+
+        return reply.send({
+            success: true,
+            message: 'Folder renamed successfully.',
+            data: folder
+        });
+    } catch (error) {
+        console.error(error);
+        if (error.code === 'P2025') {
+            return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.updateProject = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { name } = request.body;
+
+        if (!name) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Project name is required.'
+            });
+        }
+
+        const project = await prisma.project.update({
+            where: { id },
+            data: { name }
+        });
+
+        return reply.send({
+            success: true,
+            message: 'Project renamed successfully.',
+            data: project
+        });
+    } catch (error) {
+        console.error(error);
+        if (error.code === 'P2025') {
+            return reply.code(404).send({ success: false, message: 'Project not found.' });
+        }
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.findTimezone = async (request, reply) => {
+    try {
+        const tzSetting = await request.server.prisma.systemTimezone.findFirst({
+            where: { type: 'workspace', enabled: true }
+        });
+        const timeZone = tzSetting ? tzSetting.timezone : 'Europe/London';
+        
+        return reply.code(200).send({
+            success: true,
+            timezone: timeZone
+        });
+    } catch (error) {
+        request.server.log.error(error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Failed to fetch timezone',
+            timezone: 'Europe/London'
         });
     }
 };
