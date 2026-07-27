@@ -411,6 +411,8 @@ async function getOrGenerateWebImagePreview(filePath) {
 
   let inputPath = filePath;
   let tempPatchedPsd = null;
+  let tempExrFile = null;
+
   if (ext === "psb") {
     try {
       const buffer = fs.readFileSync(filePath);
@@ -424,7 +426,24 @@ async function getOrGenerateWebImagePreview(filePath) {
     } catch (err) {
       console.warn("[MediaController] PSB patch warning:", err.message);
     }
+  } else if (ext === "openexr") {
+    try {
+      tempExrFile = path.join(previewsDir, path.basename(filePath) + ".temp.exr");
+      fs.copyFileSync(filePath, tempExrFile);
+      inputPath = tempExrFile;
+    } catch (err) {
+      console.warn("[MediaController] OpenEXR temp copy warning:", err.message);
+    }
   }
+
+  const cleanupTemps = () => {
+    if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
+      try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
+    }
+    if (tempExrFile && fs.existsSync(tempExrFile)) {
+      try { fs.unlinkSync(tempExrFile); } catch (e) { }
+    }
+  };
 
   const attemptPureJsPsd = () => {
     return new Promise((resolve) => {
@@ -438,6 +457,7 @@ async function getOrGenerateWebImagePreview(filePath) {
         (err) => {
           if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
             try { if (fs.existsSync(tempBmpPath)) fs.unlinkSync(tempBmpPath); } catch (e) { }
+            cleanupTemps();
             resolve(true);
           } else {
             // Fallback to serving BMP directly if ffmpeg fails
@@ -445,11 +465,14 @@ async function getOrGenerateWebImagePreview(filePath) {
             try {
               fs.renameSync(tempBmpPath, finalBmpPath);
               if (fs.existsSync(finalBmpPath) && fs.statSync(finalBmpPath).size > 0) {
+                cleanupTemps();
                 resolve({ bmpPath: finalBmpPath });
               } else {
+                cleanupTemps();
                 resolve(false);
               }
             } catch (e) {
+              cleanupTemps();
               resolve(false);
             }
           }
@@ -466,18 +489,14 @@ async function getOrGenerateWebImagePreview(filePath) {
         ["-y", ...demuxerArgs, "-i", inputPath, "-vframes", "1", "-pix_fmt", "rgb24", "-update", "1", previewPath],
         (err) => {
           if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
-            if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
-              try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
-            }
+            cleanupTemps();
             resolve(true);
           } else {
             execFile(
               "ffmpeg",
               ["-y", ...demuxerArgs, "-i", inputPath, "-vframes", "1", "-update", "1", previewPath],
               (err2) => {
-                if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
-                  try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
-                }
+                cleanupTemps();
                 if (!err2 && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
                   resolve(true);
                 } else {
@@ -498,12 +517,14 @@ async function getOrGenerateWebImagePreview(filePath) {
         [`${inputPath}[0]`, previewPath],
         (err) => {
           if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+            cleanupTemps();
             resolve(true);
           } else {
             execFile(
               "magick",
               [`${inputPath}[0]`, previewPath],
               (mErr) => {
+                cleanupTemps();
                 if (!mErr && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
                   resolve(true);
                 } else {
@@ -521,13 +542,17 @@ async function getOrGenerateWebImagePreview(filePath) {
     return new Promise((resolve) => {
       execFile(
         "gs",
-        ["-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=png16m", "-r150", `-sOutputFile=${previewPath}`, filePath],
+        ["-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=png16m", "-r150", `-sOutputFile=${previewPath}`, inputPath],
         (gsErr) => {
           if (!gsErr && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+            cleanupTemps();
             resolve(true);
           } else {
-            const pyScript = `from PIL import Image; img = Image.open("${filePath}"); img.save("${previewPath}")`;
+            const escapedPath = inputPath.replace(/"/g, '\\"');
+            const escapedPreview = previewPath.replace(/"/g, '\\"');
+            const pyScript = `from PIL import Image; img = Image.open("${escapedPath}"); img.save("${escapedPreview}")`;
             execFile("python3", ["-c", pyScript], (pyErr) => {
+              cleanupTemps();
               if (!pyErr && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
                 resolve(true);
               } else {
@@ -544,16 +569,18 @@ async function getOrGenerateWebImagePreview(filePath) {
     return new Promise((resolve) => {
       try {
         const { exiftool } = require("exiftool-vendored");
-        exiftool.extractThumbnail(filePath, previewPath)
+        exiftool.extractThumbnail(inputPath, previewPath)
           .then(() => {
+            cleanupTemps();
             if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
               resolve(true);
             } else {
               resolve(false);
             }
           })
-          .catch(() => resolve(false));
+          .catch(() => { cleanupTemps(); resolve(false); });
       } catch (e) {
+        cleanupTemps();
         resolve(false);
       }
     });
@@ -567,7 +594,22 @@ async function getOrGenerateWebImagePreview(filePath) {
     return { previewPath, isConverted: true };
   }
 
-  let success = await attemptFFmpeg();
+  let success = false;
+  if (ext === "ai" || ext === "eps") {
+    success = await attemptGhostscriptOrPython();
+  }
+  if (!success) {
+    success = await attemptFFmpeg();
+  }
+  if (!success) {
+    success = await attemptImageMagick();
+  }
+  if (!success) {
+    success = await attemptGhostscriptOrPython();
+  }
+  if (!success) {
+    success = await attemptExifTool();
+  }
   if (!success) {
     success = await attemptImageMagick();
   }
