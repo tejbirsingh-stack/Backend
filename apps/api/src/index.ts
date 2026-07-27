@@ -310,6 +310,8 @@ async function setupServer() {
     fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
     fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
     fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
+
+    console.log('All routes registerd successfully')
   } catch (err: any) {
     logger.warn('Some routes could not be loaded', { error: err.message });
   }

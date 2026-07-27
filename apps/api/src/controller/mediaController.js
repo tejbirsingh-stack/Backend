@@ -1354,6 +1354,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
           console.warn("[ExifTool] Could not extract EXIF in single upload:", exifErr.message);
         }
 
+        let reqOwnerType = request.query.ownerType || "WORKSPACE";
+        let reqOwnerId = request.query.ownerId || request.user.orgId;
+        const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
         // Write to the New Architecture
         const newAsset = await request.server.prisma.asset.create({
           data: {
@@ -1362,6 +1365,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
             type: assetType,
             status: (isActuallyVideo || isActuallyAudio) ? "processing" : "active",
             uploadedByUserId: request.user.id,
+            ownerType: resolved.resolvedOwnerType,
+            ownerId: resolved.resolvedOwnerId,
             files: {
               create: {
                 fileClass: "original",
