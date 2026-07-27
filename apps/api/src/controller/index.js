@@ -25,5 +25,6 @@ module.exports = {
   ...mediaController,
   ...roomController,
   ...cronController,
-  ...notificationController
+  ...notificationController,
+  ...require('./workSpaceController'),
 };

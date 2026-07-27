@@ -47,6 +47,66 @@ const b2Storage = new B2StorageService({
   region: process.env.B2_REGION,
 });
 
+async function enforceWorkspaceFolderStructure(prisma, ownerType, ownerId) {
+  if (ownerType === 'WORKSPACE' && ownerId) {
+    // Verify the workspace actually exists
+    const workspace = await prisma.workspace.findUnique({ where: { id: ownerId } });
+    if (!workspace) {
+      return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId };
+    }
+
+    const tzSetting = await prisma.systemTimezone.findFirst({
+      where: { type: 'workspace', enabled: true }
+    });
+    const timeZone = tzSetting ? tzSetting.timezone : 'Europe/London';
+
+    const now = new Date();
+    const year = new Intl.DateTimeFormat('en-US', { year: 'numeric', timeZone }).format(now);
+    const month = new Intl.DateTimeFormat('en-US', { month: 'long', timeZone }).format(now);
+
+    // 1. Find or create Year folder
+    let yearFolder = await prisma.folder.findFirst({
+      where: {
+        workspaceId: ownerId,
+        name: year,
+        parentId: null
+      }
+    });
+
+    if (!yearFolder) {
+      yearFolder = await prisma.folder.create({
+        data: {
+          name: year,
+          workspaceId: ownerId,
+          parentId: null
+        }
+      });
+    }
+
+    // 2. Find or create Month folder
+    let monthFolder = await prisma.folder.findFirst({
+      where: {
+        workspaceId: ownerId,
+        name: month,
+        parentId: yearFolder.id
+      }
+    });
+
+    if (!monthFolder) {
+      monthFolder = await prisma.folder.create({
+        data: {
+          name: month,
+          workspaceId: ownerId,
+          parentId: yearFolder.id
+        }
+      });
+    }
+
+    return { resolvedOwnerType: 'FOLDER', resolvedOwnerId: monthFolder.id, resolvedFolderName: monthFolder.name };
+  }
+  return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId, resolvedFolderName: null };
+}
+
 function sanitizeB2ErrorMessage(message) {
   if (!message) return "Unknown B2 error";
   let sanitized = message.replace(/The key '[^']+' is not valid/gi, "The key is not valid");
@@ -1188,7 +1248,6 @@ module.exports.restoreSoftDelete = async (request, reply) => {
       } catch (dbErr) {
         console.warn("Could not restore asset in database:", dbErr.message);
       }
-
     }
 
     // 2. Also try restoring from B2 if B2 is enabled
@@ -1557,6 +1616,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
           console.warn("[ExifTool] Could not extract EXIF in single upload:", exifErr.message);
         }
 
+        let reqOwnerType = request.query.ownerType || "WORKSPACE";
+        let reqOwnerId = request.query.ownerId || request.user.orgId;
+        const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
         // Write to the New Architecture
         const newAsset = await request.server.prisma.asset.create({
           data: {
@@ -1565,6 +1627,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
             type: assetType,
             status: (isActuallyVideo || isActuallyAudio) ? "processing" : "active",
             uploadedByUserId: request.user.id,
+            ownerType: resolved.resolvedOwnerType,
+            ownerId: resolved.resolvedOwnerId,
             files: {
               create: {
                 fileClass: "original",
@@ -2158,6 +2222,10 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const assetTitle = title || session.title || session.fileName;
     const assetSummary = summary || session.summary || "";
 
+    let reqOwnerType = session.ownerType || "WORKSPACE";
+    let reqOwnerId = session.ownerId || request.user.orgId;
+    const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
+
     // Save the asset metadata in PostgreSQL via Prisma (New Architecture)
     const newAsset = await request.server.prisma.asset.create({
       data: {
@@ -2166,6 +2234,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
         type: assetType,
         status: shouldQueueTranscode ? "processing" : "active",
         uploadedByUserId: request.user.id,
+        ownerType: resolved.resolvedOwnerType,
+        ownerId: resolved.resolvedOwnerId,
         files: {
           create: {
             fileClass: "original",
@@ -2184,7 +2254,15 @@ module.exports.completeResumableUpload = async (request, reply) => {
               originallyCreated: mergedTechSpecs.originallyCreated || null
             }
           }
-        }
+        },
+        ...(session.linkedProjectId ? {
+          sources: {
+            create: {
+              projectId: session.linkedProjectId,
+              sourceableType: 'ASSET'
+            }
+          }
+        } : {})
       }
     });
 
@@ -2314,6 +2392,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
       metadata: { technicalSpecs: mergedTechSpecs },
       compressionStatus: shouldQueueTranscode ? "queued" : "completed",
       storageLocation: "b2",
+      folderId: resolved.resolvedOwnerType === 'FOLDER' ? resolved.resolvedOwnerId : null,
+      folderName: resolved.resolvedFolderName,
     };
 
     return { success: true, asset: fileInfo };

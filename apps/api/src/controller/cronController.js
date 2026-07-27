@@ -30,7 +30,7 @@ const cleanupAuditLogs = async (request, reply) => {
     } catch (error) {
         request.server.logger.error('Error soft-deleting audit logs', { error: error.message });
 
-        logError(ACTIVITY_NAME.CLEANUP_AUDIT_LOGS, `Failed to clean up audit logs, Error : ${error.message}`, request, error, null, ACTOR_TYPE.CRON)
+        logError(ACTIVITY_NAME.CLEANUP_AUDIT_LOGS, `Failed to clean up audit logs, Error : ${error?.message}`, request, error, null, ACTOR_TYPE.CRON)
         return reply.status(500).send({
             success: false,
             message: 'Failed to clean up audit logs',
