@@ -1706,6 +1706,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
           // Report correct status to the frontend
           compressionStatus: isVideo ? "queued" : "completed",
           storageLocation: "b2",
+          folderId: resolved.resolvedOwnerType === 'FOLDER' ? resolved.resolvedOwnerId : null,
+          folderName: resolved.resolvedFolderName,
         };
 
 

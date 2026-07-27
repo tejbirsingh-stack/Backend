@@ -50,7 +50,7 @@ async function main() {
     if (roleExists) {
       // Clear existing role permissions
       await prisma.rolePermission.deleteMany({ where: { roleId } });
-      
+
       // Assign new ones
       for (const slug of slugs) {
         await prisma.rolePermission.create({

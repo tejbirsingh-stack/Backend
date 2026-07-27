@@ -250,15 +250,28 @@ module.exports.register = async (request, reply) => {
 
     // Hash password
     const passwordHash = await authService.hashPassword(password);
-    const superAdminRole = await request.server.prisma.role.findFirst({
+    let superAdminRole = await request.server.prisma.role.findFirst({
       where: {
         OR: [
+          { id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15" },
           { name: "Super Admin" },
           { name: "super_admin" },
           { name: "SuperAdmin" }
         ]
       }
     });
+    if (!superAdminRole) {
+      superAdminRole = await request.server.prisma.role.findFirst();
+    }
+    if (!superAdminRole) {
+      superAdminRole = await request.server.prisma.role.create({
+        data: {
+          id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15",
+          name: "Super Admin",
+          show: 0,
+        }
+      });
+    }
 
     // Store user in database
     const user = await request.server.prisma.user.create({
@@ -267,7 +280,7 @@ module.exports.register = async (request, reply) => {
         email: email.toLowerCase().trim(),
         passwordHash,
         orgId: finalOrgId,
-        roleId: superAdminRole?.id || null,
+        roleId: superAdminRole.id,
         phone: phone || null,
         hubspotUtk: hubspotUtk || null,
         status: "active",
@@ -1039,22 +1052,35 @@ module.exports.googleLogin = async (request, reply) => {
           planType: "free"
         }
       });
-      const defaultRole = await request.server.prisma.role.findFirst({
+      let defaultRole = await request.server.prisma.role.findFirst({
         where: {
           OR: [
+            { id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15" },
             { name: "Super Admin" },
             { name: "super_admin" },
             { name: "SuperAdmin" }
           ]
         }
       });
+      if (!defaultRole) {
+        defaultRole = await request.server.prisma.role.findFirst();
+      }
+      if (!defaultRole) {
+        defaultRole = await request.server.prisma.role.create({
+          data: {
+            id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15",
+            name: "Super Admin",
+            show: 0,
+          }
+        });
+      }
       // Create User
       user = await request.server.prisma.user.create({
         data: {
           email: normalizedEmail,
           name: name || normalizedEmail.split('@')[0],
           orgId: organization.id,
-          roleId: defaultRole?.id || null,
+          roleId: defaultRole.id,
           status: "active",
           mfaEnabled: true, // Enable MFA by default for all new users
           lastActiveAt: new Date(),
@@ -1241,15 +1267,28 @@ module.exports.microsoftLogin = async (request, reply) => {
         },
       });
 
-      const defaultRole = await request.server.prisma.role.findFirst({
+      let defaultRole = await request.server.prisma.role.findFirst({
         where: {
           OR: [
+            { id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15" },
             { name: "Super Admin" },
             { name: "super_admin" },
             { name: "SuperAdmin" }
           ]
         }
       });
+      if (!defaultRole) {
+        defaultRole = await request.server.prisma.role.findFirst();
+      }
+      if (!defaultRole) {
+        defaultRole = await request.server.prisma.role.create({
+          data: {
+            id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15",
+            name: "Super Admin",
+            show: 0,
+          }
+        });
+      }
 
       //4. Create the new User
       user = await request.server.prisma.user.create({
@@ -1258,7 +1297,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           email,
           passwordHash: "oauth-user-no-password", // Dummy password since they use Microsoft
           orgId: organization.id,
-          roleId: defaultRole?.id || null,
+          roleId: defaultRole.id,
           status: "active",
           mfaEnabled: false, // Optional: disable MFA for SSO users
         },
