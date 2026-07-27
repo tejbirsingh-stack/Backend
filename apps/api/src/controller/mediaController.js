@@ -276,6 +276,109 @@ const NON_WEB_IMAGE_EXTS = new Set([
   "exr", "openexr", "dpx", "cin", "tiff", "tif", "psd", "psb", "ai", "eps", "pcx", "jpf", "bmp", "mpo"
 ]);
 
+function decodePsdToBmpFile(psdPath, outputPath) {
+  try {
+    const buffer = fs.readFileSync(psdPath);
+    if (buffer.length < 26) return false;
+    const magic = buffer.toString("utf8", 0, 4);
+    if (magic !== "8BPS") return false;
+
+    const height = buffer.readUInt32BE(14);
+    const width = buffer.readUInt32BE(18);
+    const channels = buffer.readUInt16BE(12);
+
+    if (width <= 0 || height <= 0 || width > 10000 || height > 10000) return false;
+
+    let offset = 26;
+    const colorModeLen = buffer.readUInt32BE(offset); offset += 4 + colorModeLen;
+    const imgResLen = buffer.readUInt32BE(offset); offset += 4 + imgResLen;
+    const layerMaskLen = buffer.readUInt32BE(offset); offset += 4 + layerMaskLen;
+
+    if (offset >= buffer.length) return false;
+
+    const compression = buffer.readUInt16BE(offset); offset += 2;
+    const pixelCount = width * height;
+    const bgra = Buffer.alloc(pixelCount * 4);
+
+    if (compression === 0) {
+      const rOffset = offset;
+      const gOffset = offset + pixelCount;
+      const bOffset = offset + pixelCount * 2;
+      const aOffset = channels >= 4 ? offset + pixelCount * 3 : null;
+
+      for (let i = 0; i < pixelCount; i++) {
+        bgra[i * 4] = buffer[bOffset + i] || 0;
+        bgra[i * 4 + 1] = buffer[gOffset + i] || 0;
+        bgra[i * 4 + 2] = buffer[rOffset + i] || 0;
+        bgra[i * 4 + 3] = aOffset ? (buffer[aOffset + i] ?? 255) : 255;
+      }
+    } else if (compression === 1) {
+      const rleTableLen = height * channels * 2;
+      let srcIdx = offset + rleTableLen;
+
+      const decodedChannels = [];
+      for (let c = 0; c < Math.min(channels, 4); c++) {
+        const chanData = new Uint8Array(pixelCount);
+        let chanIdx = 0;
+        while (chanIdx < pixelCount && srcIdx < buffer.length) {
+          const header = buffer[srcIdx++];
+          if (header < 128) {
+            const count = header + 1;
+            for (let k = 0; k < count && chanIdx < pixelCount; k++) {
+              chanData[chanIdx++] = buffer[srcIdx++];
+            }
+          } else if (header > 128) {
+            const count = 257 - header;
+            const val = buffer[srcIdx++];
+            for (let k = 0; k < count && chanIdx < pixelCount; k++) {
+              chanData[chanIdx++] = val;
+            }
+          }
+        }
+        decodedChannels.push(chanData);
+      }
+
+      const rChan = decodedChannels[0] || new Uint8Array(pixelCount);
+      const gChan = decodedChannels[1] || rChan;
+      const bChan = decodedChannels[2] || rChan;
+      const aChan = decodedChannels[3];
+
+      for (let i = 0; i < pixelCount; i++) {
+        bgra[i * 4] = bChan[i];
+        bgra[i * 4 + 1] = gChan[i];
+        bgra[i * 4 + 2] = rChan[i];
+        bgra[i * 4 + 3] = aChan ? aChan[i] : 255;
+      }
+    } else {
+      return false;
+    }
+
+    const tempBmpPath = outputPath + ".temp.bmp";
+    const rowSize = width * 4;
+    const pixelDataSize = rowSize * height;
+    const fileSize = 54 + pixelDataSize;
+    const bmp = Buffer.alloc(fileSize);
+
+    bmp.write("BM", 0);
+    bmp.writeUInt32LE(fileSize, 2);
+    bmp.writeUInt32LE(54, 10);
+    bmp.writeUInt32LE(40, 14);
+    bmp.writeInt32LE(width, 18);
+    bmp.writeInt32LE(-height, 22);
+    bmp.writeUInt16LE(1, 26);
+    bmp.writeUInt16LE(32, 28);
+    bmp.writeUInt32LE(pixelDataSize, 34);
+
+    bgra.copy(bmp, 54, 0, pixelDataSize);
+    fs.writeFileSync(tempBmpPath, bmp);
+
+    return tempBmpPath;
+  } catch (err) {
+    console.warn("[MediaController] Pure JS PSD decode error:", err.message);
+    return false;
+  }
+}
+
 async function getOrGenerateWebImagePreview(filePath) {
   const ext = path.extname(filePath).toLowerCase().replace(".", "");
   if (!NON_WEB_IMAGE_EXTS.has(ext)) {
@@ -310,6 +413,38 @@ async function getOrGenerateWebImagePreview(filePath) {
       console.warn("[MediaController] PSB patch warning:", err.message);
     }
   }
+
+  const attemptPureJsPsd = () => {
+    return new Promise((resolve) => {
+      if (ext !== "psd" && ext !== "psb") return resolve(false);
+      const tempBmpPath = decodePsdToBmpFile(inputPath, previewPath);
+      if (!tempBmpPath) return resolve(false);
+
+      execFile(
+        "ffmpeg",
+        ["-y", "-i", tempBmpPath, "-vframes", "1", "-update", "1", previewPath],
+        (err) => {
+          if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+            try { if (fs.existsSync(tempBmpPath)) fs.unlinkSync(tempBmpPath); } catch (e) {}
+            resolve(true);
+          } else {
+            // Fallback to serving BMP directly if ffmpeg fails
+            const finalBmpPath = previewPath.replace(/\.png$/, ".bmp");
+            try {
+              fs.renameSync(tempBmpPath, finalBmpPath);
+              if (fs.existsSync(finalBmpPath) && fs.statSync(finalBmpPath).size > 0) {
+                resolve({ bmpPath: finalBmpPath });
+              } else {
+                resolve(false);
+              }
+            } catch (e) {
+              resolve(false);
+            }
+          }
+        }
+      );
+    });
+  };
 
   const attemptFFmpeg = () => {
     return new Promise((resolve) => {
@@ -410,6 +545,14 @@ async function getOrGenerateWebImagePreview(filePath) {
       }
     });
   };
+
+  let psdRes = await attemptPureJsPsd();
+  if (psdRes) {
+    if (typeof psdRes === 'object' && psdRes.bmpPath) {
+      return { previewPath: psdRes.bmpPath, isConverted: true };
+    }
+    return { previewPath, isConverted: true };
+  }
 
   let success = await attemptFFmpeg();
   if (!success) {
