@@ -425,7 +425,7 @@ async function getOrGenerateWebImagePreview(filePath) {
         ["-y", "-i", tempBmpPath, "-vframes", "1", "-update", "1", previewPath],
         (err) => {
           if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
-            try { if (fs.existsSync(tempBmpPath)) fs.unlinkSync(tempBmpPath); } catch (e) {}
+            try { if (fs.existsSync(tempBmpPath)) fs.unlinkSync(tempBmpPath); } catch (e) { }
             resolve(true);
           } else {
             // Fallback to serving BMP directly if ffmpeg fails
@@ -1429,17 +1429,17 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const userIdentifier = `${usernameSlug}-${shortUserId}`;
         const uniqueId = Date.now().toString();
         const filename = `${uniqueId}-raw-${part.filename}`;
-        
+
         let actualMimeType = part.mimetype;
         if (!actualMimeType || actualMimeType === 'application/octet-stream') {
           actualMimeType = inferMimeType(part.filename);
         }
-        
+
         const isImage = actualMimeType.startsWith("image/");
         const isMimeAudio = actualMimeType.startsWith("audio/");
         const isMimeVideo = actualMimeType.startsWith("video/");
         const subFolder = isImage ? "images" : isMimeAudio ? "audios" : isMimeVideo ? "videos" : "files";
-        
+
         const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${uniqueId}/${filename}`;
 
         console.log(`Streaming directly to B2: ${b2Key}`);
@@ -1894,7 +1894,7 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     const shortUserId = userId.split('-')[0];
     const usernameSlug = request.user?.name ? request.user.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : 'user';
     const userIdentifier = `${usernameSlug}-${shortUserId}`;
-    
+
     let actualSessionMimeType = mimeType;
     if (!actualSessionMimeType || actualSessionMimeType === 'application/octet-stream') {
       actualSessionMimeType = inferMimeType(fileName);
@@ -2660,7 +2660,7 @@ module.exports.retryTranscode = async (request, reply) => {
       if (!isNaN(maxDuration)) {
         let metadata = asset.metadata;
         if (typeof metadata?.customProperties === 'string') {
-           // Prisma stringified it, so try to parse if needed, but technicalSpecs should be an object
+          // Prisma stringified it, so try to parse if needed, but technicalSpecs should be an object
         }
         const technicalSpecs = metadata?.technicalSpecs;
         const durationSeconds = technicalSpecs?.durationSeconds;
@@ -2680,7 +2680,7 @@ module.exports.retryTranscode = async (request, reply) => {
         }
       }
     }
-    
+
     if (job) {
       await request.server.prisma.transcodeJob.update({
         where: { id: job.id },
@@ -2712,7 +2712,7 @@ module.exports.retryTranscode = async (request, reply) => {
       key: originalFile.filePath,
       preset: "medium"
     });
-    
+
     console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
 
     return reply.send({ success: true, message: "Transcode job queued" });
