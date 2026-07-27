@@ -525,30 +525,29 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       const previewsDir = path.join(getUploadsDir(), "web_previews");
       if (!fs.existsSync(previewsDir)) fs.mkdirSync(previewsDir, { recursive: true });
 
-      const fileHashName = (assetId || path.basename(b2Key)) + "_preview.png";
-      const previewPath = path.join(previewsDir, fileHashName);
-      const svgPath = previewPath.replace(/\.png$/, ".svg");
+      const rawBaseName = path.basename(b2Key);
+      const possiblePreviewPaths = [
+        path.join(previewsDir, `${rawBaseName}_preview.png`),
+        path.join(previewsDir, `${rawBaseName}_preview.svg`),
+        ...(assetId ? [
+          path.join(previewsDir, `${assetId}_preview.png`),
+          path.join(previewsDir, `${assetId}_preview.svg`),
+        ] : []),
+      ];
 
-      if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
-        return serveMediaFile(request, reply, previewPath, { download: false, displayName: `${filename}.png` });
-      }
-
-      if (fs.existsSync(svgPath) && fs.statSync(svgPath).size > 0) {
-        return serveMediaFile(request, reply, svgPath, { download: false, displayName: `${filename}.svg` });
+      for (const pPath of possiblePreviewPaths) {
+        if (fs.existsSync(pPath) && fs.statSync(pPath).size > 0) {
+          const pExt = path.extname(pPath).toLowerCase();
+          return serveMediaFile(request, reply, pPath, { download: false, displayName: `${filename}${pExt}` });
+        }
       }
 
       const tempRawDir = path.join(getUploadsDir(), "b2_temp");
       if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
-      const tempRawPath = path.join(tempRawDir, path.basename(b2Key));
+      const tempRawPath = path.join(tempRawDir, rawBaseName);
 
       if (!fs.existsSync(tempRawPath)) {
-        const fileStream = await b2Storage.downloadFile(b2Key);
-        const writeStream = fs.createWriteStream(tempRawPath);
-        await new Promise((res, rej) => {
-          fileStream.pipe(writeStream);
-          writeStream.on('finish', res);
-          writeStream.on('error', rej);
-        });
+        await b2Storage.downloadFile(b2Key, tempRawPath);
       }
 
       const previewRes = await getOrGenerateWebImagePreview(tempRawPath);
@@ -1423,6 +1422,25 @@ module.exports.uploadMediaFile = async (request, reply) => {
           }
         }
 
+        if (assetType === 'image') {
+          const ext = path.extname(part.filename || "").toLowerCase().replace(".", "");
+          if (NON_WEB_IMAGE_EXTS.has(ext)) {
+            setImmediate(async () => {
+              try {
+                const tempRawDir = path.join(getUploadsDir(), "b2_temp");
+                if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
+                const tempRawPath = path.join(tempRawDir, path.basename(b2Key));
+                if (b2Storage.isEnabled()) {
+                  await b2Storage.downloadFile(b2Key, tempRawPath);
+                }
+                await getOrGenerateWebImagePreview(tempRawPath);
+              } catch (err) {
+                console.warn("[MediaController] Pre-generate image preview error:", err.message);
+              }
+            });
+          }
+        }
+
         const fileInfo = {
           id: newAsset.id,
           name: newAsset.title,
@@ -1430,7 +1448,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
           size: Number(size),
           uploadDate: newAsset.createdAt.toISOString(),
           url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
-          thumbnail: newAsset.type === "image" ? `/api/media/${encodeURIComponent(newAsset.id)}/stream` : null,
+          thumbnail: `/api/media/${encodeURIComponent(newAsset.id)}/thumbnail`,
           tags: [],
           metadata: { technicalSpecs: specs },
           // Report correct status to the frontend
@@ -2077,6 +2095,25 @@ module.exports.completeResumableUpload = async (request, reply) => {
     // Clean up Redis Sessions
     await redisClient.del(`upload:session:${sessionId}`);
 
+    if (assetType === 'image') {
+      const ext = path.extname(session.fileName || "").toLowerCase().replace(".", "");
+      if (NON_WEB_IMAGE_EXTS.has(ext)) {
+        setImmediate(async () => {
+          try {
+            const tempRawDir = path.join(getUploadsDir(), "b2_temp");
+            if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
+            const tempRawPath = path.join(tempRawDir, path.basename(session.key));
+            if (b2Storage.isEnabled()) {
+              await b2Storage.downloadFile(session.key, tempRawPath);
+            }
+            await getOrGenerateWebImagePreview(tempRawPath);
+          } catch (err) {
+            console.warn("[MediaController] Pre-generate multipart image preview error:", err.message);
+          }
+        });
+      }
+    }
+
     const fileInfo = {
       id: newAsset.id,
       name: newAsset.title,
@@ -2084,7 +2121,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       size: Number(session.fileSize),
       uploadDate: newAsset.createdAt.toISOString(),
       url: `/api/media/${encodeURIComponent(newAsset.id)}/stream`,
-      thumbnail: null,
+      thumbnail: `/api/media/${encodeURIComponent(newAsset.id)}/thumbnail`,
       tags: resolvedTagNames,
       metadata: { technicalSpecs: mergedTechSpecs },
       compressionStatus: shouldQueueTranscode ? "queued" : "completed",
