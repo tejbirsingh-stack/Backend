@@ -315,15 +315,54 @@ async function getOrGenerateWebImagePreview(filePath) {
     return new Promise((resolve) => {
       execFile(
         "ffmpeg",
-        ["-y", "-i", inputPath, "-vframes", "1", "-update", "1", previewPath],
+        ["-y", "-i", inputPath, "-vframes", "1", "-pix_fmt", "rgb24", "-update", "1", previewPath],
         (err) => {
-          if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
-            try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
+          if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+            if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
+              try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
+            }
+            resolve(true);
+          } else {
+            execFile(
+              "ffmpeg",
+              ["-y", "-i", inputPath, "-vframes", "1", "-update", "1", previewPath],
+              (err2) => {
+                if (tempPatchedPsd && fs.existsSync(tempPatchedPsd)) {
+                  try { fs.unlinkSync(tempPatchedPsd); } catch (e) { }
+                }
+                if (!err2 && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+                  resolve(true);
+                } else {
+                  resolve(false);
+                }
+              }
+            );
           }
+        }
+      );
+    });
+  };
+
+  const attemptImageMagick = () => {
+    return new Promise((resolve) => {
+      execFile(
+        "convert",
+        [`${inputPath}[0]`, previewPath],
+        (err) => {
           if (!err && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
             resolve(true);
           } else {
-            resolve(false);
+            execFile(
+              "magick",
+              [`${inputPath}[0]`, previewPath],
+              (mErr) => {
+                if (!mErr && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+                  resolve(true);
+                } else {
+                  resolve(false);
+                }
+              }
+            );
           }
         }
       );
@@ -373,6 +412,9 @@ async function getOrGenerateWebImagePreview(filePath) {
   };
 
   let success = await attemptFFmpeg();
+  if (!success) {
+    success = await attemptImageMagick();
+  }
   if (!success && (ext === "ai" || ext === "eps" || ext === "psb" || ext === "psd" || ext === "tiff" || ext === "tif")) {
     success = await attemptGhostscriptOrPython();
   }
