@@ -71,11 +71,39 @@ function normalizeAssetType(mimeType = "", filename = "") {
   }
 
   // Still Image & Deep Raster / Vector Formats
-  if (cleanStr.endsWith(".psd") || cleanStr.endsWith(".psb") || cleanStr.endsWith(".ai") || cleanStr.endsWith(".eps") || cleanStr.endsWith(".exr") || cleanStr.endsWith(".openexr") || cleanStr.endsWith(".dpx") || cleanStr.endsWith(".cin") || cleanStr.endsWith(".tiff") || cleanStr.endsWith(".tif") || cleanStr.endsWith(".pcx") || cleanStr.endsWith(".mpo") || mime.startsWith("image/") || mime === "application/postscript" || mime === "application/vnd.adobe.photoshop") {
+  if (
+    cleanStr.endsWith(".jpg") || cleanStr.endsWith(".jpeg") || cleanStr.endsWith(".jpf") || cleanStr.endsWith(".png") || cleanStr.endsWith(".gif") || cleanStr.endsWith(".webp") || cleanStr.endsWith(".svg") || cleanStr.endsWith(".avif") || cleanStr.endsWith(".bmp") || cleanStr.endsWith(".psd") || cleanStr.endsWith(".psb") || cleanStr.endsWith(".ai") || cleanStr.endsWith(".eps") || cleanStr.endsWith(".exr") || cleanStr.endsWith(".openexr") || cleanStr.endsWith(".dpx") || cleanStr.endsWith(".cin") || cleanStr.endsWith(".tiff") || cleanStr.endsWith(".tif") || cleanStr.endsWith(".pcx") || cleanStr.endsWith(".mpo") ||
+    cleanStr.includes("openexr") || cleanStr.includes("exr") || cleanStr.includes("psd") || cleanStr.includes("psb") || cleanStr.includes("tiff") || cleanStr.includes("tif") || cleanStr.includes("avif") || cleanStr.includes("pcx") || cleanStr.includes("mpo") || cleanStr.includes("jpf") ||
+    mime.startsWith("image/") || mime === "application/postscript" || mime === "application/vnd.adobe.photoshop" || mime.includes("exr") || mime.includes("tiff") || mime.includes("psd")
+  ) {
     return "image";
   }
 
   return "document";
+}
+
+function determineAssetType(asset, originalFile) {
+  if (asset?.type && asset.type !== 'document') {
+    return asset.type;
+  }
+
+  const mime = originalFile?.mimeType || asset?.mimeType || '';
+  const names = [
+    originalFile?.fileName,
+    originalFile?.filePath,
+    asset?.title,
+    asset?.name,
+    asset?.path
+  ].filter(Boolean);
+
+  for (const name of names) {
+    const type = normalizeAssetType(mime, name);
+    if (type !== 'document') {
+      return type;
+    }
+  }
+
+  return 'document';
 }
 
 function inferMimeType(filename = "") {
@@ -135,8 +163,8 @@ function inferMimeType(filename = "") {
 }
 
 function toFrontendAssetShape(asset) {
-  const mimeType = asset.mimeType || inferMimeType(asset.name || "");
-  const normalizedType = normalizeAssetType(asset.mimeType || mimeType, asset.name || "");
+  const mimeType = asset.mimeType || inferMimeType(asset.name || asset.fileName || asset.filePath || "");
+  const normalizedType = determineAssetType(asset, { mimeType, fileName: asset.name || asset.fileName || asset.filePath });
   const uploadDate = asset.uploadDate || asset.createdAt || new Date().toISOString();
   const streamUrl =
     asset.url || (asset.id ? `/api/media/${encodeURIComponent(asset.id)}/stream` : null);
@@ -487,11 +515,16 @@ module.exports.getMediaAssets = async (request, reply) => {
 
 
 
+    const effectiveOrgId = orgId || request.user?.orgId;
+
     // Build where condition for New Architecture
     const where = {
-      orgId: orgId,
       deletedAt: null,
     };
+
+    if (effectiveOrgId) {
+      where.orgId = effectiveOrgId;
+    }
 
     if (query) {
       where.title = {
@@ -557,7 +590,7 @@ module.exports.getMediaAssets = async (request, reply) => {
         id: asset.id,
         name: asset.title,
         path: proxyFile ? proxyFile.filePath : originalFile?.filePath || '',
-        type: normalizeAssetType(originalFile?.mimeType || '', asset.title || originalFile?.fileName || ''),
+        type: determineAssetType(asset, originalFile),
         size: Number(originalFile?.sizeBytes || 0),
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
@@ -1048,7 +1081,7 @@ module.exports.getMediaFile = async (request, reply) => {
 
         const fileSize = Number(originalFile?.sizeBytes || 0);
         const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
-        const normalizedType = normalizeAssetType(originalFile?.mimeType || '', fetchedAsset.title || originalFile?.fileName || '');
+        const normalizedType = determineAssetType(fetchedAsset, originalFile);
 
         const dbTags = (fetchedAsset.assetTags && fetchedAsset.assetTags.length > 0)
           ? fetchedAsset.assetTags.map(at => at.tag?.name).filter(Boolean)

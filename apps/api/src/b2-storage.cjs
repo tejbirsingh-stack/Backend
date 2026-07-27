@@ -1,10 +1,10 @@
-const { 
-  S3Client, 
-  ListObjectsV2Command, 
-  GetObjectCommand, 
-  PutObjectCommand, 
-  DeleteObjectCommand, 
-  ListObjectVersionsCommand, 
+const {
+  S3Client,
+  ListObjectsV2Command,
+  GetObjectCommand,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  ListObjectVersionsCommand,
   DeleteObjectsCommand,
   CreateMultipartUploadCommand,
   UploadPartCommand,
@@ -30,7 +30,7 @@ class B2StorageService {
     this.s3Client = null;
     this.bucket = null;
     this.enabled = false;
-    
+
     // Check if B2 configuration is provided
     if (config && config.keyId && config.applicationKey && config.bucketName) {
       this.s3Client = new S3Client({
@@ -42,10 +42,10 @@ class B2StorageService {
         },
         forcePathStyle: true, // Required for B2
       });
-      
+
       this.bucket = config.bucketName;
       this.enabled = true;
-      
+
       console.log('✅ B2 Storage Service initialized');
       console.log(`  Bucket: ${this.bucket}`);
       console.log(`  Endpoint: ${config.endpoint || 'https://s3.us-west-002.backblazeb2.com'}`);
@@ -53,20 +53,20 @@ class B2StorageService {
       console.log('⚠️ B2 Storage Service disabled - missing configuration');
     }
   }
-  
+
   /**
    * Check if B2 is enabled and configured
    */
   isEnabled() {
     return this.enabled;
   }
-  
+
   /**
    * List files from B2 bucket with proper folder structure
    */
   async listFiles(prefix = '', maxKeys = 1000, includeFolders = false) {
     if (!this.enabled) return [];
-    
+
     try {
       const command = new ListObjectsV2Command({
         Bucket: this.bucket,
@@ -74,11 +74,11 @@ class B2StorageService {
         MaxKeys: maxKeys,
         Delimiter: includeFolders ? '/' : undefined, // Use delimiter to get folder structure
       });
-      
+
       const response = await this.s3Client.send(command);
-      
+
       const items = [];
-      
+
       // Add folders (CommonPrefixes)
       if (includeFolders && response.CommonPrefixes) {
         for (const prefixObj of response.CommonPrefixes) {
@@ -99,7 +99,7 @@ class B2StorageService {
           });
         }
       }
-      
+
       // Add files
       const files = (response.Contents || []).map(obj => {
         const folderPath = this.extractFolderFromKey(obj.Key, prefix);
@@ -117,36 +117,36 @@ class B2StorageService {
           folder: folderPath, // Extract folder for navigation
         };
       });
-      
+
       items.push(...files);
-      
+
       console.log(`📊 Found ${files.length} files${includeFolders ? ` and ${items.length - files.length} folders` : ''} in B2`);
       return items;
-      
+
     } catch (error) {
       console.error(' Error listing B2 files:', error);
       return [];
     }
   }
-  
+
   /**
    * Get presigned URL for a file
    */
   async getPresignedUrl(key, expiresIn = 3600) {
     if (!this.enabled) return null;
-    
+
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
-      
-      const url = await getSignedUrl(this.s3Client, command, { 
+
+      const url = await getSignedUrl(this.s3Client, command, {
         expiresIn // URL expires in 1 hour by default
       });
-      
+
       return url;
-      
+
     } catch (error) {
       console.error('Error generating presigned URL:', error);
       return null;
@@ -158,19 +158,19 @@ class B2StorageService {
    */
   async getPresignedPutUrl(key, expiresIn = 3600) {
     if (!this.enabled) return null;
-    
+
     try {
       const command = new PutObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
-      
-      const url = await getSignedUrl(this.s3Client, command, { 
-        expiresIn 
+
+      const url = await getSignedUrl(this.s3Client, command, {
+        expiresIn
       });
-      
+
       return url;
-      
+
     } catch (error) {
       console.error('Error generating presigned PUT URL:', error);
       throw error;
@@ -184,13 +184,13 @@ class B2StorageService {
    */
   async getFileSize(key) {
     if (!this.enabled) return 0;
-    
+
     try {
       const command = new HeadObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
-      
+
       const response = await this.s3Client.send(command);
       return response.ContentLength || 0;
     } catch (error) {
@@ -204,15 +204,15 @@ class B2StorageService {
    */
   async getPresignedPartUrl(key, uploadId, partNumber, expiresIn = 3600) {
     if (!this.enabled) return null;
-    
+
     try {
       const command = new UploadPartCommand({
         Bucket: this.bucket,
         Key: key,
         UploadId: uploadId,
-        PartNumber: partNumber, 
+        PartNumber: partNumber,
       });
-      
+
       const url = await getSignedUrl(this.s3Client, command, { expiresIn });
       return url;
     } catch (error) {
@@ -222,19 +222,19 @@ class B2StorageService {
   }
 
   //Download a file from B2 to a local destination path, or return a stream if no path provided
-  async downloadFile(key, downloadPath){
-    if(!this.enabled){
+  async downloadFile(key, downloadPath) {
+    if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
 
-    try{
+    try {
       const command = new GetObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
 
       const response = await this.s3Client.send(command);
-      
+
       // If no download path provided, return the readable stream directly
       if (!downloadPath) {
         return response.Body;
@@ -254,13 +254,13 @@ class B2StorageService {
         writer.on('error', reject);
       });
 
-    }catch (error){
+    } catch (error) {
       console.error(`❌ Error downloading file from B2 (${key}):`, error);
       throw error;
     }
   }
   // *****
-  
+
   /**
    * Upload file to B2
    */
@@ -268,18 +268,18 @@ class B2StorageService {
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
-    
+
     try {
       // Read file
       const fileContent = fs.readFileSync(filePath);
       const contentType = mime.lookup(filePath) || 'application/octet-stream';
-      
+
       // If no key provided, generate one
       if (!key) {
         const ext = path.extname(filePath);
         key = `noah-uploads/${uuidv4()}${ext}`;
       }
-      
+
       // Upload to B2
       const command = new PutObjectCommand({
         Bucket: this.bucket,
@@ -292,11 +292,11 @@ class B2StorageService {
           originalName: path.basename(filePath),
         },
       });
-      
+
       await this.s3Client.send(command);
-      
+
       console.log(`✅ Uploaded to B2: ${key}`);
-      
+
       // Return file info
       return {
         key,
@@ -306,13 +306,13 @@ class B2StorageService {
         url: await this.getPresignedUrl(key),
         storageLocation: 'b2',
       };
-      
+
     } catch (error) {
       console.error('❌ Error uploading to B2:', error);
       throw error;
     }
   }
-  
+
   /**
    * Upload stream to B2 (for direct uploads)
    */
@@ -320,7 +320,7 @@ class B2StorageService {
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
-    
+
     try {
       // Use @aws-sdk/lib-storage to handle flowing readable streams 
       // without needing to know the content-length or hashing upfront
@@ -339,40 +339,40 @@ class B2StorageService {
       //     },
       //   },
       // });
-      
+
       // await upload.done();
       const upload = new Upload({
-      client: this.s3Client,
+        client: this.s3Client,
 
-      params: {
-      Bucket: this.bucket,
-      Key: key,
-      Body: stream,
-      ContentType: contentType,
-      Metadata: {
-        ...metadata,
-        uploadedAt: new Date().toISOString(),
-      },
-    },
+        params: {
+          Bucket: this.bucket,
+          Key: key,
+          Body: stream,
+          ContentType: contentType,
+          Metadata: {
+            ...metadata,
+            uploadedAt: new Date().toISOString(),
+          },
+        },
 
-  // Upload each part in 5 MB chunks
-  partSize: 5 * 1024 * 1024,
+        // Upload each part in 5 MB chunks
+        partSize: 5 * 1024 * 1024,
 
-  // Upload up to 5 parts concurrently
-  queueSize: 100,
+        // Upload up to 5 parts concurrently
+        queueSize: 100,
 
-  // Clean up uploaded parts if an error occurs
-  leavePartsOnError: false,
-});
+        // Clean up uploaded parts if an error occurs
+        leavePartsOnError: false,
+      });
 
-if (onB2Progress) {
-  upload.on("httpUploadProgress", onB2Progress);
-}
+      if (onB2Progress) {
+        upload.on("httpUploadProgress", onB2Progress);
+      }
 
-await upload.done();
-      
+      await upload.done();
+
       console.log(`✅ Stream uploaded to B2: ${key}`);
-      
+
       return {
         key,
         bucket: this.bucket,
@@ -380,13 +380,13 @@ await upload.done();
         url: await this.getPresignedUrl(key),
         storageLocation: 'b2',
       };
-      
+
     } catch (error) {
       console.error('❌ Error uploading stream to B2:', error);
       throw error;
     }
   }
-  
+
   /**
    * Delete file from B2
    */
@@ -394,24 +394,24 @@ await upload.done();
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
-    
+
     try {
       const command = new DeleteObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
-      
+
       await this.s3Client.send(command);
-      
+
       console.log(`✅ Deleted from B2: ${key}`);
       return true;
-      
+
     } catch (error) {
       console.error('❌ Error deleting from B2:', error);
       throw error;
     }
   }
-  
+
   /**
    * Create a folder in B2 (creates a placeholder object)
    */
@@ -419,11 +419,11 @@ await upload.done();
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
-    
+
     try {
       // Ensure folder path ends with /
       const key = folderPath.endsWith('/') ? folderPath : `${folderPath}/`;
-      
+
       // Create a placeholder object to represent the folder
       const command = new PutObjectCommand({
         Bucket: this.bucket,
@@ -435,39 +435,39 @@ await upload.done();
           type: 'folder',
         },
       });
-      
+
       await this.s3Client.send(command);
-      
+
       console.log(`📁 Created folder in B2: ${key}`);
-      
+
       return {
         key,
         bucket: this.bucket,
         type: 'folder',
         storageLocation: 'b2',
       };
-      
+
     } catch (error) {
       console.error('❌ Error creating folder in B2:', error);
       throw error;
     }
   }
-  
+
   /**
    * Check if file exists in B2
    */
   async fileExists(key) {
     if (!this.enabled) return false;
-    
+
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucket,
         Key: key,
       });
-      
+
       await this.s3Client.send(command);
       return true;
-      
+
     } catch (error) {
       if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 404) {
         return false;
@@ -475,28 +475,28 @@ await upload.done();
       throw error;
     }
   }
-  
+
   /**
    * Get file type from filename
    */
   getFileType(filename) {
     const ext = path.extname(filename).toLowerCase();
-    if (['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm'].includes(ext)) return 'video';
-    if (['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'].includes(ext)) return 'audio';
-    if (['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'].includes(ext)) return 'image';
-    if (['.pdf', '.doc', '.docx', '.txt', '.md'].includes(ext)) return 'document';
+    if (['.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.qt', '.mkv', '.mpeg', '.m2v', '.mpg', '.ts', '.gxf'].includes(ext)) return 'video';
+    if (['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.m4b', '.aiff', '.aif', '.aifc', '.3g2', '.ape', '.au', '.mp2', '.oga'].includes(ext)) return 'audio';
+    if (['.jpg', '.jpeg', '.jpf', '.png', '.gif', '.webp', '.svg', '.tiff', '.tif', '.bmp', '.psd', '.psb', '.ai', '.eps', '.exr', '.openexr', '.avif', '.pcx', '.mpo', '.dpx', '.cin'].includes(ext)) return 'image';
+    if (['.pdf', '.doc', '.docx', '.rtf', '.txt', '.md', '.pproj', '.drp', '.aep', '.fcp', '.fcpxmld'].includes(ext)) return 'document';
     return 'other';
   }
-  
+
   /**
    * Transform B2 files to media assets format
    */
   async transformToMediaAssets(b2Files) {
     const assets = [];
-    
+
     for (const file of b2Files) {
       const url = await this.getPresignedUrl(file.key);
-      
+
       assets.push({
         id: file.id,
         name: file.name,
@@ -519,10 +519,10 @@ await upload.done();
         fullPath: file.fullPath || file.key, // Include full path
       });
     }
-    
+
     return assets;
   }
-  
+
   /**
    * Get storage statistics
    */
@@ -534,11 +534,11 @@ await upload.done();
         totalSize: 0,
       };
     }
-    
+
     try {
       const files = await this.listFiles();
       const totalSize = files.reduce((sum, file) => sum + file.size, 0);
-      
+
       return {
         enabled: true,
         bucket: this.bucket,
@@ -546,7 +546,7 @@ await upload.done();
         totalSize,
         formattedSize: this.formatFileSize(totalSize),
       };
-      
+
     } catch (error) {
       console.error('Error getting B2 stats:', error);
       return {
@@ -555,7 +555,7 @@ await upload.done();
       };
     }
   }
-  
+
   /**
    * Extract folder path from file key, relative to the given prefix
    */
@@ -565,19 +565,19 @@ await upload.done();
     if (prefix && key.startsWith(prefix)) {
       relativePath = key.substring(prefix.length);
     }
-    
+
     // Get the directory part (everything except the filename)
     const folderPath = path.dirname(relativePath);
-    
+
     // If it's in the root (dirname returns '.'), return null
     if (folderPath === '.' || folderPath === '') {
       return null;
     }
-    
+
     // Convert backslashes to forward slashes and normalize
     return folderPath.replace(/\\/g, '/').replace(/^\/+/, '');
   }
-  
+
   /**
    * Get parent folder path for a given folder
    */
@@ -587,39 +587,39 @@ await upload.done();
     if (prefix && folderPath.startsWith(prefix)) {
       relativePath = folderPath.substring(prefix.length);
     }
-    
+
     // Remove leading/trailing slashes
     relativePath = relativePath.replace(/^\/+|\/+$/g, '');
-    
+
     // Get parent directory
     const parentPath = path.dirname(relativePath);
-    
+
     // If it's in the root, return null
     if (parentPath === '.' || parentPath === '') {
       return null;
     }
-    
+
     return parentPath.replace(/\\/g, '/');
   }
-  
+
   /**
    * List files recursively in a specific folder
    */
   async listFilesInFolder(folderPath = '', maxKeys = 1000) {
     if (!this.enabled) return [];
-    
+
     try {
       // Ensure folder path ends with / for proper prefix matching
       const prefix = folderPath ? (folderPath.endsWith('/') ? folderPath : `${folderPath}/`) : '';
-      
+
       const command = new ListObjectsV2Command({
         Bucket: this.bucket,
         Prefix: prefix,
         MaxKeys: maxKeys,
       });
-      
+
       const response = await this.s3Client.send(command);
-      
+
       // Only return files that are directly in this folder (not in subfolders)
       const files = (response.Contents || []).filter(obj => {
         const relativePath = obj.Key.substring(prefix.length);
@@ -638,32 +638,32 @@ await upload.done();
         fullPath: obj.Key,
         folder: folderPath || null,
       }));
-      
+
       console.log(`📊 Found ${files.length} files in folder: ${folderPath || 'root'}`);
       return files;
-      
+
     } catch (error) {
       console.error('❌ Error listing files in folder:', error);
       return [];
     }
   }
-  
+
   /**
    * Search files recursively across all folders
    */
   async searchFiles(searchQuery, maxKeys = 1000) {
     if (!this.enabled || !searchQuery) return [];
-    
+
     try {
       const command = new ListObjectsV2Command({
         Bucket: this.bucket,
         Prefix: 'noah-uploads/', // Only search in noah-uploads
         MaxKeys: maxKeys,
       });
-      
+
       const response = await this.s3Client.send(command);
       const searchLower = searchQuery.toLowerCase();
-      
+
       // Filter files that match the search query
       const files = (response.Contents || [])
         .filter(obj => {
@@ -686,46 +686,46 @@ await upload.done();
             folder: folderPath,
           };
         });
-      
+
       console.log(`🔍 Found ${files.length} files matching: ${searchQuery}`);
       return files;
-      
+
     } catch (error) {
       console.error('❌ Error searching files:', error);
       return [];
     }
   }
-  
+
 
   // List all soft-deleted files in B2 (files where the latest version is a delete marker)
 
   async listTrashFiles(prefix = '', maxKeys = 1000) {
     if (!this.enabled) return [];
-    
+
     try {
       const command = new ListObjectVersionsCommand({
         Bucket: this.bucket,
         Prefix: prefix,
         MaxKeys: maxKeys,
       });
-      
+
       const response = await this.s3Client.send(command);
       const trashItems = [];
-      
+
       const deleteMarkers = response.DeleteMarkers || [];
       const versions = response.Versions || [];
-      
+
       // Find all delete markers that are the latest version (soft-deleted files)
       const latestDeleteMarkers = deleteMarkers.filter(dm => dm.IsLatest === true);
-      
+
       for (const dm of latestDeleteMarkers) {
         // Find the latest actual version of this file to get size/metadata
         const fileVersions = versions.filter(v => v.Key === dm.Key);
-        
+
         // Sort by LastModified descending to get the most recent version
         fileVersions.sort((a, b) => new Date(b.LastModified) - new Date(a.LastModified));
         const activeVersion = fileVersions[0];
-        
+
         trashItems.push({
           id: path.basename(dm.Key),
           name: path.basename(dm.Key).replace(/^\d+-/, ""),
@@ -742,7 +742,7 @@ await upload.done();
         });
       }
       return trashItems;
-      
+
     } catch (error) {
       console.error('Error listing trash files from B2:', error);
       throw error;
@@ -754,33 +754,33 @@ await upload.done();
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
-    
+
     try {
       const command = new ListObjectVersionsCommand({
         Bucket: this.bucket,
         Prefix: key,
       });
-      
+
       const response = await this.s3Client.send(command);
       const deleteMarkers = response.DeleteMarkers || [];
-      
+
       // Find the latest delete marker for this key
       const activeDM = deleteMarkers.find(dm => dm.Key === key && dm.IsLatest === true);
-      
+
       if (!activeDM) {
         throw new Error(`No active delete marker found for file: ${key}`);
       }
-      
+
       // Delete the active delete marker version to restore the file
       const deleteCommand = new DeleteObjectCommand({
         Bucket: this.bucket,
         Key: key,
         VersionId: activeDM.VersionId,
       });
-      
+
       await this.s3Client.send(deleteCommand);
       return true;
-      
+
     } catch (error) {
       console.error('Error restoring file from B2 Trash:', error);
       throw error;
@@ -794,16 +794,16 @@ await upload.done();
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
-    
+
     try {
       const listCommand = new ListObjectVersionsCommand({
         Bucket: this.bucket,
         Prefix: key,
       });
-      
+
       const response = await this.s3Client.send(listCommand);
       const objectsToDelete = [];
-      
+
       if (response.Versions) {
         for (const version of response.Versions) {
           if (version.Key === key) {
@@ -811,7 +811,7 @@ await upload.done();
           }
         }
       }
-      
+
       if (response.DeleteMarkers) {
         for (const marker of response.DeleteMarkers) {
           if (marker.Key === key) {
@@ -819,7 +819,7 @@ await upload.done();
           }
         }
       }
-      
+
       if (objectsToDelete.length > 0) {
         const deleteCommand = new DeleteObjectsCommand({
           Bucket: this.bucket,
@@ -837,15 +837,15 @@ await upload.done();
         });
         await this.s3Client.send(command);
       }
-      
+
       return true;
-      
+
     } catch (error) {
       console.error('Error permanently deleting file from B2:', error);
       throw error;
     }
   }
-  
+
   async ensureBucketCors() {
     if (!this.enabled || this._corsConfigured) return;
     try {
@@ -872,14 +872,14 @@ await upload.done();
   }
 
   // Initialize a multipart upload session in B2
-  async initiateMultipartUpload(key, contentType){
-    if(!this.enabled){
+  async initiateMultipartUpload(key, contentType) {
+    if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
 
-    await this.ensureBucketCors().catch(() => {});
+    await this.ensureBucketCors().catch(() => { });
 
-    try{
+    try {
       const command = new CreateMultipartUploadCommand({
         Bucket: this.bucket,
         Key: key,
@@ -890,18 +890,18 @@ await upload.done();
         uploadId: response.UploadId,
         key: response.Key,
       };
-    } catch (error){
+    } catch (error) {
       console.error('Error initiating multipart upload B2:', error);
       throw error;
     }
   }
 
   // Upload an individual part/chunk of multipart upload
-  async uploadPart(key, uploadId, partNumber, body){
+  async uploadPart(key, uploadId, partNumber, body) {
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
-    try{
+    try {
       const command = new UploadPartCommand({
         Bucket: this.bucket,
         Key: key,
@@ -916,19 +916,19 @@ await upload.done();
         ETag: response.ETag,
       };
 
-    }catch(error) {
+    } catch (error) {
       console.error(`Error uploading part ${partNumber} for upload ${uploadId}:`, error);
       throw error;
     }
   }
 
   // Complete a multipart Upload session
-  async completeMultipartUpload(key, uploadId, parts){
+  async completeMultipartUpload(key, uploadId, parts) {
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
 
-    try{
+    try {
       // Sort parts by PartNumber (S3/B2 requires parts list to be sorted ascending)
       const sortedParts = [...parts].sort((a, b) => a.PartNumber - b.PartNumber);
 
@@ -951,12 +951,12 @@ await upload.done();
   }
 
   // Abort a multipart upload session to free temporay storage
-  async abortMultipartUpload (key, uploadId){
+  async abortMultipartUpload(key, uploadId) {
     if (!this.enabled) {
       throw new Error('B2 Storage is not configured');
     }
 
-    try{
+    try {
       const command = new AbortMultipartUploadCommand({
         Bucket: this.bucket,
         Key: key,
