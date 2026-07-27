@@ -75,8 +75,6 @@ model User {
   projectUsers       ProjectUser[]
   folderUsers        FolderUser[]
   assetUsers         AssetUser[]
-
-  @@unique([orgId, email], name: "unique_email_per_org")
   // Sessions related to this user
   sessions             UserSession[]
 
@@ -234,6 +232,8 @@ model Asset {
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
   deletedAt DateTime? @db.Timestamptz(6)
+  deletedByUserId   String?      @db.Uuid
+  deletedBy         User?        @relation("AssetDeletedBy", fields: [deletedByUserId], references: [id])
 
   files                   AssetFile[]
   metadata                AssetMetadata?
@@ -565,38 +565,7 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-model Asset {
-  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId             String       @db.Uuid
-  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  title             String       @db.VarChar(500)
-  type              String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
-  status            String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash', 'pending_admin_review', 'pending_super_admin'
-  compressedKey     String?      @db.VarChar(1000) // Deterministic key for the compressed proxy file
-  aiTags            Json         @default("[]") @db.JsonB
-  
-  createdAt         DateTime     @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
-  deletedAt         DateTime?    @db.Timestamptz(6)
-  deletedByUserId   String?      @db.Uuid
-  deletedBy         User?        @relation("AssetDeletedBy", fields: [deletedByUserId], references: [id])
-  
-  files             AssetFile[]
-  metadata          AssetMetadata?
-  transcodeJobs     TranscodeJob[]
 
-  uploadedByUserId  String?      @db.Uuid
-  uploadedBy        User?        @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
-
-  annotations  Annotation[]
-  collectionAssets CollectionAsset[]
-  assetVersions    AssetVersion[]
-  assetTags        AssetTag[]
-  shareLinks       ShareLink[]
-  analyticsEvents  AnalyticsEvent[]
-  thumbnailForCollections Collection[] @relation("ThumbnailAsset")
-  videoFrameHashes VideoFrameHash[]
-}
 model AssetFile {
   id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   assetId   String  @db.Uuid
@@ -607,12 +576,6 @@ model AssetFile {
   sizeBytes BigInt
   mimeType  String  @db.VarChar(100)
   cdnUrl    String? @db.VarChar(500)
-
-  @@index([orgId])
-  @@index([status])
-  @@index([type])
-  @@index([compressedKey])
-  @@map("assets")
 
   @@index([assetId])
   @@index([fileClass])
