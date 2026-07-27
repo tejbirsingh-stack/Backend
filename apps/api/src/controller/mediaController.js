@@ -276,6 +276,44 @@ const NON_WEB_IMAGE_EXTS = new Set([
   "exr", "openexr", "dpx", "cin", "tiff", "tif", "psd", "psb", "ai", "eps", "pcx", "jpf", "bmp", "mpo"
 ]);
 
+function generateFallbackSvgPreview(filePath, previewPath) {
+  try {
+    const previewsDir = path.dirname(previewPath);
+    if (!fs.existsSync(previewsDir)) {
+      fs.mkdirSync(previewsDir, { recursive: true });
+    }
+    const ext = path.extname(filePath).toLowerCase().replace(".", "").toUpperCase() || "IMG";
+    const rawName = path.basename(filePath).replace(/^\d+-/, "");
+    const displayName = rawName.length > 25 ? rawName.substring(0, 22) + "..." : rawName;
+    const svgPath = previewPath.replace(/\.png$/, ".svg");
+
+    const svgContent = `<svg width="400" height="300" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E1E2A"/>
+      <stop offset="100%" stop-color="#0C0C12"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bgGrad)"/>
+  <g transform="translate(150, 65)" filter="url(#shadow)">
+    <rect width="100" height="100" rx="20" fill="rgba(56, 189, 248, 0.08)" stroke="rgba(56, 189, 248, 0.35)" stroke-width="2"/>
+    <text x="50" y="58" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="22" font-weight="700" fill="#38BDF8" text-anchor="middle" dominant-baseline="middle">${ext}</text>
+  </g>
+  <text x="200" y="210" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="15" font-weight="600" fill="#F8FAFC" text-anchor="middle">${displayName}</text>
+  <text x="200" y="235" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" fill="#64748B" text-anchor="middle">Image Asset Preview</text>
+</svg>`;
+
+    fs.writeFileSync(svgPath, svgContent, "utf8");
+    return svgPath;
+  } catch (err) {
+    console.error("[MediaController] Error generating fallback SVG preview:", err.message);
+    return null;
+  }
+}
+
 async function getOrGenerateWebImagePreview(filePath) {
   const ext = path.extname(filePath).toLowerCase().replace(".", "");
   if (!NON_WEB_IMAGE_EXTS.has(ext)) {
@@ -289,9 +327,14 @@ async function getOrGenerateWebImagePreview(filePath) {
 
   const fileHashName = path.basename(filePath) + "_preview.png";
   const previewPath = path.join(previewsDir, fileHashName);
+  const svgPath = previewPath.replace(/\.png$/, ".svg");
 
   if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
     return { previewPath, isConverted: true };
+  }
+
+  if (fs.existsSync(svgPath) && fs.statSync(svgPath).size > 0) {
+    return { previewPath: svgPath, isConverted: true };
   }
 
   let inputPath = filePath;
@@ -353,15 +396,41 @@ async function getOrGenerateWebImagePreview(filePath) {
     });
   };
 
+  const attemptExifTool = () => {
+    return new Promise((resolve) => {
+      try {
+        const { exiftool } = require("exiftool-vendored");
+        exiftool.extractThumbnail(filePath, previewPath)
+          .then(() => {
+            if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
+              resolve(true);
+            } else {
+              resolve(false);
+            }
+          })
+          .catch(() => resolve(false));
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  };
+
   let success = await attemptFFmpeg();
-  if (!success && (ext === "ai" || ext === "eps" || ext === "psb")) {
+  if (!success && (ext === "ai" || ext === "eps" || ext === "psb" || ext === "psd" || ext === "tiff" || ext === "tif")) {
     success = await attemptGhostscriptOrPython();
+  }
+  if (!success) {
+    success = await attemptExifTool();
   }
 
   if (success && fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
     return { previewPath, isConverted: true };
   } else {
-    console.warn("[MediaController] Image preview generation skipped for:", filePath);
+    console.warn("[MediaController] Image preview conversion failed for:", filePath, "- Generating SVG card fallback");
+    const fallbackSvg = generateFallbackSvgPreview(filePath, previewPath);
+    if (fallbackSvg && fs.existsSync(fallbackSvg)) {
+      return { previewPath: fallbackSvg, isConverted: true };
+    }
     return { previewPath: filePath, isConverted: false };
   }
 }
@@ -458,9 +527,14 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
 
       const fileHashName = (assetId || path.basename(b2Key)) + "_preview.png";
       const previewPath = path.join(previewsDir, fileHashName);
+      const svgPath = previewPath.replace(/\.png$/, ".svg");
 
       if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
         return serveMediaFile(request, reply, previewPath, { download: false, displayName: `${filename}.png` });
+      }
+
+      if (fs.existsSync(svgPath) && fs.statSync(svgPath).size > 0) {
+        return serveMediaFile(request, reply, svgPath, { download: false, displayName: `${filename}.svg` });
       }
 
       const tempRawDir = path.join(getUploadsDir(), "b2_temp");
@@ -477,9 +551,10 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
         });
       }
 
-      const { previewPath: genPreviewPath } = await getOrGenerateWebImagePreview(tempRawPath);
-      if (fs.existsSync(genPreviewPath) && fs.statSync(genPreviewPath).size > 0) {
-        return serveMediaFile(request, reply, genPreviewPath, { download: false, displayName: `${filename}.png` });
+      const previewRes = await getOrGenerateWebImagePreview(tempRawPath);
+      if (previewRes.isConverted && fs.existsSync(previewRes.previewPath) && fs.statSync(previewRes.previewPath).size > 0) {
+        const ext = path.extname(previewRes.previewPath).toLowerCase();
+        return serveMediaFile(request, reply, previewRes.previewPath, { download: false, displayName: `${filename}${ext}` });
       }
     } catch (b2PreviewErr) {
       console.error("B2 non-web image preview generation error:", b2PreviewErr.message);
