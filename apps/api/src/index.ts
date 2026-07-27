@@ -280,6 +280,7 @@ async function setupServer() {
     // Send error response
     reply.code(statusCode).send({
       error: statusCode >= 500 ? 'Internal Server Error' : error.message,
+      message: error.message || 'An unexpected error occurred',
       requestId,
       timestamp: new Date().toISOString()
     });

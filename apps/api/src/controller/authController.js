@@ -23,9 +23,8 @@ function formatDomainToOrgName(email, defaultName) {
   return defaultName || "Workspace";
 } // 1. Login Handler
 module.exports.login = async (request, reply) => {
-  const { email, password, mfaCode } = request.body;
-
   try {
+    const { email, password, mfaCode } = request.body || {};
     // Validate input
     if (!email || !password) {
       return reply.status(400).send({
