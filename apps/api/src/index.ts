@@ -12,6 +12,10 @@ import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import path from 'path';
 
+// Add global BigInt serializer to prevent fastify/JSON stringify errors
+(BigInt.prototype as any).toJSON = function () {
+  return this.toString();
+};
 
 // Mock Redis and Prisma for development
 // const Redis = null;
@@ -303,6 +307,7 @@ async function setupServer() {
     fastify.register(require('./routes/realtime'), { prefix: '/api/ws' });    // WebSocket routes for real-time video features
     fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
+    fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
     fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
     fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
   } catch (err: any) {
