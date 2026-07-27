@@ -1984,7 +1984,7 @@ module.exports.rejectDelete = async (request, reply) => {
 
 //12. Initialize a Resumable Multipart Upload Session
 module.exports.initiateResumableUpload = async (request, reply) => {
-  const { fileName, fileSize, mimeType, durationSeconds, title, summary, tagIds, folderId, technicalSpecs } = request.body || {};
+  const { fileName, fileSize, mimeType, durationSeconds, title, summary, tagIds, folderId, technicalSpecs, ownerType, ownerId, linkedProjectId } = request.body || {};
   if (!fileName || !fileSize || !mimeType) {
     return reply.status(400).send({ message: "fileName, fileSize, and mimeType are required" });
   }
@@ -2042,6 +2042,9 @@ module.exports.initiateResumableUpload = async (request, reply) => {
       tagIds: tagIds || [],
       folderId: folderId || null,
       technicalSpecs: technicalSpecs || {},
+      ownerType,
+      ownerId,
+      linkedProjectId,
       parts: [],
     };
 
