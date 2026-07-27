@@ -1,7 +1,7 @@
 const { storeWorkplace, findAllWorkspaces, createFolder, findWorkspaceMedia, createProject, findFolderData, linkProjectSource, updateFolder, updateProject, findProjectData, findAllProjects, findTimezone } = require('../controller');
 const { authenticate } = require('../middleware/auth-middleware')
 
-module.exports = async function (fastify) {
+module.exports = async function (fastify, opts, done) {
 
     fastify.addHook("preHandler", authenticate);
 
@@ -21,5 +21,5 @@ module.exports = async function (fastify) {
     // fastify.get('/folder/find-all', findAllFolders);
     // fastify.get('/folder/find-by-id/:id', findFolderById);
     // fastify.delete('/folder/delete/:id', deleteFolder);
-
+    done();
 };

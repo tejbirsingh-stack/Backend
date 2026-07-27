@@ -300,6 +300,7 @@ async function setupServer() {
     // API Routes - using plain require to avoid top-level await
     fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
     fastify.register(require('./routes/annotations'), { prefix: '/api/annotations' });
+    fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
     fastify.register(require('./routes/auth-routes'), { prefix: '/api/auth' });
     fastify.register(require('./routes/collections'), { prefix: '/api/collections' });
     fastify.register(require('./routes/compression'), { prefix: '/api/compression' });
@@ -309,7 +310,6 @@ async function setupServer() {
     fastify.register(require('./routes/realtime'), { prefix: '/api/ws' });    // WebSocket routes for real-time video features
     fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
-    fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
     fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
     fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
 
