@@ -1068,30 +1068,111 @@ module.exports.getThumbnail = async (request, reply) => {
       return reply.code(404).send({ error: "Asset not found" });
     }
 
-    let thumbKey = null;
-    if (asset.type === 'image') {
-      const original = asset.files.find(f => f.fileClass === 'original');
-      thumbKey = original?.filePath;
-    } else {
-      const proxy = asset.files.find(f => f.fileClass === 'proxy');
-      if (proxy) thumbKey = `${proxy.filePath}_thumb1.jpg`;
+    const originalFile = asset.files.find(f => f.fileClass === 'original') || asset.files[0];
+    const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
+
+    // 1. If proxy thumbnail exists
+    if (proxyFile) {
+      const proxyThumbKey = `${proxyFile.filePath}_thumb1.jpg`;
+      if (b2Storage.isEnabled()) {
+        const freshUrl = await b2Storage.getPresignedUrl(proxyThumbKey);
+        if (freshUrl) return reply.code(307).redirect(freshUrl);
+      }
+      const localProxyThumb = path.join(getUploadsDir(), proxyThumbKey);
+      if (fs.existsSync(localProxyThumb)) {
+        return serveMediaFile(request, reply, localProxyThumb, { download: false });
+      }
     }
 
-    if (!thumbKey) {
-      return reply.code(404).send({ error: "Thumbnail not found" });
+    const filePath = originalFile?.filePath || "";
+    const ext = path.extname(filePath).toLowerCase().replace(".", "");
+
+    // 2. Standard web images (jpg, png, webp, gif, svg)
+    if (asset.type === 'image' && !NON_WEB_IMAGE_EXTS.has(ext)) {
+      if (b2Storage.isEnabled()) {
+        const freshUrl = await b2Storage.getPresignedUrl(filePath);
+        if (freshUrl) return reply.code(307).redirect(freshUrl);
+      }
+      return await handleMediaRedirectOrServe(request, reply, filePath, false);
     }
 
-    if (b2Storage.isEnabled()) {
-      const ext = path.extname(thumbKey || "").toLowerCase().replace(".", "");
-      if (!NON_WEB_IMAGE_EXTS.has(ext)) {
-        const freshUrl = await b2Storage.getPresignedUrl(thumbKey);
-        if (freshUrl) {
-          return reply.code(307).redirect(freshUrl);
+    // 3. Cached web preview if already generated (.openexr, .ai, .mpo, .psd, .tiff, or video frame)
+    const previewsDir = path.join(getUploadsDir(), "web_previews");
+    if (!fs.existsSync(previewsDir)) {
+      try { fs.mkdirSync(previewsDir, { recursive: true }); } catch (e) { }
+    }
+    const cachedPreviewPath = path.join(previewsDir, `${asset.id}_thumb.jpg`);
+    if (fs.existsSync(cachedPreviewPath) && fs.statSync(cachedPreviewPath).size > 0) {
+      return serveMediaFile(request, reply, cachedPreviewPath, { download: false, displayName: `${asset.title}_thumb.jpg` });
+    }
+
+    // Also check getOrGenerateWebImagePreview's cache name
+    const rawBaseName = path.basename(filePath);
+    const altPreviewPath = path.join(previewsDir, `${rawBaseName}_preview.png`);
+    if (fs.existsSync(altPreviewPath) && fs.statSync(altPreviewPath).size > 0) {
+      return serveMediaFile(request, reply, altPreviewPath, { download: false, displayName: `${asset.title}_preview.png` });
+    }
+
+    // 4. Download source from B2 if needed to generate preview/thumbnail locally
+    let localSourcePath = path.join(getUploadsDir(), filePath);
+    if (!fs.existsSync(localSourcePath) || fs.statSync(localSourcePath).size === 0) {
+      if (b2Storage.isEnabled() && filePath) {
+        const tempRawDir = path.join(getUploadsDir(), "b2_temp");
+        if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
+        const tempPath = path.join(tempRawDir, rawBaseName);
+        if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size === 0) {
+          try {
+            await b2Storage.downloadFile(filePath, tempPath);
+          } catch (b2Err) {
+            console.warn("[getThumbnail] B2 download error:", b2Err.message);
+          }
+        }
+        if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0) {
+          localSourcePath = tempPath;
         }
       }
     }
 
-    return await handleMediaRedirectOrServe(request, reply, thumbKey, false);
+    if (fs.existsSync(localSourcePath) && fs.statSync(localSourcePath).size > 0) {
+      if (asset.type === 'image') {
+        const previewRes = await getOrGenerateWebImagePreview(localSourcePath);
+        if (previewRes.isConverted && fs.existsSync(previewRes.previewPath) && fs.statSync(previewRes.previewPath).size > 0) {
+          return serveMediaFile(request, reply, previewRes.previewPath, { download: false });
+        }
+      } else {
+        // Generate frame thumbnail for video using ffmpeg
+        const generated = await new Promise((resolve) => {
+          execFile(
+            "ffmpeg",
+            ["-y", "-ss", "00:00:00.5", "-i", localSourcePath, "-vframes", "1", "-vf", "scale=640:-1", "-q:v", "3", cachedPreviewPath],
+            (err) => {
+              if (!err && fs.existsSync(cachedPreviewPath) && fs.statSync(cachedPreviewPath).size > 0) {
+                resolve(true);
+              } else {
+                execFile(
+                  "ffmpeg",
+                  ["-y", "-i", localSourcePath, "-vframes", "1", "-vf", "scale=640:-1", "-q:v", "3", cachedPreviewPath],
+                  (err2) => {
+                    resolve(!err2 && fs.existsSync(cachedPreviewPath) && fs.statSync(cachedPreviewPath).size > 0);
+                  }
+                );
+              }
+            }
+          );
+        });
+
+        if (generated) {
+          return serveMediaFile(request, reply, cachedPreviewPath, { download: false });
+        }
+      }
+    }
+
+    // 5. Fallback: serve raw original file if present
+    if (filePath) {
+      return await handleMediaRedirectOrServe(request, reply, filePath, false);
+    }
+
+    return reply.code(404).send({ error: "Thumbnail unavailable" });
   } catch (error) {
     return reply.code(500).send({
       success: false,
@@ -1782,7 +1863,11 @@ module.exports.deleteMediaFile = async (request, reply) => {
           return await module.exports.deletePermanently(request, reply);
         }
 
-        // Admin and Editor will fall through to Soft Delete
+        const reason = request.body?.reason || request.body?.deletionReason || null;
+
+        if (reason && reason.length > 500) {
+          return reply.code(400).send({ success: false, error: "Deletion reason cannot exceed 500 characters" });
+        }
 
         // 3. Editor: Soft Delete (goes to Trash normally)
         const asset = await request.server.prisma.asset.update({
@@ -1790,7 +1875,8 @@ module.exports.deleteMediaFile = async (request, reply) => {
           data: {
             status: "trash",
             deletedAt: new Date(),
-            deletedByUserId: request.user.id
+            deletedByUserId: request.user.id,
+            deletionReason: reason
           }
         });
 
@@ -1944,20 +2030,23 @@ module.exports.rejectDelete = async (request, reply) => {
       let message = "";
 
       if (userRole === 'super admin' || userRole === 'superadmin') {
-        // User requested that if Super Admin rejects an Editor's file, it goes to Editor's trash, not Admin's.
-        // By setting status to 'trash', it will appear in the trash of whoever deleted it (Editor or Admin).
+        // Super Admin rejects → fully restore to active, clear all deletion fields
         updateData = {
-          status: "trash",
-          deletedAt: new Date()
+          status: "active",
+          deletedAt: null,
+          deletedByUserId: null,
+          deletionReason: null
         };
-        message = "Deletion rejected by Super Admin, returned to Trash";
+        message = "Deletion rejected by Super Admin, file restored to Active";
       } else if (userRole === 'admin') {
-        // If Admin rejects, it goes back to Trash with a reset 30-day timer
+        // Admin rejects → also fully restore to active
         updateData = {
-          status: "trash",
-          deletedAt: new Date()
+          status: "active",
+          deletedAt: null,
+          deletedByUserId: null,
+          deletionReason: null
         };
-        message = "Deletion rejected by Admin, returned to Trash";
+        message = "Deletion rejected by Admin, file restored to Active";
       } else {
         return reply.code(403).send({ success: false, error: "Unauthorized to reject deletion" });
       }
@@ -1968,12 +2057,12 @@ module.exports.rejectDelete = async (request, reply) => {
       });
 
       if (asset.deletedByUserId) {
-        await createNotification(request.server, asset.deletedByUserId, asset.orgId, 'deletion_rejected', 'Deletion Rejected', `Your permanent deletion request for ${asset.title} was rejected.`, asset.id);
+        await createNotification(request.server, asset.deletedByUserId, asset.orgId, 'deletion_rejected', 'Deletion Rejected', `Your permanent deletion request for ${asset.title} was rejected. The file has been restored to Active.`, asset.id);
       }
 
-      // Also notify the original uploader if it was made active
-      if (updateData.status === 'active' && asset.uploadedByUserId && asset.uploadedByUserId !== asset.deletedByUserId) {
-        await createNotification(request.server, asset.uploadedByUserId, asset.orgId, 'deletion_rejected', 'File Restored', `Your file ${asset.title} has been restored to Active status by Super Admin.`, asset.id);
+      // Also notify the original uploader
+      if (asset.uploadedByUserId && asset.uploadedByUserId !== asset.deletedByUserId) {
+        await createNotification(request.server, asset.uploadedByUserId, asset.orgId, 'deletion_rejected', 'File Restored', `Your file ${asset.title} has been restored to Active status.`, asset.id);
       }
 
       return reply.send({ success: true, message });
@@ -1989,6 +2078,14 @@ module.exports.initiateResumableUpload = async (request, reply) => {
   const { fileName, fileSize, mimeType, durationSeconds, title, summary, tagIds, folderId, technicalSpecs, ownerType, ownerId, linkedProjectId } = request.body || {};
   if (!fileName || !fileSize || !mimeType) {
     return reply.status(400).send({ message: "fileName, fileSize, and mimeType are required" });
+  }
+
+  if (title && title.length > 255) {
+    return reply.status(400).send({ message: "Title cannot exceed 255 characters" });
+  }
+
+  if (summary && summary.length > 1000) {
+    return reply.status(400).send({ message: "Summary cannot exceed 1000 characters" });
   }
 
   try {

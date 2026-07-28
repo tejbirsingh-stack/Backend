@@ -11,6 +11,21 @@ module.exports.storeWorkplace = async (request, reply) => {
                 message: 'Organization ID and Name are required.'
             });
         }
+
+        if (name.length > 100) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Workspace name cannot exceed 100 characters.'
+            });
+        }
+
+        if (description && description.length > 500) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Workspace description cannot exceed 500 characters.'
+            });
+        }
+
         const existing = await prisma.workspace.findFirst({
             where: {
                 orgId,
@@ -172,6 +187,13 @@ module.exports.createFolder = async (request, reply) => {
             });
         }
 
+        if (name.length > 100) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Folder name cannot exceed 100 characters.'
+            });
+        }
+
         // Validate parent folder exists (if provided)
         if (parentId) {
             const parentFolder = await prisma.folder.findUnique({
@@ -230,6 +252,13 @@ module.exports.createProject = async (request, reply) => {
             return reply.code(400).send({
                 success: false,
                 message: 'Project name is required.'
+            });
+        }
+
+        if (name.length > 100) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Project name cannot exceed 100 characters.'
             });
         }
 
@@ -510,6 +539,13 @@ module.exports.updateFolder = async (request, reply) => {
             });
         }
 
+        if (name.length > 100) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Folder name cannot exceed 100 characters.'
+            });
+        }
+
         const folder = await prisma.folder.update({
             where: { id },
             data: { name }
@@ -538,6 +574,13 @@ module.exports.updateProject = async (request, reply) => {
             return reply.code(400).send({
                 success: false,
                 message: 'Project name is required.'
+            });
+        }
+
+        if (name.length > 100) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Project name cannot exceed 100 characters.'
             });
         }
 
