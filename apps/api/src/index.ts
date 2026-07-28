@@ -148,23 +148,23 @@ async function setupServer() {
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-File-Size', 'X-Request-Id']
   });
 
-  await fastify.register(rateLimit as any, {
-    max: config.RATE_LIMIT_MAX_REQUESTS,
-    timeWindow: config.RATE_LIMIT_WINDOW_MS,
-    redis: redis,
-    keyGenerator: (request: any) => {
-      const xForwardedFor = request.headers['x-forwarded-for'];
-      return (Array.isArray(xForwardedFor) ? xForwardedFor[0] : xForwardedFor) || request.ip;
-    },
-    errorResponseBuilder: (request: any, context: any) => {
-      return {
-        code: 429,
-        error: 'Rate limit exceeded',
-        message: `Rate limit exceeded, retry in ${Math.round(context.ttl / 1000)} seconds`,
-        retryAfter: Math.round(context.ttl / 1000)
-      };
-    }
-  });
+  // await fastify.register(rateLimit as any, {
+  //   max: config.RATE_LIMIT_MAX_REQUESTS,
+  //   timeWindow: config.RATE_LIMIT_WINDOW_MS,
+  //   redis: redis,
+  //   keyGenerator: (request: any) => {
+  //     const xForwardedFor = request.headers['x-forwarded-for'];
+  //     return (Array.isArray(xForwardedFor) ? xForwardedFor[0] : xForwardedFor) || request.ip;
+  //   },
+  //   errorResponseBuilder: (request: any, context: any) => {
+  //     return {
+  //       code: 429,
+  //       error: 'Rate limit exceeded',
+  //       message: `Rate limit exceeded, retry in ${Math.round(context.ttl / 1000)} seconds`,
+  //       retryAfter: Math.round(context.ttl / 1000)
+  //     };
+  //   }
+  // });
 
   await fastify.register(multipart, {
     limits: {
