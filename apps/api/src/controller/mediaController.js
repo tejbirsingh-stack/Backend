@@ -1704,7 +1704,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const newAsset = await request.server.prisma.asset.create({
           data: {
             orgId: request.user.orgId,
-            title: part.filename,
+            title: request.query.title || (part.filename ? part.filename.replace(/\.[^/.]+$/, '') : 'Untitled'),
             type: assetType,
             status: (isActuallyVideo || isActuallyAudio) ? "processing" : "active",
             uploadedByUserId: request.user.id,
@@ -2136,7 +2136,7 @@ module.exports.initiateResumableUpload = async (request, reply) => {
       fileSize: Number(fileSize),
       mimeType,
       durationSeconds: durationSeconds ? Number(durationSeconds) : null,
-      title: title || fileName,
+      title: title || (fileName ? fileName.replace(/\.[^/.]+$/, '') : 'Untitled'),
       summary: summary || "",
       tagIds: tagIds || [],
       folderId: folderId || null,
