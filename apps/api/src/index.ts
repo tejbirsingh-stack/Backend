@@ -296,6 +296,14 @@ async function setupServer() {
     const metrics = await fastify.metrics.getMetrics();
     reply.type('text/plain').send(metrics);
   });
+
+  fastify.get('/server', async (request, reply) => {
+    reply.code(200).send({
+      message: 'Server is running',
+      timestamp: new Date().toISOString()
+    });
+  });
+
   try {
     // API Routes - using plain require to avoid top-level await
     fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
