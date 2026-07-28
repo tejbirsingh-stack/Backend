@@ -5,7 +5,7 @@ module.exports = {
   ...require('./collectionController'),
   ...require('./compressionController'),
   ...require('./analyticsController'),
-  ...require('./organizationController'),
+  ...require('./organizationsController'),
   ...require('./realtimeController'),
   ...require('./userController'),
   ...require('./mediaController'),
