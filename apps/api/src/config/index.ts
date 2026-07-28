@@ -97,7 +97,7 @@ function validateConfig(): Config {
     COMPRESSION_WORKER_CONCURRENCY: parseInt(process.env.COMPRESSION_WORKER_CONCURRENCY || '4', 10),
 
     RATE_LIMIT_WINDOW_MS: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
-    RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+    RATE_LIMIT_MAX_REQUESTS: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '1000', 10),
     CORS_CREDENTIALS: process.env.CORS_CREDENTIALS === 'true',
     HELMET_ENABLED: process.env.HELMET_ENABLED !== 'false',
 
