@@ -227,6 +227,7 @@ model Asset {
   title        String       @db.VarChar(500)
   type         String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
   status       String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
+  compressedKey     String?      @db.VarChar(1000) // Deterministic key for the compressed proxy file
   aiTags       Json         @default("[]") @db.JsonB
 
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
@@ -257,6 +258,7 @@ model Asset {
   @@index([orgId])
   @@index([status])
   @@index([type])
+  @@index([compressedKey])
   @@index([ownerType, ownerId])
   @@map("assets")
 }
