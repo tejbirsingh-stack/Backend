@@ -4,7 +4,7 @@ module.exports = {
   ...require('./authController'),
   ...require('./collectionController'),
   ...require('./compressionController'),
-  ...require('./analyticsController'),
+  ...require('./healthController'),
   ...require('./organizationsController'),
   ...require('./realtimeController'),
   ...require('./userController'),

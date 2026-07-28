@@ -29,7 +29,7 @@ import authService from './services/auth-service.js';
 import emailService from './services/email-service.js';
 import { Logger } from './utils/logger.js';
 import { MetricsCollector } from './utils/metrics.js';
-import { HealthChecker } from './utils/health.js';
+//import { HealthChecker } from './utils/health.js';
 
 const mediaService = {};
 const compressionService = {};
@@ -56,7 +56,7 @@ import { config } from './config/index.js';
 
 const logger = new Logger('noah-api');
 const metrics = new MetricsCollector();
-const healthChecker = new HealthChecker();
+//const healthChecker = new HealthChecker();
 
 // Initialize Fastify with enhanced configuration
 const fastify = Fastify({
