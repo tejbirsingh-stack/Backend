@@ -297,7 +297,7 @@ async function setupServer() {
     reply.type('text/plain').send(metrics);
   });
 
-  fastify.get('/server', async (request, reply) => {
+  fastify.get('/api/server', async (request, reply) => {
     reply.code(200).send({
       message: 'Server is running',
       timestamp: new Date().toISOString()
