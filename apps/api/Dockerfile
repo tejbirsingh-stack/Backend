@@ -15,7 +15,7 @@ FROM node:20-alpine AS production
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apk add --no-cache \
-    cairo pango jpeg giflib pixman freetype curl
+    cairo pango jpeg giflib pixman freetype curl ffmpeg
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=builder /app/package.json /app/package-lock.json ./
