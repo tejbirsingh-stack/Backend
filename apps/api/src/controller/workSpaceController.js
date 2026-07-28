@@ -279,7 +279,7 @@ module.exports.createProject = async (request, reply) => {
             data: {
                 name,
                 ownerType: finalOwnerType,
-                workspaceId, 
+                workspaceId,
                 folderId: finalFolderId || null,
             },
         });
@@ -301,7 +301,6 @@ module.exports.createProject = async (request, reply) => {
         });
     }
 };
-
 module.exports.findAllProjects = async (request, reply) => {
     try {
         const { orgId } = request.user;
@@ -567,7 +566,7 @@ module.exports.findTimezone = async (request, reply) => {
             where: { type: 'workspace', enabled: true }
         });
         const timeZone = tzSetting ? tzSetting.timezone : 'Europe/London';
-        
+
         return reply.code(200).send({
             success: true,
             timezone: timeZone

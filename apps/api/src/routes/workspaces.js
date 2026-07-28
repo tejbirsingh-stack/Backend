@@ -1,7 +1,7 @@
 const { storeWorkplace, findAllWorkspaces, createFolder, findWorkspaceMedia, createProject, findFolderData, linkProjectSource, updateFolder, updateProject, findProjectData, findAllProjects, findTimezone } = require('../controller');
 const { authenticate } = require('../middleware/auth-middleware')
 
-module.exports = async function (fastify, opts, done) {
+module.exports = function (fastify, opts, done) {
 
     fastify.addHook("preHandler", authenticate);
 
