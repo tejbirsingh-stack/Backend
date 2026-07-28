@@ -311,6 +311,7 @@ async function setupServer() {
     fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
     fastify.register(require('./routes/auth-routes'), { prefix: '/api/auth' });
     fastify.register(require('./routes/collections'), { prefix: '/api/collections' });
+    fastify.register(require('./routes/favorites'), { prefix: '/api/favorites' });
     fastify.register(require('./routes/compression'), { prefix: '/api/compression' });
     fastify.register(require('./routes/health-route.js'));
     fastify.register(require('./routes/media'), { prefix: '/api/media' });
