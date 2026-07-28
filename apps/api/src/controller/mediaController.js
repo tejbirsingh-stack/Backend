@@ -1554,7 +1554,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const isMimeVideo = actualMimeType.startsWith("video/");
         const subFolder = isImage ? "images" : isMimeAudio ? "audios" : isMimeVideo ? "videos" : "files";
 
-        const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${uniqueId}/${filename}`;
+        const baseName = (part.filename || 'untitled').replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+        const folderName = `${baseName}-${uniqueId}`;
+        const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${filename}`;
 
         console.log(`Streaming directly to B2: ${b2Key}`);
 
@@ -2026,7 +2028,9 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "files";
 
     const uniqueId = Date.now().toString();
-    const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${uniqueId}/${uniqueId}-raw-${fileName}`;
+    const baseName = (fileName || 'untitled').replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+    const folderName = `${baseName}-${uniqueId}`;
+    const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${uniqueId}-raw-${fileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
