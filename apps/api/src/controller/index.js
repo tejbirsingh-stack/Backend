@@ -27,4 +27,5 @@ module.exports = {
   ...cronController,
   ...notificationController,
   ...require('./workSpaceController'),
+  ...require('./favoritesController')
 };

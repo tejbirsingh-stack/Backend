@@ -78,6 +78,8 @@ model User {
   // Sessions related to this user
   sessions             UserSession[]
 
+  favorites            Favorite[]
+
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
 
@@ -193,6 +195,8 @@ model Folder {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  favorites Favorite[]
+
   @@index([workspaceId])
   @@index([parentId])
   @@map("folders")
@@ -254,6 +258,8 @@ model Asset {
   sources ProjectSource[] @relation("AssetAsSource")
   users   AssetUser[]
 
+  favorites Favorite[]
+
   @@index([orgId])
   @@index([status])
   @@index([type])
@@ -292,6 +298,8 @@ model Project {
 
   sources ProjectSource[]
   users   ProjectUser[]
+
+  favorites Favorite[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -647,4 +655,27 @@ model SystemTimezone {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   @@map("system_timezones")
+}
+
+model Favorite {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  assetId   String?  @db.Uuid
+  asset     Asset?   @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  folderId  String?
+  folder    Folder?  @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([userId, assetId])
+  @@unique([userId, folderId])
+  @@unique([userId, projectId])
+  @@index([userId])
+  @@map("favorites")
 }
