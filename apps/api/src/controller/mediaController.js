@@ -1865,6 +1865,10 @@ module.exports.deleteMediaFile = async (request, reply) => {
 
         const reason = request.body?.reason || request.body?.deletionReason || null;
 
+        if (reason && reason.length > 500) {
+          return reply.code(400).send({ success: false, error: "Deletion reason cannot exceed 500 characters" });
+        }
+
         // 3. Editor: Soft Delete (goes to Trash normally)
         const asset = await request.server.prisma.asset.update({
           where: { id: filename },
@@ -2074,6 +2078,14 @@ module.exports.initiateResumableUpload = async (request, reply) => {
   const { fileName, fileSize, mimeType, durationSeconds, title, summary, tagIds, folderId, technicalSpecs, ownerType, ownerId, linkedProjectId } = request.body || {};
   if (!fileName || !fileSize || !mimeType) {
     return reply.status(400).send({ message: "fileName, fileSize, and mimeType are required" });
+  }
+
+  if (title && title.length > 255) {
+    return reply.status(400).send({ message: "Title cannot exceed 255 characters" });
+  }
+
+  if (summary && summary.length > 1000) {
+    return reply.status(400).send({ message: "Summary cannot exceed 1000 characters" });
   }
 
   try {

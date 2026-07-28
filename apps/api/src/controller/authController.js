@@ -182,6 +182,27 @@ module.exports.register = async (request, reply) => {
       });
     }
 
+    if (name.length > 100) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Name cannot exceed 100 characters",
+      });
+    }
+
+    if (email.length > 255) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Email cannot exceed 255 characters",
+      });
+    }
+
+    if (phone && phone.length > 50) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Phone number cannot exceed 50 characters",
+      });
+    }
+
     // Validate business email domain (Layer 1: Free domain check, Layer 2: DNS MX verification)
     const emailValidation = await authService.validateBusinessEmail(email);
     if (!emailValidation.isValid) {
