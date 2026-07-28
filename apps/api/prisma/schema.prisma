@@ -235,6 +235,7 @@ model Asset {
   deletedAt DateTime? @db.Timestamptz(6)
   deletedByUserId   String?      @db.Uuid
   deletedBy         User?        @relation("AssetDeletedBy", fields: [deletedByUserId], references: [id])
+  deletionReason    String?      @db.Text
 
   files                   AssetFile[]
   metadata                AssetMetadata?
