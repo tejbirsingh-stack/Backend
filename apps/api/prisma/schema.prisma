@@ -448,44 +448,26 @@ model AssetTag {
 }
 
 model ShareLink {
-  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId          String               @db.Uuid
-  organization   Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  assetId        String?              @db.Uuid
-  asset          Asset?               @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  collectionId   String?              @db.Uuid
-  collection     Collection?          @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  token          String               @unique @db.VarChar(255)
-  mode           String               @default("link") @db.VarChar(50)
-  passwordHash   String?              @db.VarChar(255)
-  expiresAt      DateTime?            @db.Timestamptz(6)
-  revokedAt      DateTime?            @db.Timestamptz(6)
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId          String       @db.Uuid
+  organization   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assetId        String?      @db.Uuid
+  asset          Asset?       @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  collectionId   String?      @db.Uuid
+  collection     Collection?  @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  token          String       @unique @db.VarChar(255)
+  passwordHash   String?      @db.VarChar(255)
+  expiresAt      DateTime?    @db.Timestamptz(6)
   maxDownloads   Int?
-  downloadCount  Int                  @default(0)
-  permissions    Json                 @default("{\"view\": true, \"comment\": false, \"download\": false, \"downloadProxy\": false}") @db.JsonB
-  createdById    String?              @db.Uuid
-  createdBy      User?                @relation(fields: [createdById], references: [id])
-  createdAt      DateTime             @default(now()) @db.Timestamptz(6)
-  lastAccessedAt DateTime?            @db.Timestamptz(6)
-  recipients     ShareLinkRecipient[]
+  downloadCount  Int          @default(0)
+  permissions    Json         @default("{\"view\": true, \"download\": false}") @db.JsonB
+  createdById    String?      @db.Uuid
+  createdBy      User?        @relation(fields: [createdById], references: [id])
+  createdAt      DateTime     @default(now()) @db.Timestamptz(6)
+  lastAccessedAt DateTime?    @db.Timestamptz(6)
 
   @@index([orgId])
   @@map("share_links")
-}
-
-model ShareLinkRecipient {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shareLinkId    String    @db.Uuid
-  shareLink      ShareLink @relation(fields: [shareLinkId], references: [id], onDelete: Cascade)
-  email          String    @db.VarChar(255)
-  token          String    @unique @db.VarChar(255)
-  accessCount    Int       @default(0)
-  lastAccessedAt DateTime? @db.Timestamptz(6)
-  sentAt         DateTime  @default(now()) @db.Timestamptz(6)
-  revokedAt      DateTime? @db.Timestamptz(6)
-
-  @@index([shareLinkId])
-  @@map("share_link_recipients")
 }
 
 // Analytics events hypertable
@@ -513,13 +495,8 @@ model Annotation {
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   assetId      String       @db.Uuid
   mediaAsset   Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  userId       String?      @db.Uuid
-  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  // Guest details (for unauthenticated external reviewers)
-  guestName      String? @db.VarChar(100)
-  guestEmail     String? @db.VarChar(255)
-  shareLinkToken String? @db.VarChar(255)
+  userId       String       @db.Uuid
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // The type of annotation: e.g., 'comment', 'drawing', 'shape', 'stamp', 'group'
   type String @db.VarChar(50)
