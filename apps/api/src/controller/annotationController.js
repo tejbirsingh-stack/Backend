@@ -373,3 +373,242 @@ module.exports.deleteMediaAnnotations = async (request, reply) => {
         });
     }
 }
+
+module.exports.getAnnotationGroups = async (request, reply) => {
+    try {
+        const { mediaId } = request.params;
+
+        const groups = await request.server.prisma.annotationGroup.findMany({
+            where: {
+                mediaId,
+                orgId: request.user.orgId
+            },
+            include: {
+                members: true
+            }
+        });
+
+        // Format for frontend: memberIds as array of strings
+        const formattedGroups = groups.map(g => ({
+            id: g.id,
+            name: g.name,
+            createdAt: new Date(g.createdAt).getTime(),
+            memberIds: g.members.map(m => m.userId)
+        }));
+
+        return reply.send({
+            success: true,
+            data: formattedGroups
+        });
+    } catch (error) {
+        request.log.error(error);
+        return reply.code(500).send({
+            success: false,
+            error: "Failed to fetch annotation groups",
+            message: error.message
+        });
+    }
+};
+
+module.exports.createAnnotationGroup = async (request, reply) => {
+    try {
+        const { mediaId } = request.params;
+        const { name, memberIds } = request.body;
+        const { orgId } = request.user;
+
+        if (!name || name.trim().length === 0) {
+            return reply.code(400).send({ success: false, error: "Group name is required" });
+        }
+
+        // Verify media asset exists and get workspaceId
+        const asset = await request.server.prisma.asset.findFirst({
+            where: { id: mediaId, orgId }
+        });
+
+        if (!asset) {
+            return reply.code(404).send({ success: false, error: "Media asset not found" });
+        }
+        
+        let workspaceId;
+        if (asset.ownerType === 'WORKSPACE') {
+            workspaceId = asset.ownerId;
+        } else if (asset.ownerType === 'FOLDER') {
+            const folder = await request.server.prisma.folder.findUnique({ where: { id: asset.ownerId } });
+            workspaceId = folder?.workspaceId;
+        } else if (asset.ownerType === 'PROJECT') {
+            const project = await request.server.prisma.project.findUnique({ where: { id: asset.ownerId } });
+            if (project?.workspaceId) {
+                workspaceId = project.workspaceId;
+            } else if (project?.folderId) {
+                const folder = await request.server.prisma.folder.findUnique({ where: { id: project.folderId } });
+                workspaceId = folder?.workspaceId;
+            }
+        }
+
+        if (!workspaceId) {
+            return reply.code(400).send({ success: false, error: "Could not resolve workspace for this asset" });
+        }
+
+        const newGroup = await request.server.prisma.annotationGroup.create({
+            data: {
+                name: name.trim(),
+                mediaId,
+                orgId,
+                workspaceId,
+                members: {
+                    create: memberIds.map(userId => ({
+                        userId
+                    }))
+                }
+            },
+            include: {
+                members: true
+            }
+        });
+
+        return reply.send({
+            success: true,
+            data: {
+                id: newGroup.id,
+                name: newGroup.name,
+                createdAt: new Date(newGroup.createdAt).getTime(),
+                memberIds: newGroup.members.map(m => m.userId)
+            }
+        });
+    } catch (error) {
+        request.log.error(error);
+        return reply.code(500).send({
+            success: false,
+            error: "Failed to create annotation group",
+            message: error.message
+        });
+    }
+};
+
+module.exports.deleteAnnotationGroup = async (request, reply) => {
+    try {
+        const { mediaId, groupId } = request.params;
+        const { orgId, id: userId } = request.user;
+
+        const group = await request.server.prisma.annotationGroup.findFirst({
+            where: { id: groupId, mediaId, orgId },
+            include: { members: true }
+        });
+
+        if (!group) {
+            return reply.code(404).send({ success: false, error: "Annotation group not found" });
+        }
+
+        // Only a member of the group (any member) can delete it — you can tighten this to creator-only later
+        const isMember = group.members.some(m => m.userId === userId);
+        if (!isMember) {
+            return reply.code(403).send({ success: false, error: "You are not authorized to delete this group" });
+        }
+
+        // Find annotations using this group and reset them to private
+        const annotations = await request.server.prisma.annotation.findMany({
+            where: { assetId: mediaId, orgId }
+        });
+
+        const updates = annotations
+            .filter(a => a.data && a.data.groupId === groupId)
+            .map(a => {
+                const newData = { ...a.data };
+                newData.visibility = 'private';
+                delete newData.groupId;
+                return request.server.prisma.annotation.update({
+                    where: { id: a.id },
+                    data: { data: newData }
+                });
+            });
+
+        if (updates.length > 0) {
+            await Promise.all(updates);
+        }
+
+        await request.server.prisma.annotationGroup.delete({
+            where: { id: groupId }
+        });
+
+        return reply.send({ success: true, message: "Group deleted successfully" });
+    } catch (error) {
+        request.log.error(error);
+        return reply.code(500).send({
+            success: false,
+            error: "Failed to delete annotation group",
+            message: error.message
+        });
+    }
+};
+
+module.exports.updateAnnotationGroup = async (request, reply) => {
+    try {
+        const { mediaId, groupId } = request.params;
+        const { name, memberIds } = request.body;
+        const { orgId, id: userId } = request.user;
+
+        // Validation
+        if (!name || name.trim() === '') {
+            return reply.code(400).send({ success: false, error: "Group name is required" });
+        }
+        if (name.length > 50) {
+            return reply.code(400).send({ success: false, error: "Group name cannot exceed 50 characters" });
+        }
+        if (!Array.isArray(memberIds) || memberIds.length === 0) {
+            return reply.code(400).send({ success: false, error: "Group must have at least one member" });
+        }
+
+        // Fetch existing group to check authorization
+        const group = await request.server.prisma.annotationGroup.findFirst({
+            where: { id: groupId, mediaId, orgId },
+            include: { members: true }
+        });
+
+        if (!group) {
+            return reply.code(404).send({ success: false, error: "Annotation group not found" });
+        }
+
+        // Authorization: only a member can edit
+        const isMember = group.members.some(m => m.userId === userId);
+        if (!isMember) {
+            return reply.code(403).send({ success: false, error: "You are not authorized to edit this group" });
+        }
+
+        // Ensure current user is still in the member list to prevent self-lockout
+        const finalMemberIds = memberIds.includes(userId) ? memberIds : [...memberIds, userId];
+
+        // Execute as a transaction: Update name, delete old members, insert new members
+        const [updatedGroup] = await request.server.prisma.$transaction([
+            request.server.prisma.annotationGroup.update({
+                where: { id: groupId },
+                data: { name: name.trim() }
+            }),
+            request.server.prisma.annotationGroupMember.deleteMany({
+                where: { groupId: groupId }
+            }),
+            request.server.prisma.annotationGroupMember.createMany({
+                data: finalMemberIds.map(mId => ({
+                    groupId: groupId,
+                    userId: mId
+                }))
+            })
+        ]);
+
+        return reply.send({
+            success: true,
+            data: {
+                id: updatedGroup.id,
+                name: updatedGroup.name,
+                createdAt: new Date(updatedGroup.createdAt).getTime(),
+                memberIds: finalMemberIds
+            }
+        });
+    } catch (error) {
+        request.log.error(error);
+        return reply.code(500).send({
+            success: false,
+            error: "Failed to update annotation group",
+            message: error.message
+        });
+    }
+};
