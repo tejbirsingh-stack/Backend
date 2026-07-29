@@ -39,9 +39,21 @@ module.exports.getMediaAnnotations = async (request, reply) => {
                 userId: ann.user?.id,
                 author: ann.user ? {
                     name: ann.user.name || 'Unknown User',
+                    email: ann.user.email,
                     avatarUrl: ann.data?.author?.avatarUrl || null,
-                    initials: (ann.user.name || '').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U'
-                } : null,
+                    initials: (ann.user.name || '').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U',
+                    isGuest: false,
+                } : ((ann.guestName || ann.guestEmail || ann.data?.guestName || ann.data?.guestEmail) ? {
+                    name: (ann.guestName || ann.data?.guestName)
+                        ? ((ann.guestEmail || ann.data?.guestEmail)
+                            ? `${ann.guestName || ann.data?.guestName} (${ann.guestEmail || ann.data?.guestEmail})`
+                            : (ann.guestName || ann.data?.guestName))
+                        : (ann.guestEmail || ann.data?.guestEmail || 'Guest User'),
+                    email: ann.guestEmail || ann.data?.guestEmail || null,
+                    avatarUrl: null,
+                    initials: ((ann.guestName || ann.data?.guestName || ann.guestEmail || ann.data?.guestEmail || 'G')[0] || 'G').toUpperCase(),
+                    isGuest: true,
+                } : null),
                 createdAt: ann.createdAt,
                 updatedAt: ann.updatedAt, 
             })),    
