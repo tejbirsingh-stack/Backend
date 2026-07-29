@@ -3,6 +3,8 @@ const argon2 = require('argon2');
 const path = require('path');
 const fs = require('fs');
 const { handleMediaRedirectOrServe } = require('./mediaController');
+const { broadcastToRoom } = require('./realtimeController');
+
 
 /**
  * Helper to compute expiresAt DateTime
@@ -442,10 +444,35 @@ async function getShareAnnotations(req, reply) {
     const { shareLink } = resolved;
     const annotations = await prisma.annotation.findMany({
       where: { assetId: shareLink.assetId },
+      include: {
+        user: {
+          select: { id: true, name: true, email: true }
+        }
+      },
       orderBy: { createdAt: 'asc' },
     });
 
-    return reply.send({ data: annotations });
+    const formatted = annotations.map((ann) => ({
+      ...ann,
+      author: ann.user ? {
+        name: ann.user.name || 'Member',
+        email: ann.user.email,
+        initials: (ann.user.name || 'M')[0]?.toUpperCase(),
+        isGuest: false,
+      } : ((ann.guestName || ann.guestEmail || ann.data?.guestName || ann.data?.guestEmail) ? {
+        name: (ann.guestName || ann.data?.guestName)
+          ? ((ann.guestEmail || ann.data?.guestEmail)
+              ? `${ann.guestName || ann.data?.guestName} (${ann.guestEmail || ann.data?.guestEmail})`
+              : (ann.guestName || ann.data?.guestName))
+          : (ann.guestEmail || ann.data?.guestEmail || 'Guest User'),
+        email: ann.guestEmail || ann.data?.guestEmail || null,
+        initials: ((ann.guestName || ann.data?.guestName || ann.guestEmail || ann.data?.guestEmail || 'G')[0] || 'G').toUpperCase(),
+        isGuest: true,
+      } : null)
+    }));
+
+    return reply.send({ data: formatted });
+
   } catch (error) {
     req.log.error(error);
     return reply.code(500).send({ error: 'Failed to fetch annotations', message: error.message });
@@ -478,18 +505,43 @@ async function createShareAnnotation(req, reply) {
       return reply.code(400).send({ error: 'Comment text is required' });
     }
 
+    const effectiveEmail = recipient ? recipient.email : (req.body?.guestEmail || undefined);
+    const guestDisplayName = guestName.trim();
+
     const annotation = await prisma.annotation.create({
       data: {
         orgId: shareLink.orgId,
         assetId: shareLink.assetId,
-        guestName: guestName.trim(),
-        guestEmail: recipient ? recipient.email : undefined,
+        guestName: guestDisplayName,
+        guestEmail: effectiveEmail,
         shareLinkToken: token,
         type,
         videoTimestamp: videoTimestamp ? parseFloat(videoTimestamp) : null,
-        data: { text: text || data.text, guestName: guestName.trim(), ...data },
+        data: { text: text || data.text, guestName: guestDisplayName, guestEmail: effectiveEmail, ...data },
       },
     });
+
+    // Broadcast real-time websocket event to all active view rooms of this asset
+    try {
+      broadcastToRoom(shareLink.assetId, {
+        type: 'NEW_ANNOTATION',
+        payload: {
+          id: annotation.id,
+          type: annotation.type,
+          text: text || data.text || '',
+          videoTimestamp: annotation.videoTimestamp ? Number(annotation.videoTimestamp) : null,
+          data: annotation.data,
+          createdAt: annotation.createdAt,
+          author: {
+            name: guestDisplayName ? (effectiveEmail ? `${guestDisplayName} (${effectiveEmail})` : guestDisplayName) : (effectiveEmail || 'Guest User'),
+            email: effectiveEmail || null,
+            isGuest: true,
+          },
+        },
+      });
+    } catch (wsErr) {
+      req.log.error('Failed to broadcast guest annotation websocket message', wsErr);
+    }
 
     return reply.code(201).send({ success: true, annotation });
   } catch (error) {
@@ -497,6 +549,7 @@ async function createShareAnnotation(req, reply) {
     return reply.code(500).send({ error: 'Failed to post comment', message: error.message });
   }
 }
+
 
 module.exports = {
   createShareLink,

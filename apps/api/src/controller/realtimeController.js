@@ -90,5 +90,21 @@ module.exports.sendNotificationToUser = (userId, notification) => {
   }
 };
 
+module.exports.broadcastToRoom = (mediaId, payload) => {
+  try {
+    if (!mediaId || !rooms.has(mediaId)) return;
+    const room = rooms.get(mediaId);
+    const messageStr = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    for (const socket of room) {
+      if (socket.readyState === 1 /* OPEN */) {
+        socket.send(messageStr);
+      }
+    }
+  } catch (err) {
+    console.error(`[Realtime WS] Error broadcasting to room ${mediaId}:`, err);
+  }
+};
+
+
 
 
