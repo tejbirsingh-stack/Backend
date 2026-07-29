@@ -321,6 +321,7 @@ async function setupServer() {
     fastify.register(require('./routes/users'), { prefix: '/api/users' });
     fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
     fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
+    fastify.register(require('./routes/share-routes'), { prefix: '/api' });
 
     console.log('All routes registerd successfully')
     logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);

@@ -183,6 +183,70 @@ class EmailService {
     `;
     return this.sendEmail({ to, subject, text, html });
   }
+
+  // Send Secure Share Invite to External Recipient
+  async sendShareInvite(to, { assetTitle, shareUrl, expiresAt, permissions, hasPassword, password, senderName }) {
+    const subject = `${senderName || 'Someone'} shared "${assetTitle || 'a file'}" with you on Noah`;
+    
+    const allowedActions = [];
+    if (permissions?.view) allowedActions.push('View');
+    if (permissions?.comment) allowedActions.push('Comment & Annotate');
+    if (permissions?.download || permissions?.downloadProxy) allowedActions.push('Download');
+    const actionsText = allowedActions.join(', ') || 'View';
+
+    const formattedExpiry = expiresAt ? new Date(expiresAt).toLocaleString() : 'N/A';
+
+    const passwordNoteText = password
+      ? `\n\nAccess Password: ${password}`
+      : hasPassword
+      ? '\n\nNote: This share link is protected with a password. Please contact the sender to get the password.'
+      : '';
+
+    const passwordNoteHtml = password
+      ? `<div style="background-color: #fefce8; border: 1px solid #fef08a; color: #854d0e; padding: 14px 16px; border-radius: 8px; margin: 20px 0; font-size: 14px;">
+           <div style="margin-bottom: 6px;">🔒 <strong>Access Password:</strong></div>
+           <div style="font-family: monospace; font-size: 16px; font-weight: bold; background-color: #fef08a; padding: 6px 12px; border-radius: 6px; color: #713f12; letter-spacing: 1px; display: inline-block;">
+             ${password}
+           </div>
+         </div>`
+      : hasPassword
+      ? `<div style="background-color: #fffbebfb; border: 1px solid #fef08a; color: #854d0e; padding: 12px; border-radius: 6px; margin: 20px 0; font-size: 14px;">
+           🔒 <strong>Password Protected:</strong> The owner has protected this link with a password. Please ask the sender directly for the password.
+         </div>`
+      : '';
+
+    const text = `Hi,\n\n${senderName || 'Someone'} has shared "${assetTitle || 'a file'}" with you on Noah Platform.\n\nAllowed Actions: ${actionsText}\nExpires At: ${formattedExpiry}${passwordNoteText}\n\nAccess link: ${shareUrl}\n\nThanks,\nNoah Platform`;
+
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #4f46e5; margin: 0;">Noah Secure Share</h2>
+        </div>
+        <p style="font-size: 15px; color: #1e293b;">Hi,</p>
+        <p style="font-size: 15px; color: #334155; line-height: 1.5;">
+          <strong>${senderName || 'A teammate'}</strong> has shared <strong>"${assetTitle || 'a media file'}"</strong> with you for review.
+        </p>
+
+        <div style="background-color: #f8fafc; border-radius: 8px; padding: 16px; margin: 20px 0;">
+          <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; margin-bottom: 8px;">Allowed Permissions</div>
+          <div style="font-size: 14px; color: #0f172a; font-weight: 500;">${actionsText}</div>
+          <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; margin-top: 12px; margin-bottom: 4px;">Expires At</div>
+          <div style="font-size: 14px; color: #0f172a;">${formattedExpiry}</div>
+        </div>
+
+        ${passwordNoteHtml}
+
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${shareUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 15px;">Open Shared Media</a>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">You received this invite because an asset was shared with your email on Noah Platform.</p>
+      </div>
+    `;
+
+    return this.sendEmail({ to, subject, text, html });
+  }
 }
 
 module.exports = new EmailService();

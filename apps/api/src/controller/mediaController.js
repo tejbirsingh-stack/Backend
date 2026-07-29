@@ -2962,3 +2962,5 @@ module.exports.retryTranscode = async (request, reply) => {
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
+
+module.exports.handleMediaRedirectOrServe = handleMediaRedirectOrServe;
