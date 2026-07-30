@@ -96,18 +96,15 @@ module.exports.findAllWorkspaces = async (request, reply) => {
 module.exports.findWorkspaceMedia = async (request, reply) => {
     try {
         const { id } = request.params;  //workspace Id
+        const { tagIds } = request.query || {};
 
-        const folders = await prisma.folder.findMany({
-            where: {
-                workspaceId: id,
-            },
-            include: {
-                sources: true,
-            },
-            orderBy: {
-                createdAt: 'desc',
-            },
-        });
+        let tagsArray = [];
+        if (tagIds) {
+            tagsArray = Array.isArray(tagIds) ? tagIds : tagIds.split(',');
+        }
+
+        let folders = [];
+        let allProjects = [];
 
         const allWorkspaceFolders = await prisma.folder.findMany({
             where: { workspaceId: id },
@@ -115,17 +112,31 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
         });
         const folderIds = allWorkspaceFolders.map(f => f.id);
 
-        const allProjects = await prisma.project.findMany({
-            where: {
-                OR: [
-                    { workspaceId: id },
-                    { folderId: { in: folderIds } }
-                ]
-            },
-            orderBy: {
-                createdAt: 'desc',
-            },
-        });
+        if (tagsArray.length === 0) {
+            folders = await prisma.folder.findMany({
+                where: {
+                    workspaceId: id,
+                },
+                include: {
+                    sources: true,
+                },
+                orderBy: {
+                    createdAt: 'desc',
+                },
+            });
+
+            allProjects = await prisma.project.findMany({
+                where: {
+                    OR: [
+                        { workspaceId: id },
+                        { folderId: { in: folderIds } }
+                    ]
+                },
+                orderBy: {
+                    createdAt: 'desc',
+                },
+            });
+        }
         
         const projectIds = allProjects.map(p => p.id);
 
@@ -135,7 +146,16 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 OR: [
                     { ownerType: 'WORKSPACE', ownerId: id },
                     { ownerType: 'FOLDER', ownerId: { in: folderIds } }
-                ]
+                ],
+                ...(tagsArray.length > 0 ? {
+                    assetTags: {
+                        some: {
+                            tag: {
+                                name: { in: tagsArray }
+                            }
+                        }
+                    }
+                } : {})
             },
             include: {
                 files: true,
