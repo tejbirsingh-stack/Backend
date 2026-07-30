@@ -81,6 +81,8 @@ model User {
   sessions             UserSession[]
 
   favorites            Favorite[]
+  createdTags          Tag[]      @relation("TagCreatedBy")
+  addedProjectTags     ProjectTag[] @relation("ProjectTagAddedBy")
 
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
@@ -304,8 +306,9 @@ model Project {
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder    Folder?    @relation(fields: [folderId], references: [id], onDelete: Cascade)
 
-  sources ProjectSource[]
-  users   ProjectUser[]
+  sources     ProjectSource[]
+  users       ProjectUser[]
+  defaultTags ProjectTag[]
 
   favorites Favorite[]
 
@@ -424,14 +427,56 @@ model Tag {
   orgId        String       @db.Uuid
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   name         String       @db.VarChar(50)
-  color        String?      @db.VarChar(7) // Hex color
+  color        String?      @db.VarChar(7)  // Hex color
   category     String?      @db.VarChar(50)
+
+  // --- Hierarchy ---
+  // A tag can have an optional parent. Same name is allowed under different parents.
+  parentId     String?      @db.Uuid @map("parent_id")
+  parent       Tag?         @relation("TagHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children     Tag[]        @relation("TagHierarchy")
+
+  // --- Scope ---
+  // personal = only visible to createdBy user
+  // company  = shared across the whole org
+  // project  = scoped to a specific workspace
+  scope        String       @default("company") @db.VarChar(20) // personal | company | project
+  workspaceId  String?      @db.Uuid @map("workspace_id") // required when scope = project
+  createdById  String?      @db.Uuid @map("created_by_id")  // required when scope = personal
+  createdBy    User?        @relation("TagCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
   createdAt    DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
 
-  assetTags AssetTag[]
+  assetTags    AssetTag[]
+  projectTags  ProjectTag[]
 
-  @@unique([orgId, name], name: "unique_tag_per_org")
+  // Name is unique within the same org + same parent (null parent = root level)
+  @@unique([orgId, parentId, name], name: "unique_tag_name_per_parent")
+  @@index([orgId])
+  @@index([parentId])
+  @@index([scope])
+  @@index([workspaceId])
   @@map("tags")
+}
+
+// Stores which tags are the default for a project.
+// When a file is uploaded/linked to a project, these tags (+ their ancestors) are auto-applied.
+model ProjectTag {
+  projectId String  @map("project_id")
+  tagId     String  @db.Uuid @map("tag_id")
+  addedById String? @db.Uuid @map("added_by_id")
+
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tag       Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  addedBy   User?    @relation("ProjectTagAddedBy", fields: [addedById], references: [id], onDelete: SetNull)
+
+  addedAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([projectId, tagId])
+  @@index([projectId])
+  @@index([tagId])
+  @@map("project_tags")
 }
 
 model AssetTag {

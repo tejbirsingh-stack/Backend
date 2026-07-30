@@ -1,5 +1,6 @@
 const prisma = require('../utils/prisma');
-const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log')
+const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
+const { getAncestors } = require('../services/tagHierarchy');
 module.exports.storeWorkplace = async (request, reply) => {
     try {
         const { name, description, color } = request.body;
@@ -241,7 +242,8 @@ module.exports.createFolder = async (request, reply) => {
 module.exports.createProject = async (request, reply) => {
     try {
         const { workspaceId } = request.params;
-        const { name, folderId } = request.body;
+        const { name, folderId, defaultTagIds } = request.body;
+        const { orgId, id: userId } = request.user;
 
         if (!name) {
             return reply.code(400).send({
@@ -307,6 +309,27 @@ module.exports.createProject = async (request, reply) => {
                 folderId: finalFolderId || null,
             },
         });
+
+        const tagIds = Array.isArray(defaultTagIds) ? defaultTagIds : [];
+        if (tagIds.length > 0) {
+            // Validate all tags belong to this org
+            const validTags = await prisma.tag.findMany({
+                where: { id: { in: tagIds }, orgId },
+                select: { id: true },
+            });
+            const validTagIds = validTags.map(t => t.id);
+
+            if (validTagIds.length > 0) {
+                await prisma.projectTag.createMany({
+                    data: validTagIds.map(tagId => ({
+                        projectId: project.id,
+                        tagId,
+                        addedById: userId,
+                    })),
+                    skipDuplicates: true,
+                });
+            }
+        }
 
         return reply.code(201).send({
             success: true,
@@ -497,6 +520,52 @@ module.exports.linkProjectSource = async (request, reply) => {
                 folderId: sourceableType === 'FOLDER' ? folderId : null,
             }
         });
+
+        // Apply project default tags automatically to the newly linked asset
+        if (sourceableType === 'ASSET' && assetId) {
+            try {
+                // Fetch project default tags
+                const projectTags = await prisma.projectTag.findMany({
+                    where: { projectId },
+                    select: { tagId: true }
+                });
+
+                if (projectTags.length > 0) {
+                    const expandedTagIds = new Set();
+                    
+                    for (const pt of projectTags) {
+                        expandedTagIds.add(pt.tagId);
+                        try {
+                            const ancestors = await getAncestors(pt.tagId);
+                            for (const ancestor of ancestors) {
+                                expandedTagIds.add(ancestor.id);
+                            }
+                        } catch (err) {
+                            console.warn(`[AssetTag] Failed to fetch ancestors for tag ${pt.tagId}:`, err.message);
+                        }
+                    }
+
+                    for (const targetTagId of expandedTagIds) {
+                        await prisma.assetTag.upsert({
+                            where: {
+                                assetId_tagId: {
+                                    assetId,
+                                    tagId: targetTagId
+                                }
+                            },
+                            update: {},
+                            create: {
+                                assetId,
+                                tagId: targetTagId,
+                                addedById: request.user.id
+                            }
+                        });
+                    }
+                }
+            } catch (tagErr) {
+                console.warn(`[AssetTag] Could not assign default tags when linking asset ${assetId} to project ${projectId}:`, tagErr.message);
+            }
+        }
 
         return reply.code(201).send({
             success: true,
