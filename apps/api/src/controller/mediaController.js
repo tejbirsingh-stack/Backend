@@ -4,6 +4,7 @@ const fs = require("fs");
 const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
+const { getAncestors } = require("../services/tagHierarchy");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -2377,31 +2378,46 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const finalTagIds = tagIds || session.tagIds;
     if (Array.isArray(finalTagIds) && finalTagIds.length > 0) {
       try {
+        const expandedTagIds = new Set();
+
+        // 1. Process all selected tags (and resolve names to IDs if needed)
         for (const tagItem of finalTagIds) {
           if (!tagItem || typeof tagItem !== 'string') continue;
           let targetTagId = tagItem;
-          let tagName = tagItem.trim();
 
           // If tagItem is a tag name rather than a UUID, find or create the Tag record
           if (!tagItem.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-            const tagRecord = await request.server.prisma.tag.upsert({
-              where: {
-                unique_tag_per_org: { orgId: request.user.orgId, name: tagItem.trim() }
-              },
-              update: {},
-              create: {
-                orgId: request.user.orgId,
-                name: tagItem.trim()
-              }
+            // Find existing tag by name (at root level)
+            let tagRecord = await request.server.prisma.tag.findFirst({
+              where: { orgId: request.user.orgId, name: tagItem.trim(), parentId: null }
             });
+            
+            // Create if not found
+            if (!tagRecord) {
+              tagRecord = await request.server.prisma.tag.create({
+                data: { orgId: request.user.orgId, name: tagItem.trim(), scope: 'company' }
+              });
+            }
             targetTagId = tagRecord.id;
-            tagName = tagRecord.name;
-          } else {
-            const tagRecord = await request.server.prisma.tag.findUnique({ where: { id: tagItem } });
-            if (tagRecord) tagName = tagRecord.name;
           }
 
-          resolvedTagNames.push(tagName);
+          expandedTagIds.add(targetTagId);
+
+          // 2. Fetch and add ancestors for this tag
+          try {
+            const ancestors = await getAncestors(targetTagId);
+            for (const ancestor of ancestors) {
+              expandedTagIds.add(ancestor.id);
+            }
+          } catch (err) {
+            console.warn(`[AssetTag] Failed to fetch ancestors for tag ${targetTagId}:`, err.message);
+          }
+        }
+
+        // 3. Link all tags (selected + ancestors) to the asset
+        for (const targetTagId of expandedTagIds) {
+          const tagRecord = await request.server.prisma.tag.findUnique({ where: { id: targetTagId } });
+          if (tagRecord) resolvedTagNames.push(tagRecord.name);
 
           // Link asset with tag in asset_tags table
           await request.server.prisma.assetTag.upsert({

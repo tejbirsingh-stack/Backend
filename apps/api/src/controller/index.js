@@ -13,5 +13,6 @@ module.exports = {
   ...require('./cronController'),
   ...require('./notificationController'),
   ...require('./workSpaceController'),
-  ...require('./favoritesController')
+  ...require('./favoritesController'),
+  ...require('./tagController'),
 };
