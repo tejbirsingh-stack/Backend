@@ -2373,10 +2373,27 @@ module.exports.completeResumableUpload = async (request, reply) => {
       }
     });
 
-    // Link Tags if provided
+    // Link Tags if provided (including project defaults)
     const resolvedTagNames = [];
-    const finalTagIds = tagIds || session.tagIds;
-    if (Array.isArray(finalTagIds) && finalTagIds.length > 0) {
+    const manualTagIds = tagIds || session.tagIds || [];
+    
+    // Fetch project default tags if linked to a project
+    const defaultTagIds = [];
+    if (session.linkedProjectId) {
+      try {
+        const projectTags = await request.server.prisma.projectTag.findMany({
+          where: { projectId: session.linkedProjectId },
+          select: { tagId: true }
+        });
+        defaultTagIds.push(...projectTags.map(pt => pt.tagId));
+      } catch (err) {
+        console.warn(`[AssetTag] Failed to fetch project default tags for project ${session.linkedProjectId}:`, err.message);
+      }
+    }
+
+    const finalTagIds = [...new Set([...manualTagIds, ...defaultTagIds])];
+
+    if (finalTagIds.length > 0) {
       try {
         const expandedTagIds = new Set();
 
