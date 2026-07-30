@@ -1108,6 +1108,16 @@ module.exports.googleLogin = async (request, reply) => {
         }
       });
 
+      // Automatically create a default workspace for the new organization
+      await request.server.prisma.workspace.create({
+        data: {
+          name: orgName + " Workspace",
+          description: "Default workspace for " + orgName,
+          color: "#4f46e5",
+          orgId: organization.id,
+        }
+      });
+
       // Attach organization to user object for the response payload
       user.organization = {
         id: organization.id,
@@ -1324,6 +1334,16 @@ module.exports.microsoftLogin = async (request, reply) => {
         },
       });
     }
+
+    // Automatically create a default workspace for the new organization
+    await request.server.prisma.workspace.create({
+      data: {
+        name: orgName + " Workspace",
+        description: "Default workspace for " + orgName,
+        color: "#4f46e5",
+        orgId: organization.id,
+      }
+    });
 
     if (user.status !== "active") {
       return reply.status(403).send({
