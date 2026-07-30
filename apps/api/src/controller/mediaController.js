@@ -2964,3 +2964,207 @@ module.exports.retryTranscode = async (request, reply) => {
 };
 
 module.exports.handleMediaRedirectOrServe = handleMediaRedirectOrServe;
+
+module.exports.getAssetAccessOverrides = async (request, reply) => {
+  try {
+    const { id: assetId } = request.params;
+    
+    // Fetch asset access overrides (direct access users)
+    const assetUsers = await request.server.prisma.assetUser.findMany({
+      where: { assetId }
+    });
+
+    return reply.send({ success: true, overrides: assetUsers });
+  } catch (error) {
+    console.error("Failed to fetch asset access overrides:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+module.exports.updateAssetAccessOverride = async (request, reply) => {
+  try {
+    const { id: assetId, userId: targetUserId } = request.params;
+    const { accessLevel } = request.body;
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      select: { uploadedByUserId: true, orgId: true }
+    });
+
+    if (!asset) {
+      return reply.status(404).send({ success: false, error: "Asset not found" });
+    }
+
+    const isOwner = asset.uploadedByUserId === request.user.id;
+    const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
+    
+    if (!isOwner && !isAdmin) {
+      return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
+    }
+
+    const override = await request.server.prisma.assetUser.upsert({
+      where: {
+        assetId_userId: {
+          assetId,
+          userId: targetUserId
+        }
+      },
+      update: {
+        accessLevel
+      },
+      create: {
+        assetId,
+        userId: targetUserId,
+        accessLevel
+      }
+    });
+
+    return reply.send({ success: true, override });
+  } catch (error) {
+    console.error("Failed to update asset access override:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+module.exports.removeAssetAccessOverride = async (request, reply) => {
+  try {
+    const { id: assetId, userId: targetUserId } = request.params;
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      select: { uploadedByUserId: true, orgId: true }
+    });
+
+    if (!asset) {
+      return reply.status(404).send({ success: false, error: "Asset not found" });
+    }
+
+    const isOwner = asset.uploadedByUserId === request.user.id;
+    const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
+    
+    if (!isOwner && !isAdmin) {
+      return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can remove access." });
+    }
+
+    await request.server.prisma.assetUser.deleteMany({
+      where: {
+        assetId,
+        userId: targetUserId
+      }
+    });
+
+    return reply.send({ success: true, message: "Override removed" });
+  } catch (error) {
+    console.error("Failed to remove asset access override:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+module.exports.getSharedMediaAssets = async (request, reply) => {
+  try {
+    const userId = request.user?.id;
+    
+    if (!userId) {
+      return reply.status(401).send({ success: false, error: "Unauthorized" });
+    }
+
+    const dbAssets = await request.server.prisma.asset.findMany({
+      where: {
+        deletedAt: null,
+        users: {
+          some: {
+            userId: userId
+          }
+        },
+        uploadedByUserId: {
+          not: userId
+        }
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: 500,
+      include: {
+        files: true,
+        metadata: true,
+        uploadedBy: { select: { id: true, name: true, email: true } },
+        assetTags: { include: { tag: true } },
+        transcodeJobs: {
+          where: { provider: 'coconut' },
+          orderBy: { createdAt: 'desc' },
+          take: 1
+        }
+      },
+    });
+
+    // We must define determineAssetType here or reuse logic.
+    // For safety, we just inline a simple mime-based type checking if not available
+    const determineAssetTypeInline = (asset, originalFile) => {
+      if (asset.type) return asset.type;
+      const mime = originalFile?.mimeType || "";
+      if (mime.startsWith("image/")) return "image";
+      if (mime.startsWith("video/")) return "video";
+      if (mime.startsWith("audio/")) return "audio";
+      return "document";
+    };
+
+    const transformedAssets = dbAssets.map((asset) => {
+      const originalFile = asset.files.find(f => f.fileClass === 'original');
+      const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
+      const transcodeJob = asset.transcodeJobs[0];
+      const fileUrl = `/api/media/${encodeURIComponent(asset.id)}/stream`;
+
+      const dbTags = (asset.assetTags && asset.assetTags.length > 0)
+        ? asset.assetTags.map(at => at.tag?.name).filter(Boolean)
+        : [];
+      const customProps = asset.metadata?.customProperties
+        ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties)
+        : {};
+      const tagList = dbTags.length > 0
+        ? dbTags
+        : (Array.isArray(asset.aiTags) && asset.aiTags.length > 0
+          ? asset.aiTags
+          : (Array.isArray(customProps.tags) ? customProps.tags : []));
+
+      return {
+        id: asset.id,
+        name: asset.title,
+        path: proxyFile ? proxyFile.filePath : originalFile?.filePath || '',
+        type: determineAssetTypeInline(asset, originalFile),
+        size: Number(originalFile?.sizeBytes || 0),
+        uploadDate: asset.createdAt.toISOString(),
+        url: fileUrl,
+        thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
+        uploadedBy: asset.uploadedBy || null,
+        tags: tagList,
+        metadata: {
+          duration: asset.metadata?.technicalSpecs?.durationSeconds,
+          b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
+          storageLocation: 'b2',
+          technicalSpecs: asset.metadata?.technicalSpecs || {}
+        },
+        status: asset.status,
+        customMetadata: {
+          ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
+          technicalSpecs: asset.metadata?.technicalSpecs || {},
+          originalFilePath: originalFile?.filePath,
+          transcodingProgress: transcodeJob?.status === 'processing'
+            ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
+            : null,
+        },
+        transcodingStatus: transcodeJob?.status || null,
+        uploadedByUserId: asset.uploadedByUserId,
+      };
+    });
+
+    return reply.send({
+      success: true,
+      orgId: request.user?.orgId,
+      total: transformedAssets.length,
+      assets: transformedAssets,
+    });
+  } catch (error) {
+    console.error("Failed to fetch shared media assets:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};

@@ -223,7 +223,11 @@ const {
   abortResumableUpload,
   handleCoconutWebhook,
   getThumbnail,
-  retryTranscode
+  retryTranscode,
+  getAssetAccessOverrides,
+  updateAssetAccessOverride,
+  removeAssetAccessOverride,
+  getSharedMediaAssets
   // checkDuplicateMediaFile
 } = require('../controller');
 
@@ -287,6 +291,12 @@ module.exports = function (fastify, opts, done) {
   fastify.post("/:id/retry-transcode", { preValidation: [fastify.authenticate] }, retryTranscode);
   
   fastify.get("/pending-deletions", { preValidation: [fastify.authenticate] }, getPendingDeletions);
+
+  //11.5 Asset Direct Access Role Overrides
+  fastify.get("/shared-with-me", { preValidation: [fastify.authenticate] }, getSharedMediaAssets);
+  fastify.get("/:id/access", { preValidation: [fastify.authenticate] }, getAssetAccessOverrides);
+  fastify.patch("/:id/access/:userId", { preValidation: [fastify.authenticate] }, updateAssetAccessOverride);
+  fastify.delete("/:id/access/:userId", { preValidation: [fastify.authenticate] }, removeAssetAccessOverride);
 
   //12. Initialize a Resumable Multipart Upload Session
   fastify.post("/upload/init", { preHandler: [fastify.authenticate] }, initiateResumableUpload);
