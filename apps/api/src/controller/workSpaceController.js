@@ -96,39 +96,12 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
     try {
         const { id } = request.params;  //workspace Id
 
-        const mediaAssets = await prisma.asset.findMany({
-            where: {
-                ownerType: 'WORKSPACE',
-                ownerId: id,
-                deletedAt: null,
-            },
-            include: {
-                files: true,
-                metadata: true,
-                sources: true,
-            },
-            orderBy: {
-                createdAt: 'desc',
-            },
-        });
-
         const folders = await prisma.folder.findMany({
             where: {
                 workspaceId: id,
-                parentId: null, // Get root folders only
             },
             include: {
                 sources: true,
-            },
-            orderBy: {
-                createdAt: 'desc',
-            },
-        });
-
-        const projects = await prisma.project.findMany({
-            where: {
-                workspaceId: id,
-                ownerType: 'WORKSPACE'
             },
             orderBy: {
                 createdAt: 'desc',
@@ -152,6 +125,28 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 createdAt: 'desc',
             },
         });
+        
+        const projectIds = allProjects.map(p => p.id);
+
+        const mediaAssets = await prisma.asset.findMany({
+            where: {
+                deletedAt: null,
+                OR: [
+                    { ownerType: 'WORKSPACE', ownerId: id },
+                    { ownerType: 'FOLDER', ownerId: { in: folderIds } }
+                ]
+            },
+            include: {
+                files: true,
+                metadata: true,
+                sources: true,
+            },
+            orderBy: {
+                createdAt: 'desc',
+            },
+        });
+
+        const projects = allProjects;
 
         return reply.code(200).send({
             success: true,
