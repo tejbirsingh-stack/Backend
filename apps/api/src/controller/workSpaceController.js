@@ -125,7 +125,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 createdAt: 'desc',
             },
         });
-        
+
         const projectIds = allProjects.map(p => p.id);
 
         const mediaAssets = await prisma.asset.findMany({
@@ -155,7 +155,8 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 media: mediaAssets,
                 folders,
                 projects,
-                allProjects
+                allProjects,
+                working: {}
             }
         });
 
