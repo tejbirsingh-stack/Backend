@@ -240,20 +240,38 @@ async function updateShareLink(req, reply) {
  */
 async function deleteShareLink(req, reply) {
   const { prisma } = req.server;
-  const shareLinkId = req.params.id;
+  const targetId = req.params.id;
 
   try {
-    // 1. Delete associated recipients from share_link_recipients table
-    await prisma.shareLinkRecipient.deleteMany({
-      where: { shareLinkId },
+    // 1. Check if targetId is a ShareLink
+    const shareLink = await prisma.shareLink.findUnique({
+      where: { id: targetId },
     });
 
-    // 2. Delete share link from share_links table
-    await prisma.shareLink.delete({
-      where: { id: shareLinkId },
+    if (shareLink) {
+      await prisma.shareLinkRecipient.deleteMany({
+        where: { shareLinkId: targetId },
+      });
+      await prisma.shareLink.delete({
+        where: { id: targetId },
+      });
+      return reply.send({ success: true, message: 'Share link deleted successfully', id: targetId });
+    }
+
+    // 2. Check if targetId is a ShareLinkRecipient
+    const recipient = await prisma.shareLinkRecipient.findUnique({
+      where: { id: targetId },
     });
 
-    return reply.send({ success: true, message: 'Share link deleted successfully', id: shareLinkId });
+    if (recipient) {
+      await prisma.shareLinkRecipient.delete({
+        where: { id: targetId },
+      });
+      return reply.send({ success: true, message: 'Recipient removed successfully', id: targetId });
+    }
+
+    // 3. If already deleted or not found, return success gracefully
+    return reply.send({ success: true, message: 'Share link or recipient already removed', id: targetId });
   } catch (error) {
     req.log.error(error);
     return reply.code(500).send({ error: 'Failed to delete share link', message: error.message });
@@ -557,7 +575,7 @@ async function createShareAnnotation(req, reply) {
 
     const { guestName = 'Guest User', text, videoTimestamp, type = 'comment', data = {} } = req.body || {};
 
-    if (!text && !data.text) {
+    if (type === 'comment' && !text && !data.text) {
       return reply.code(400).send({ error: 'Comment text is required' });
     }
 
@@ -572,8 +590,8 @@ async function createShareAnnotation(req, reply) {
         guestEmail: effectiveEmail,
         shareLinkToken: token,
         type,
-        videoTimestamp: videoTimestamp ? parseFloat(videoTimestamp) : null,
-        data: { text: text || data.text, guestName: guestDisplayName, guestEmail: effectiveEmail, ...data },
+        videoTimestamp: (videoTimestamp !== undefined && videoTimestamp !== null && !isNaN(Number(videoTimestamp))) ? parseFloat(videoTimestamp) : null,
+        data: { guestName: guestDisplayName, guestEmail: effectiveEmail, ...data, ...(text || data.text ? { text: text || data.text } : {}) },
       },
     });
 
