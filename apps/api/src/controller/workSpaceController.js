@@ -137,7 +137,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 },
             });
         }
-        
+
         const projectIds = allProjects.map(p => p.id);
 
         const mediaAssets = await prisma.asset.findMany({
@@ -552,7 +552,7 @@ module.exports.linkProjectSource = async (request, reply) => {
 
                 if (projectTags.length > 0) {
                     const expandedTagIds = new Set();
-                    
+
                     for (const pt of projectTags) {
                         expandedTagIds.add(pt.tagId);
                         try {
