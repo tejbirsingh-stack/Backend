@@ -242,6 +242,7 @@ function toFrontendAssetShape(asset) {
     uploadDate,
     url: streamUrl,
     thumbnail,
+    ownerId: asset.ownerId || asset.userId,
     tags: asset.tags || [],
     metadata: asset.metadata || {},
     transcodingStatus: asset.transcodingStatus || "completed",
