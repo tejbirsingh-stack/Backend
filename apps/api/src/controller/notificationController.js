@@ -45,6 +45,27 @@ const markAsRead = async (request, reply) => {
   }
 };
 
+const deleteNotification = async (request, reply) => {
+  try {
+    const userId = request.user.id;
+    const { notificationId } = request.params;
+
+    if (notificationId === 'all') {
+      await request.server.prisma.notification.deleteMany({
+        where: { userId }
+      });
+    } else {
+      await request.server.prisma.notification.deleteMany({
+        where: { id: notificationId, userId }
+      });
+    }
+
+    return reply.send({ success: true, message: "Notification deleted successfully" });
+  } catch (error) {
+    return reply.code(500).send({ success: false, error: error.message });
+  }
+};
+
 // Internal helper function (not a route handler)
 const createNotification = async (fastify, userId, orgId, type, title, message, relatedEntityId = null) => {
   try {
@@ -97,6 +118,8 @@ const notifyRole = async (fastify, orgId, roleName, type, title, message, relate
 module.exports = {
   getNotifications,
   markAsRead,
+  deleteNotification,
   createNotification,
   notifyRole
 };
+

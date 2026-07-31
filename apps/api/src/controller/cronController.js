@@ -116,7 +116,38 @@ const processTrashRetention = async (request, reply) => {
     }
 };
 
+const cleanupReadNotifications = async (request, reply) => {
+    try {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const result = await request.server.prisma.notification.deleteMany({
+            where: {
+                isRead: true,
+                createdAt: {
+                    lte: thirtyDaysAgo,
+                },
+            },
+        });
+
+        return reply.send({
+            success: true,
+            message: `Deleted ${result.count} read notifications older than 30 days.`,
+            deletedCount: result.count,
+        });
+    } catch (error) {
+        request.server.logger.error('Error cleaning up read notifications', { error: error.message });
+        return reply.status(500).send({
+            success: false,
+            message: 'Failed to clean up read notifications',
+            error: error.message,
+        });
+    }
+};
+
 module.exports = {
     cleanupAuditLogs,
     processTrashRetention,
+    cleanupReadNotifications,
 };
+
