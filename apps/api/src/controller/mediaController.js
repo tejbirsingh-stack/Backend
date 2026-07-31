@@ -1318,7 +1318,8 @@ module.exports.restoreSoftDelete = async (request, reply) => {
           let updateData = {
             deletedAt: null,
             status: "active",
-            deletedByUserId: null
+            deletedByUserId: null,
+            deletionReason: null
           };
 
           await request.server.prisma.asset.update({
@@ -1955,7 +1956,7 @@ module.exports.getPendingDeletions = async (request, reply) => {
     let statusFilter = null;
 
     if (userRole === 'super admin' || userRole === 'superadmin') {
-      statusFilter = 'pending_super_admin';
+      statusFilter = { in: ['pending_admin_review', 'pending_super_admin'] };
     } else if (userRole === 'admin') {
       statusFilter = 'pending_admin_review';
     } else {
@@ -2028,6 +2029,14 @@ module.exports.rejectDelete = async (request, reply) => {
     const userRole = rawRoleName.trim().toLowerCase();
 
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      const existingAsset = await request.server.prisma.asset.findUnique({
+        where: { id: filename }
+      });
+      if (!existingAsset) {
+        return reply.code(404).send({ success: false, error: "Asset not found" });
+      }
+
+      const previousDeletedByUserId = existingAsset.deletedByUserId;
 
       let updateData = {};
       let message = "";
@@ -2059,12 +2068,12 @@ module.exports.rejectDelete = async (request, reply) => {
         data: updateData
       });
 
-      if (asset.deletedByUserId) {
-        await createNotification(request.server, asset.deletedByUserId, asset.orgId, 'deletion_rejected', 'Deletion Rejected', `Your permanent deletion request for ${asset.title} was rejected. The file has been restored to Active.`, asset.id);
+      if (previousDeletedByUserId) {
+        await createNotification(request.server, previousDeletedByUserId, asset.orgId, 'deletion_rejected', 'Deletion Rejected', `Your permanent deletion request for ${asset.title} was rejected. The file has been restored to Active.`, asset.id);
       }
 
       // Also notify the original uploader
-      if (asset.uploadedByUserId && asset.uploadedByUserId !== asset.deletedByUserId) {
+      if (asset.uploadedByUserId && asset.uploadedByUserId !== previousDeletedByUserId) {
         await createNotification(request.server, asset.uploadedByUserId, asset.orgId, 'deletion_rejected', 'File Restored', `Your file ${asset.title} has been restored to Active status.`, asset.id);
       }
 

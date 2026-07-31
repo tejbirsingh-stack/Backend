@@ -528,6 +528,7 @@ async function getShareAnnotations(req, reply) {
 
     const formatted = annotations.map((ann) => ({
       ...ann,
+      videoTimestamp: ann.videoTimestamp ? Number(ann.videoTimestamp) : (ann.data?.videoTimestamp ? Number(ann.data.videoTimestamp) : null),
       author: ann.user ? {
         name: ann.user.name || 'Member',
         email: ann.user.email,
