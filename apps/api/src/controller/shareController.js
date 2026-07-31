@@ -4,6 +4,15 @@ const path = require('path');
 const fs = require('fs');
 const { handleMediaRedirectOrServe } = require('./mediaController');
 const { broadcastToRoom } = require('./realtimeController');
+const B2StorageService = require('../b2-storage.cjs');
+
+const b2Storage = new B2StorageService({
+  keyId: process.env.B2_KEY_ID,
+  applicationKey: process.env.B2_APPLICATION_KEY,
+  bucketName: process.env.B2_BUCKET_NAME,
+  endpoint: process.env.B2_ENDPOINT,
+  region: process.env.B2_REGION,
+});
 
 
 /**
@@ -38,6 +47,8 @@ async function createShareLink(req, reply) {
     mode = 'email',
     email,
     password,
+    name,
+    visibility = 'public',
     expiresInDays = 7,
     expiresAt: customExpiresAt,
     permissions = { view: true, comment: false, download: false, downloadProxy: false },
@@ -75,6 +86,8 @@ async function createShareLink(req, reply) {
         orgId,
         assetId,
         token: mainToken,
+        name,
+        visibility,
         mode,
         passwordHash,
         expiresAt,
@@ -121,6 +134,8 @@ async function createShareLink(req, reply) {
         id: shareLink.id,
         assetId: shareLink.assetId,
         token: recipientToken,
+        name: shareLink.name,
+        visibility: shareLink.visibility,
         mode: shareLink.mode,
         expiresAt: shareLink.expiresAt,
         permissions: shareLink.permissions,
@@ -167,6 +182,8 @@ async function getShareLinks(req, reply) {
       return {
         id: link.id,
         assetId: link.assetId,
+        name: link.name,
+        visibility: link.visibility,
         token: linkToken,
         mode: link.mode,
         expiresAt: link.expiresAt,
@@ -189,6 +206,31 @@ async function getShareLinks(req, reply) {
   } catch (error) {
     req.log.error(error);
     return reply.code(500).send({ error: 'Failed to fetch share links', message: error.message });
+  }
+}
+
+/**
+ * Owner API: PATCH /api/share-links/:id
+ * Updates name or visibility of a share link
+ */
+async function updateShareLink(req, reply) {
+  const { prisma } = req.server;
+  const shareLinkId = req.params.id;
+  const { name, visibility } = req.body || {};
+
+  try {
+    const updated = await prisma.shareLink.update({
+      where: { id: shareLinkId },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(visibility !== undefined && { visibility }),
+      }
+    });
+
+    return reply.send({ success: true, message: 'Share link updated successfully', shareLink: updated });
+  } catch (error) {
+    req.log.error(error);
+    return reply.code(500).send({ error: 'Failed to update share link', message: error.message });
   }
 }
 
@@ -270,7 +312,7 @@ async function resolveShareToken(prisma, token) {
     where: { token, revokedAt: null },
     include: {
       shareLink: {
-        include: { asset: true },
+        include: { asset: true, organization: true },
       },
     },
   });
@@ -286,7 +328,7 @@ async function resolveShareToken(prisma, token) {
   // Check main share link token
   const shareLink = await prisma.shareLink.findFirst({
     where: { token, revokedAt: null },
-    include: { asset: true },
+    include: { asset: true, organization: true },
   });
 
   if (shareLink) {
@@ -332,11 +374,23 @@ async function validateShareToken(req, reply) {
       data: { lastAccessedAt: new Date() },
     });
 
+    let logoUrl = null;
+    if (shareLink.permissions?.watermark !== false) {
+      logoUrl = shareLink.organization?.metadata?.logoUrl || null;
+      if (shareLink.organization?.metadata?.logoKey) {
+        if (b2Storage.isEnabled()) {
+          logoUrl = await b2Storage.getPresignedUrl(shareLink.organization.metadata.logoKey);
+        }
+      }
+    }
+
     return reply.send({
       valid: true,
       requiresPassword: Boolean(shareLink.passwordHash),
       permissions: shareLink.permissions,
       expiresAt: shareLink.expiresAt,
+      visibility: shareLink.visibility,
+      mode: shareLink.mode,
       assetMeta: {
         id: asset ? asset.id : shareLink.assetId,
         title: asset ? (asset.originalName || asset.title) : 'Shared Asset',
@@ -344,6 +398,8 @@ async function validateShareToken(req, reply) {
         type: asset ? (asset.type || 'video') : 'video',
         mimeType: asset ? asset.mimeType : undefined,
         fileSize: asset ? Number(asset.fileSize || 0) : 0,
+        logoUrl: logoUrl,
+        organizationName: shareLink.organization?.name || null,
       },
     });
   } catch (error) {
@@ -561,4 +617,5 @@ module.exports = {
   getShareStream,
   getShareAnnotations,
   createShareAnnotation,
+  updateShareLink,
 };

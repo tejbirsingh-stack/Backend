@@ -8,6 +8,7 @@ const {
   getShareStream,
   getShareAnnotations,
   createShareAnnotation,
+  updateShareLink,
 } = require('../controller/shareController');
 
 module.exports = function (fastify, opts, done) {
@@ -16,6 +17,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get('/media/:id/share-links', { preValidation: [fastify.authenticate] }, getShareLinks);
   fastify.delete('/share-links/:id', { preValidation: [fastify.authenticate] }, deleteShareLink);
   fastify.post('/share-links/:id/resend', { preValidation: [fastify.authenticate] }, resendShareLinkInvite);
+  fastify.patch('/share-links/:id', { preValidation: [fastify.authenticate] }, updateShareLink);
 
   // Public Guest endpoints (No org login required)
   fastify.get('/share/:token', validateShareToken);

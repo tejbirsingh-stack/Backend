@@ -282,6 +282,7 @@ model AssetUser {
   id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   assetId String @map("asset_id") @db.Uuid
   userId  String @map("user_id") @db.Uuid
+  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -500,6 +501,8 @@ model ShareLink {
   asset          Asset?               @relation(fields: [assetId], references: [id], onDelete: Cascade)
   collectionId   String?              @db.Uuid
   collection     Collection?          @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  name           String?              @db.VarChar(100)
+  visibility     String               @default("public") @db.VarChar(50)
   token          String               @unique @db.VarChar(255)
   mode           String               @default("link") @db.VarChar(50)
   passwordHash   String?              @db.VarChar(255)
