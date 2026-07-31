@@ -216,7 +216,7 @@ async function getShareLinks(req, reply) {
 async function updateShareLink(req, reply) {
   const { prisma } = req.server;
   const shareLinkId = req.params.id;
-  const { name, visibility } = req.body || {};
+  const { name, visibility, permissions } = req.body || {};
 
   try {
     const updated = await prisma.shareLink.update({
@@ -224,6 +224,7 @@ async function updateShareLink(req, reply) {
       data: {
         ...(name !== undefined && { name }),
         ...(visibility !== undefined && { visibility }),
+        ...(permissions !== undefined && { permissions }),
       }
     });
 
