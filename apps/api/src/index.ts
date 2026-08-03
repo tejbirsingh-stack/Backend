@@ -14,7 +14,7 @@ import path from 'path';
 import { logSuccess, logError, ACTOR_TYPE, ACTIVITY_NAME } from './lib/audit-log.js';
 
 // Add global BigInt serializer to prevent fastify/JSON stringify errors
-(BigInt.prototype as any).toJSON = function () {
+(BigInt.prototype as any).toJSON = function () {   
   return this.toString();
 };
 
