@@ -1758,6 +1758,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
           } catch (queueErr) {
             console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
           }
+        } else if (!isActuallyAudio) {
+          setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
         }
 
         if (assetType === 'image') {
@@ -2085,6 +2087,108 @@ module.exports.rejectDelete = async (request, reply) => {
     return reply.code(500).send({ success: false, error: error.message });
   }
 };
+
+// --- Non-Transcoded Duplicate Check Helper ---
+async function performInstantDuplicateCheck(assetId, prisma) {
+  try {
+    const asset = await prisma.asset.findUnique({
+      where: { id: assetId },
+      include: { metadata: true, files: true }
+    });
+
+    if (!asset || asset.status === 'duplicate' || asset.type === 'video' || asset.type === 'audio') return;
+
+    let duplicateOf = [];
+    const originalFile = asset.files.find(f => f.fileClass === 'original');
+    if (!originalFile?.sizeBytes) return;
+
+    // -- DETERMINE ASSET WORKSPACE SCOPE --
+    let workspaceId = null;
+    let folderIds = [];
+    if (asset.ownerType === 'WORKSPACE') {
+      workspaceId = asset.ownerId;
+    } else if (asset.ownerType === 'FOLDER') {
+      const folder = await prisma.folder.findUnique({ where: { id: asset.ownerId } });
+      if (folder) workspaceId = folder.workspaceId;
+    }
+
+    if (workspaceId) {
+      const folders = await prisma.folder.findMany({ where: { workspaceId }, select: { id: true } });
+      folderIds = folders.map(f => f.id);
+    }
+
+    const scopeWhere = workspaceId ? {
+      OR: [
+        { ownerType: 'WORKSPACE', ownerId: workspaceId },
+        { ownerType: 'FOLDER', ownerId: { in: folderIds } }
+      ]
+    } : {};
+
+    const whereClause = {
+      id: { not: assetId },
+      orgId: asset.orgId,
+      deletedAt: null,
+      type: asset.type,
+      ...scopeWhere
+    };
+
+    // Tier 1: Exact File Size Match
+    const exactMatches = await prisma.asset.findMany({
+      where: {
+        ...whereClause,
+        files: { some: { fileClass: 'original', sizeBytes: originalFile.sizeBytes } }
+      },
+      include: { metadata: true }
+    });
+
+    for (const match of exactMatches) {
+      if (asset.metadata?.checksum && match.metadata?.checksum) {
+        if (asset.metadata.checksum === match.metadata.checksum) {
+           duplicateOf.push(match.id);
+        }
+      } else {
+        duplicateOf.push(match.id);
+      }
+    }
+
+    // Tier 2: Dimension Match (for Images only)
+    if (duplicateOf.length === 0 && asset.type === 'image') {
+      const w = asset.metadata?.technicalSpecs?.width;
+      const h = asset.metadata?.technicalSpecs?.height;
+      if (w && h) {
+        const potentialSuspects = await prisma.asset.findMany({
+          where: whereClause,
+          include: { metadata: true }
+        });
+        const match = potentialSuspects.find(s => {
+          return s.metadata?.technicalSpecs?.width === w && s.metadata?.technicalSpecs?.height === h;
+        });
+        if (match) duplicateOf.push(match.id);
+      }
+    }
+
+    if (duplicateOf.length > 0) {
+      const currentCustomProps = typeof asset.metadata?.customProperties === 'object' ? asset.metadata.customProperties : {};
+      await prisma.asset.update({
+        where: { id: assetId },
+        data: {
+          status: 'duplicate',
+          metadata: {
+            update: {
+              customProperties: {
+                ...currentCustomProps,
+                duplicates: duplicateOf
+              }
+            }
+          }
+        }
+      });
+      console.log(`[Instant Check] Asset ${assetId} marked duplicate. Duplicates found: ${duplicateOf.length}`);
+    }
+  } catch (error) {
+    console.error(`[Instant Check] Failed for asset ${assetId}:`, error);
+  }
+}
 
 //12. Initialize a Resumable Multipart Upload Session
 module.exports.initiateResumableUpload = async (request, reply) => {
@@ -2505,6 +2609,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
       } catch (queueErr) {
         console.error(`[Queue] Failed to queue job for asset ${newAsset.id}:`, queueErr.message);
       }
+    } else {
+      setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
     }
 
     // Clean up Redis Sessions
@@ -2677,13 +2783,14 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         if (exactMatch) duplicateOf.push(exactMatch.id);
       }
 
-      // If not an exact match, run the visual check (only for non-audio assets)
-      if (duplicateOf.length === 0 && asset.type !== 'audio') {
+      // If not an exact match, run fuzzy checks (Tier 2/3)
+      if (duplicateOf.length === 0 && (asset.type === 'video' || asset.type === 'audio')) {
         // Tier 2: Metadata Filter (Find Suspects)
         const whereClause = {
           id: { not: newAssetId },
           orgId: asset.orgId,
           deletedAt: null,
+          type: asset.type,
           ...scopeWhere
         };
 
@@ -2693,14 +2800,18 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         });
 
         const suspectIds = potentialSuspects.filter(s => {
-          if (!durationSeconds) return true;
+          if (!durationSeconds) return asset.type === 'video';
           const sDuration = s.metadata?.technicalSpecs?.durationSeconds;
-          if (!sDuration) return true;
+          if (!sDuration) return asset.type === 'video';
           return Number(sDuration) >= Number(durationSeconds) - 2 && Number(sDuration) <= Number(durationSeconds) + 2;
         }).map(s => s.id);
 
-        // Tier 3: Storyboard pHash (The Visual Math)
-        const baseKey = compressedKey || originalFile?.filePath;
+        if (asset.type === 'audio') {
+          // For audio, exact duration match (+/- 2s) is the final fuzzy check
+          duplicateOf.push(...suspectIds);
+        } else {
+          // Tier 3: Storyboard pHash (The Visual Math)
+          const baseKey = compressedKey || originalFile?.filePath;
 
         if (baseKey) {
           // 1. Download and Hash the 5 thumbnails Coconut just created
@@ -2760,6 +2871,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
             duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
           }
         }
+        } // End of video Tier 3
       }
 
       // Determine final status and metadata
