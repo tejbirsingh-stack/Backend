@@ -532,6 +532,62 @@ module.exports.linkProjectSource = async (request, reply) => {
             });
         }
 
+        let oldExpandedTagIdsToRemove = new Set();
+
+        if (sourceableType === 'ASSET' && assetId) {
+            const oldSources = await prisma.projectSource.findMany({
+                where: {
+                    sourceableType: 'ASSET',
+                    assetId: assetId
+                }
+            });
+            const oldProjectIds = oldSources.map(s => s.projectId);
+
+            if (oldProjectIds.length > 0) {
+                const oldProjectTags = await prisma.projectTag.findMany({
+                    where: { projectId: { in: oldProjectIds } },
+                    select: { tagId: true }
+                });
+
+                for (const pt of oldProjectTags) {
+                    oldExpandedTagIdsToRemove.add(pt.tagId);
+                    try {
+                        const ancestors = await getAncestors(pt.tagId);
+                        for (const ancestor of ancestors) {
+                            oldExpandedTagIdsToRemove.add(ancestor.id);
+                        }
+                    } catch (err) {
+                        console.warn(`[AssetTag] Failed to fetch ancestors for tag ${pt.tagId}:`, err.message);
+                    }
+                }
+            }
+
+            if (oldExpandedTagIdsToRemove.size > 0) {
+                await prisma.assetTag.deleteMany({
+                    where: {
+                        assetId: assetId,
+                        tagId: { in: Array.from(oldExpandedTagIdsToRemove) }
+                    }
+                });
+            }
+
+            await prisma.projectSource.deleteMany({
+                where: {
+                    sourceableType: 'ASSET',
+                    assetId: assetId
+                }
+            });
+        }
+
+        if (sourceableType === 'FOLDER' && folderId) {
+            await prisma.projectSource.deleteMany({
+                where: {
+                    sourceableType: 'FOLDER',
+                    folderId: folderId
+                }
+            });
+        }
+
         const projectSource = await prisma.projectSource.create({
             data: {
                 projectId,
@@ -645,6 +701,108 @@ module.exports.updateFolder = async (request, reply) => {
         if (error.code === 'P2025') {
             return reply.code(404).send({ success: false, message: 'Folder not found.' });
         }
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.moveFolder = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { targetFolderId, targetWorkspaceId } = request.body;
+
+        if (!targetFolderId && !targetWorkspaceId) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Either targetFolderId or targetWorkspaceId must be provided.'
+            });
+        }
+
+        const folder = await prisma.folder.findFirst({
+            where: { id }
+        });
+
+        if (!folder) {
+            return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        let newWorkspaceId = targetWorkspaceId || folder.workspaceId;
+        let newParentId = targetFolderId || null;
+
+        if (targetFolderId) {
+            const targetFolder = await prisma.folder.findFirst({
+                where: { id: targetFolderId }
+            });
+            if (!targetFolder) {
+                return reply.code(404).send({ success: false, message: 'Target folder not found.' });
+            }
+            newWorkspaceId = targetFolder.workspaceId;
+        } else if (targetWorkspaceId) {
+            const workspace = await prisma.workspace.findFirst({
+                where: { id: targetWorkspaceId }
+            });
+            if (!workspace) {
+                return reply.code(404).send({ success: false, message: 'Target workspace not found.' });
+            }
+        }
+
+        // Prevent moving folder into itself
+        if (id === targetFolderId) {
+            return reply.code(400).send({ success: false, message: 'Cannot move folder into itself.' });
+        }
+
+        const updatedFolder = await prisma.folder.update({
+            where: { id },
+            data: {
+                parentId: newParentId,
+                workspaceId: newWorkspaceId
+            }
+        });
+
+        // Recursively update workspaceId for all descendant folders if the workspace changed
+        if (folder.workspaceId !== newWorkspaceId) {
+            const updateDescendantsAndUnlink = async (parentId) => {
+                const children = await prisma.folder.findMany({ where: { parentId } });
+                for (const child of children) {
+                    await prisma.folder.update({
+                        where: { id: child.id },
+                        data: { workspaceId: newWorkspaceId }
+                    });
+                    
+                    // Update projects inside this child folder to the new workspaceId
+                    await prisma.project.updateMany({
+                        where: { folderId: child.id },
+                        data: { workspaceId: newWorkspaceId }
+                    });
+                    
+                    // Delete project links for child
+                    await prisma.projectSource.deleteMany({
+                        where: { folderId: child.id }
+                    });
+                    await updateDescendantsAndUnlink(child.id);
+                }
+            };
+            
+            // Update projects inside the moved folder itself to the new workspaceId
+            await prisma.project.updateMany({
+                where: { folderId: id },
+                data: { workspaceId: newWorkspaceId }
+            });
+            
+            // Delete project links for the moved folder itself
+            await prisma.projectSource.deleteMany({
+                where: { folderId: id }
+            });
+            
+            await updateDescendantsAndUnlink(id);
+        }
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Folder moved successfully.',
+            data: updatedFolder
+        });
+    } catch (error) {
+        console.error('Failed to move folder:', error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };

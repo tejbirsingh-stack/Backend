@@ -3201,3 +3201,71 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
+module.exports.moveMediaFile = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { folderId, workspaceId } = request.body;
+        const { orgId } = request.user;
+
+        if (!folderId && !workspaceId) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Either folderId or workspaceId must be provided.'
+            });
+        }
+
+        const asset = await prisma.asset.findFirst({
+            where: { id, orgId, deletedAt: null }
+        });
+
+        if (!asset) {
+            return reply.code(404).send({ success: false, message: 'Asset not found.' });
+        }
+
+        let newOwnerType;
+        let newOwnerId;
+
+        if (folderId) {
+            const folder = await prisma.folder.findFirst({
+                where: { id: folderId }
+            });
+            if (!folder) {
+                return reply.code(404).send({ success: false, message: 'Target folder not found.' });
+            }
+            newOwnerType = 'FOLDER';
+            newOwnerId = folderId;
+        } else {
+            const workspace = await prisma.workspace.findFirst({
+                where: { id: workspaceId, orgId }
+            });
+            if (!workspace) {
+                return reply.code(404).send({ success: false, message: 'Target workspace not found.' });
+            }
+            newOwnerType = 'WORKSPACE';
+            newOwnerId = workspaceId;
+            
+            // Delete project links if moved to a different workspace
+            // We assume that if it's moved to a different workspace, the old project links are invalid
+            await prisma.projectSource.deleteMany({
+                where: { assetId: id }
+            });
+        }
+
+        const updatedAsset = await prisma.asset.update({
+            where: { id },
+            data: {
+                ownerType: newOwnerType,
+                ownerId: newOwnerId
+            }
+        });
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Media moved successfully.',
+            data: updatedAsset
+        });
+    } catch (error) {
+        console.error('Failed to move media:', error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
