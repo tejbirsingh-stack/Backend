@@ -176,7 +176,8 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 media: mediaAssets,
                 folders,
                 projects,
-                allProjects
+                allProjects,
+                working: {}
             }
         });
 
