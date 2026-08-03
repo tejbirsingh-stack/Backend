@@ -221,7 +221,7 @@ class AuthService {
   }
 
   // Create a new session for a user
-  async createSession(userId, userAgent, ipAddress) {
+  async createSession(userId, userAgent, ipAddress, customToken = null) {
     // 1. Clean up expired sessions for this user
     await prisma.userSession.deleteMany({
       where: {
@@ -257,8 +257,8 @@ class AuthService {
       });
     }
 
-    // Generate a random token
-    const token = crypto.randomBytes(64).toString("hex");
+    // Use real JWT customToken if provided, otherwise generate fallback random token
+    const token = customToken || crypto.randomBytes(64).toString("hex");
 
     // Calculate expiry dynamically based on centralized config
     const expiresAt = new Date(Date.now() + getExpiryMilliseconds(AUTH_OPTIONS.jwt.accessTokenExpiry));

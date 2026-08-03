@@ -148,12 +148,22 @@ module.exports.login = async (request, reply) => {
       organization: user.organization
     };
     const token = await reply.jwtSign(payload);
-    logSuccess(ACTIVITY_NAME.USER_LOGIN, "Login successful.", null, user);  //Log user activity
 
+    // Save real JWT token in UserSession table
+    const session = await authService.createSession(
+      user.id,
+      request.headers["user-agent"],
+      request.ip,
+      token
+    );
+
+    logSuccess(ACTIVITY_NAME.USER_LOGIN, "Login successful.", null, user);  //Log user activity
 
     return {
       success: true,
-      accessToken: token
+      accessToken: token,
+      token: session.token,
+      expiresAt: session.expiresAt
     };
 
   } catch (error) {
@@ -1179,14 +1189,7 @@ module.exports.googleLogin = async (request, reply) => {
       });
     }
 
-    // e. Create a session exactly how normal login does
-    const session = await authService.createSession(
-      user.id,
-      request.headers["user-agent"],
-      request.ip
-    );
-
-    // Generate Internal JWT
+    // e. Generate Internal JWT
     const internalPayload = {
       id: user.id,
       email: user.email,
@@ -1196,6 +1199,14 @@ module.exports.googleLogin = async (request, reply) => {
       organization: user.organization
     };
     const internalToken = await reply.jwtSign(internalPayload);
+
+    // Create session in database with the real JWT token
+    const session = await authService.createSession(
+      user.id,
+      request.headers["user-agent"],
+      request.ip,
+      internalToken
+    );
 
     logSuccess(ACTIVITY_NAME.USER_LOGIN, "Google login successful.", null, user);
 
@@ -1373,14 +1384,7 @@ module.exports.microsoftLogin = async (request, reply) => {
       });
     }
 
-    // 5. Create Session
-    const session = await authService.createSession(
-      user.id,
-      request.headers["user-agent"],
-      request.ip
-    );
-
-    // 6. Generate Internal JWT
+    // 5. Generate Internal JWT
     const internalPayload = {
       id: user.id,
       email: user.email,
@@ -1390,6 +1394,14 @@ module.exports.microsoftLogin = async (request, reply) => {
       organization: user.organization
     };
     const internalToken = await reply.jwtSign(internalPayload);
+
+    // 6. Create Session in database with real JWT token
+    const session = await authService.createSession(
+      user.id,
+      request.headers["user-agent"],
+      request.ip,
+      internalToken
+    );
 
     logSuccess(ACTIVITY_NAME.USER_LOGIN, "Microsoft login successful.", null, user);
 
