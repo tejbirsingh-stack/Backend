@@ -2633,6 +2633,28 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         });
       }
 
+      // -- DETERMINE ASSET WORKSPACE SCOPE --
+      let workspaceId = null;
+      let folderIds = [];
+      if (asset.ownerType === 'WORKSPACE') {
+        workspaceId = asset.ownerId;
+      } else if (asset.ownerType === 'FOLDER') {
+        const folder = await request.server.prisma.folder.findUnique({ where: { id: asset.ownerId } });
+        if (folder) workspaceId = folder.workspaceId;
+      }
+
+      if (workspaceId) {
+        const folders = await request.server.prisma.folder.findMany({ where: { workspaceId }, select: { id: true } });
+        folderIds = folders.map(f => f.id);
+      }
+
+      const scopeWhere = workspaceId ? {
+        OR: [
+          { ownerType: 'WORKSPACE', ownerId: workspaceId },
+          { ownerType: 'FOLDER', ownerId: { in: folderIds } }
+        ]
+      } : {};
+
       // -- DUPLICATE VERIFICATION TIER 1, 2, 3 --
 
       let duplicateOf = [];
@@ -2647,6 +2669,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
             id: { not: newAssetId },
             orgId: asset.orgId,
             deletedAt: null,
+            ...scopeWhere,
             metadata: { checksum: checksum },
             files: { some: { fileClass: 'original', sizeBytes: originalFile.sizeBytes } }
           }
@@ -2660,7 +2683,8 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         const whereClause = {
           id: { not: newAssetId },
           orgId: asset.orgId,
-          deletedAt: null
+          deletedAt: null,
+          ...scopeWhere
         };
 
         const potentialSuspects = await request.server.prisma.asset.findMany({
@@ -2823,11 +2847,33 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
 module.exports.checkDuplicateMediaFile = async (request, reply) => {
   try {
     const { orgId } = request.user;
-    const { fileName, fileSize } = request.body;
+    const { fileName, fileSize, ownerType, ownerId } = request.body;
 
     if (!fileName || fileSize === undefined) {
       return reply.code(400).send({ error: "fileName and fileSize are required" });
     }
+
+    // Determine workspace scope if possible
+    let workspaceId = null;
+    let folderIds = [];
+    if (ownerType === 'WORKSPACE') {
+      workspaceId = ownerId;
+    } else if (ownerType === 'FOLDER') {
+      const folder = await request.server.prisma.folder.findUnique({ where: { id: ownerId } });
+      if (folder) workspaceId = folder.workspaceId;
+    }
+
+    if (workspaceId) {
+      const folders = await request.server.prisma.folder.findMany({ where: { workspaceId }, select: { id: true } });
+      folderIds = folders.map(f => f.id);
+    }
+
+    const scopeWhere = workspaceId ? {
+      OR: [
+        { ownerType: 'WORKSPACE', ownerId: workspaceId },
+        { ownerType: 'FOLDER', ownerId: { in: folderIds } }
+      ]
+    } : {};
 
     // Check if an active file with the exact same name and size exists
     const existingAsset = await request.server.prisma.asset.findFirst({
@@ -2835,6 +2881,7 @@ module.exports.checkDuplicateMediaFile = async (request, reply) => {
         orgId: orgId,
         deletedAt: null,
         title: fileName,
+        ...scopeWhere,
         files: {
           some: {
             fileClass: "original",
