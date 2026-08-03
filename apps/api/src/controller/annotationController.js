@@ -135,7 +135,8 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                     const commenterName = commenter?.name || 'A team member';
                     const mediaType = video.type === 'audio' ? 'audio' : video.type === 'image' ? 'image' : 'video';
                     const videoName = video.title || `a ${mediaType}`;
-                    const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${mediaId}`;
+                    const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+                    const videoUrl = `${appBaseUrl.replace(/\/$/, '')}/media/${mediaId}`;
 
                     // Fetch organization users to check for @mentions
                     const orgUsers = await request.server.prisma.user.findMany({
@@ -268,7 +269,8 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                     const commenterName = commenter?.name || 'A team member';
                     const mediaType = video.type === 'audio' ? 'audio' : video.type === 'image' ? 'image' : 'video';
                     const videoName = video.title || `a ${mediaType}`;
-                    const videoUrl = `${process.env.APP_URL || 'http://localhost:3002'}/media/${existing.assetId}`;
+                    const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+                    const videoUrl = `${appBaseUrl.replace(/\/$/, '')}/media/${existing.assetId}`;
 
                     // Fetch organization users to check for @mentions
                     const orgUsers = await request.server.prisma.user.findMany({

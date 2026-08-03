@@ -265,6 +265,44 @@ class B2StorageService {
       throw error;
     }
   }
+
+  /**
+   * Stream file from B2 supporting Range requests
+   * @param {string} key - B2 object key
+   * @param {string} [rangeHeader] - HTTP Range header e.g. "bytes=0-1024"
+   */
+  async getB2MediaStream(key, rangeHeader) {
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try {
+      const commandInput = {
+        Bucket: this.bucket,
+        Key: key,
+      };
+
+      if (rangeHeader) {
+        commandInput.Range = rangeHeader;
+      }
+
+      const command = new GetObjectCommand(commandInput);
+      const response = await this.s3Client.send(command);
+
+      return {
+        stream: response.Body,
+        contentLength: response.ContentLength,
+        contentRange: response.ContentRange,
+        contentType: response.ContentType,
+        acceptRanges: response.AcceptRanges || 'bytes',
+        isPartial: !!response.ContentRange || (response.$metadata && response.$metadata.httpStatusCode === 206),
+        statusCode: (response.$metadata && response.$metadata.httpStatusCode) || (rangeHeader ? 206 : 200),
+      };
+    } catch (error) {
+      console.error(`❌ Error streaming B2 file (${key}):`, error.message);
+      throw error;
+    }
+  }
   // *****
 
   /**

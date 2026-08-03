@@ -110,7 +110,7 @@ async function createShareLink(req, reply) {
         },
       });
 
-      const appBaseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+      const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
       const shareUrl = `${appBaseUrl.replace(/\/$/, '')}/s/${recipientToken}`;
 
       await emailService.sendShareInvite(email.trim(), {
@@ -124,7 +124,7 @@ async function createShareLink(req, reply) {
       });
     }
 
-    const appBase = process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+    const appBase = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
     const publicUrl = `${appBase.replace(/\/$/, '')}/s/${recipientToken}`;
 
     return reply.code(201).send({
@@ -174,7 +174,7 @@ async function getShareLinks(req, reply) {
       orderBy: { createdAt: 'desc' },
     });
 
-    const appBase = process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+    const appBase = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
 
     const formatted = shareLinks.map((link) => {
       const activeRecipient = link.recipients[0];
@@ -301,7 +301,7 @@ async function resendShareLinkInvite(req, reply) {
       return reply.code(404).send({ error: 'Share link is expired or not found' });
     }
 
-    const appBaseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+    const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
 
     for (const recipient of shareLink.recipients) {
       const shareUrl = `${appBaseUrl.replace(/\/$/, '')}/s/${recipient.token}`;
