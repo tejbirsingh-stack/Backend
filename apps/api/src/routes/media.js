@@ -227,7 +227,8 @@ const {
   getAssetAccessOverrides,
   updateAssetAccessOverride,
   removeAssetAccessOverride,
-  getSharedMediaAssets
+  getSharedMediaAssets,
+  moveMediaFile
   // checkDuplicateMediaFile
 } = require('../controller');
 
@@ -271,6 +272,9 @@ module.exports = function (fastify, opts, done) {
   //9.1 POST and PATCH /api/media/:filename/tags — update asset tags
   fastify.post("/:filename/tags", { preValidation: [fastify.authenticate] }, updateAssetTags);
   fastify.patch("/:filename/tags", { preValidation: [fastify.authenticate] }, updateAssetTags);
+
+  //9.2 PUT /api/media/:id/move - move asset to another folder/workspace
+  fastify.put("/:id/move", { preValidation: [fastify.authenticate] }, moveMediaFile);
 
   //10. Upload media asset
   fastify.post("/upload", { preHandler: [fastify.authenticate] }, uploadMediaFile);

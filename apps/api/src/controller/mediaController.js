@@ -2386,7 +2386,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
     // Link Tags if provided (including project defaults)
     const resolvedTagNames = [];
     const manualTagIds = tagIds || session.tagIds || [];
-    
+
     // Fetch project default tags if linked to a project
     const defaultTagIds = [];
     if (session.linkedProjectId) {
@@ -2418,7 +2418,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
             let tagRecord = await request.server.prisma.tag.findFirst({
               where: { orgId: request.user.orgId, name: tagItem.trim(), parentId: null }
             });
-            
+
             // Create if not found
             if (!tagRecord) {
               tagRecord = await request.server.prisma.tag.create({
@@ -3011,7 +3011,7 @@ module.exports.handleMediaRedirectOrServe = handleMediaRedirectOrServe;
 module.exports.getAssetAccessOverrides = async (request, reply) => {
   try {
     const { id: assetId } = request.params;
-    
+
     // Fetch asset access overrides (direct access users)
     const assetUsers = await request.server.prisma.assetUser.findMany({
       where: { assetId }
@@ -3040,7 +3040,7 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
 
     const isOwner = asset.uploadedByUserId === request.user.id;
     const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
-    
+
     if (!isOwner && !isAdmin) {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
     }
@@ -3084,7 +3084,7 @@ module.exports.removeAssetAccessOverride = async (request, reply) => {
 
     const isOwner = asset.uploadedByUserId === request.user.id;
     const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
-    
+
     if (!isOwner && !isAdmin) {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can remove access." });
     }
@@ -3106,7 +3106,7 @@ module.exports.removeAssetAccessOverride = async (request, reply) => {
 module.exports.getSharedMediaAssets = async (request, reply) => {
   try {
     const userId = request.user?.id;
-    
+
     if (!userId) {
       return reply.status(401).send({ success: false, error: "Unauthorized" });
     }
@@ -3209,5 +3209,103 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
   } catch (error) {
     console.error("Failed to fetch shared media assets:", error);
     return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+module.exports.moveMediaFile = async (request, reply) => {
+  try {
+    const { id } = request.params;
+    const { folderId, workspaceId } = request.body;
+    const { orgId } = request.user;
+
+    if (!folderId && !workspaceId) {
+      return reply.code(400).send({
+        success: false,
+        message: 'Either folderId or workspaceId must be provided.'
+      });
+    }
+
+    const asset = await prisma.asset.findFirst({
+      where: { id, orgId, deletedAt: null }
+    });
+
+    if (!asset) {
+      return reply.code(404).send({ success: false, message: 'Asset not found.' });
+    }
+
+    let newOwnerType;
+    let newOwnerId;
+    let newWorkspaceId;
+
+    if (folderId) {
+      const folder = await prisma.folder.findFirst({
+        where: { id: folderId }
+      });
+      if (!folder) {
+        return reply.code(404).send({ success: false, message: 'Target folder not found.' });
+      }
+      newOwnerType = 'FOLDER';
+      newOwnerId = folderId;
+      newWorkspaceId = folder.workspaceId;
+    } else {
+      const workspace = await prisma.workspace.findFirst({
+        where: { id: workspaceId, orgId }
+      });
+      if (!workspace) {
+        return reply.code(404).send({ success: false, message: 'Target workspace not found.' });
+      }
+      newOwnerType = 'WORKSPACE';
+      newOwnerId = workspaceId;
+      newWorkspaceId = workspaceId;
+    }
+
+    let oldWorkspaceId;
+    if (asset.ownerType === 'WORKSPACE') {
+      oldWorkspaceId = asset.ownerId;
+    } else if (asset.ownerType === 'FOLDER') {
+      const oldFolder = await prisma.folder.findUnique({ where: { id: asset.ownerId } });
+      if (oldFolder) oldWorkspaceId = oldFolder.workspaceId;
+    }
+
+    if (oldWorkspaceId && newWorkspaceId && oldWorkspaceId !== newWorkspaceId) {
+      // It moved to a different workspace.
+
+      // 1. Delete project links since they belong to the old workspace
+      await prisma.projectSource.deleteMany({
+        where: { assetId: id }
+      });
+
+      // 2. Remove tags that are specific to the old workspace (project-scoped tags)
+      const projectTagsToWipe = await prisma.tag.findMany({
+          where: { scope: 'project' },
+          select: { id: true }
+      });
+      const projectTagIds = projectTagsToWipe.map(t => t.id);
+
+      if (projectTagIds.length > 0) {
+          await prisma.assetTag.deleteMany({
+              where: {
+                  assetId: id,
+                  tagId: { in: projectTagIds }
+              }
+          });
+      }
+    }
+
+    const updatedAsset = await prisma.asset.update({
+      where: { id },
+      data: {
+        ownerType: newOwnerType,
+        ownerId: newOwnerId
+      }
+    });
+
+    return reply.code(200).send({
+      success: true,
+      message: 'Media moved successfully.',
+      data: updatedAsset
+    });
+  } catch (error) {
+    console.error('Failed to move media:', error);
+    return reply.code(500).send({ success: false, message: 'Internal Server Error' });
   }
 };
