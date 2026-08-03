@@ -258,11 +258,14 @@ module.exports.register = async (request, reply) => {
       });
       finalOrgId = organization.id;
 
+      //get first name from name
+      const firstName = name.trim().split(/\s+/)[0];
+
       // Automatically create a default workspace for the new organization
       await request.server.prisma.workspace.create({
         data: {
-          name: derivedOrgName + " Workspace",
-          description: "Default workspace for " + derivedOrgName,
+          name: `${firstName}-Workspace`,
+          description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: finalOrgId,
         }
@@ -923,6 +926,19 @@ module.exports.resetPassword = async (request, reply) => {
     const formId = process.env.HUBSPOT_FORM_ID?.trim();
     const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
 
+    //get first name from name
+    const firstName = name.trim().split(/\s+/)[0];
+
+    // Automatically create a default workspace for the new organization
+    await request.server.prisma.workspace.create({
+      data: {
+        name: `${firstName}-Workspace`,
+        description: "Default workspace for " + name,
+        color: "#4f46e5",
+        orgId: updatedUser?.orgId,
+      }
+    });
+
     if (portalId && formId) {
       const userName = updatedUser.name || updatedUser.email.split('@')[0];
       const [firstname, ...lastnameParts] = userName.split(" ");
@@ -1108,11 +1124,15 @@ module.exports.googleLogin = async (request, reply) => {
         }
       });
 
+      //get first name from name
+      const fullName = name || normalizedEmail.split('@')[0];
+      const firstName = fullName.trim().split(/\s+/)[0];
+
       // Automatically create a default workspace for the new organization
       await request.server.prisma.workspace.create({
         data: {
-          name: orgName + " Workspace",
-          description: "Default workspace for " + orgName,
+          name: `${firstName}-Workspace`,
+          description: "Default workspace for " + fullName,
           color: "#4f46e5",
           orgId: organization.id,
         }
@@ -1333,6 +1353,21 @@ module.exports.microsoftLogin = async (request, reply) => {
           mfaEnabled: false, // Optional: disable MFA for SSO users
         },
       });
+
+
+      //get first name from name
+      const firstName = name.trim().split(/\s+/)[0];
+
+      // Automatically create a default workspace for the new organization
+      await request.server.prisma.workspace.create({
+        data: {
+          name: `${firstName}-Workspace`,
+          description: "Default workspace for " + name,
+          color: "#4f46e5",
+          orgId: organization.id,
+        }
+      });
+
       // Automatically create a default workspace for the new organization
       await request.server.prisma.workspace.create({
         data: {
