@@ -533,6 +533,62 @@ module.exports.linkProjectSource = async (request, reply) => {
             });
         }
 
+        let oldExpandedTagIdsToRemove = new Set();
+
+        if (sourceableType === 'ASSET' && assetId) {
+            const oldSources = await prisma.projectSource.findMany({
+                where: {
+                    sourceableType: 'ASSET',
+                    assetId: assetId
+                }
+            });
+            const oldProjectIds = oldSources.map(s => s.projectId);
+
+            if (oldProjectIds.length > 0) {
+                const oldProjectTags = await prisma.projectTag.findMany({
+                    where: { projectId: { in: oldProjectIds } },
+                    select: { tagId: true }
+                });
+
+                for (const pt of oldProjectTags) {
+                    oldExpandedTagIdsToRemove.add(pt.tagId);
+                    try {
+                        const ancestors = await getAncestors(pt.tagId);
+                        for (const ancestor of ancestors) {
+                            oldExpandedTagIdsToRemove.add(ancestor.id);
+                        }
+                    } catch (err) {
+                        console.warn(`[AssetTag] Failed to fetch ancestors for tag ${pt.tagId}:`, err.message);
+                    }
+                }
+            }
+
+            if (oldExpandedTagIdsToRemove.size > 0) {
+                await prisma.assetTag.deleteMany({
+                    where: {
+                        assetId: assetId,
+                        tagId: { in: Array.from(oldExpandedTagIdsToRemove) }
+                    }
+                });
+            }
+
+            await prisma.projectSource.deleteMany({
+                where: {
+                    sourceableType: 'ASSET',
+                    assetId: assetId
+                }
+            });
+        }
+
+        if (sourceableType === 'FOLDER' && folderId) {
+            await prisma.projectSource.deleteMany({
+                where: {
+                    sourceableType: 'FOLDER',
+                    folderId: folderId
+                }
+            });
+        }
+
         const projectSource = await prisma.projectSource.create({
             data: {
                 projectId,
@@ -646,6 +702,229 @@ module.exports.updateFolder = async (request, reply) => {
         if (error.code === 'P2025') {
             return reply.code(404).send({ success: false, message: 'Folder not found.' });
         }
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.moveFolder = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { targetFolderId, targetWorkspaceId } = request.body;
+
+        if (!targetFolderId && !targetWorkspaceId) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Either targetFolderId or targetWorkspaceId must be provided.'
+            });
+        }
+
+        const folder = await prisma.folder.findFirst({
+            where: { id }
+        });
+
+        if (!folder) {
+            return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        let newWorkspaceId = targetWorkspaceId || folder.workspaceId;
+        let newParentId = targetFolderId || null;
+
+        if (targetFolderId) {
+            const targetFolder = await prisma.folder.findFirst({
+                where: { id: targetFolderId }
+            });
+            if (!targetFolder) {
+                return reply.code(404).send({ success: false, message: 'Target folder not found.' });
+            }
+            newWorkspaceId = targetFolder.workspaceId;
+        } else if (targetWorkspaceId) {
+            const workspace = await prisma.workspace.findFirst({
+                where: { id: targetWorkspaceId }
+            });
+            if (!workspace) {
+                return reply.code(404).send({ success: false, message: 'Target workspace not found.' });
+            }
+        }
+
+        // Prevent moving folder into itself
+        if (id === targetFolderId) {
+            return reply.code(400).send({ success: false, message: 'Cannot move folder into itself.' });
+        }
+
+        const updatedFolder = await prisma.folder.update({
+            where: { id },
+            data: {
+                parentId: newParentId,
+                workspaceId: newWorkspaceId
+            }
+        });
+
+        // Recursively update workspaceId for all descendant folders if the workspace changed
+        if (folder.workspaceId !== newWorkspaceId) {
+            // 1. Gather all folder IDs involved in the move
+            const movingFolderIds = [id];
+            const getDescendantIds = async (parentId) => {
+                const children = await prisma.folder.findMany({ where: { parentId }, select: { id: true } });
+                for (const child of children) {
+                    movingFolderIds.push(child.id);
+                    await getDescendantIds(child.id);
+                }
+            };
+            await getDescendantIds(id);
+
+            // 2. Identify all projects inside the moving folders
+            const movingProjects = await prisma.project.findMany({
+                where: { folderId: { in: movingFolderIds } },
+                select: { id: true }
+            });
+            const movingProjectIds = movingProjects.map(p => p.id);
+
+            // 3. Find all assets inside these moving folders
+            const movingAssets = await prisma.asset.findMany({
+                where: { ownerType: 'FOLDER', ownerId: { in: movingFolderIds } },
+                select: { id: true }
+            });
+            const movingAssetIds = movingAssets.map(a => a.id);
+
+            // 4. Update folders and projects to the new workspaceId
+            await prisma.folder.updateMany({
+                where: { id: { in: movingFolderIds } },
+                data: { workspaceId: newWorkspaceId }
+            });
+
+            if (movingProjectIds.length > 0) {
+                await prisma.project.updateMany({
+                    where: { id: { in: movingProjectIds } },
+                    data: { workspaceId: newWorkspaceId }
+                });
+            }
+
+            // 5. Unlink moving folders from any outside projects
+            await prisma.projectSource.deleteMany({
+                where: {
+                    sourceableType: 'FOLDER',
+                    folderId: { in: movingFolderIds },
+                    projectId: { notIn: movingProjectIds } // keep links for projects inside the moving folder
+                }
+            });
+
+            // 6. Unlink moving assets from any outside projects
+            if (movingAssetIds.length > 0) {
+                await prisma.projectSource.deleteMany({
+                    where: {
+                        sourceableType: 'ASSET',
+                        assetId: { in: movingAssetIds },
+                        projectId: { notIn: movingProjectIds } // keep links for projects inside the moving folder
+                    }
+                });
+
+                // 7. Remove project-scoped tags from moving assets (since they changed workspace)
+                const projectTagsToWipe = await prisma.tag.findMany({
+                    where: { scope: 'project' },
+                    select: { id: true }
+                });
+                const projectTagIds = projectTagsToWipe.map(t => t.id);
+
+                if (projectTagIds.length > 0) {
+                    await prisma.assetTag.deleteMany({
+                        where: {
+                            assetId: { in: movingAssetIds },
+                            tagId: { in: projectTagIds }
+                        }
+                    });
+                }
+            }
+
+            // 8. Handle moving projects: unlink outside assets/folders and clear inherited tags
+            if (movingProjectIds.length > 0) {
+                // a. Find all default tags of these moving projects
+                const projectTags = await prisma.projectTag.findMany({
+                    where: { projectId: { in: movingProjectIds } },
+                    select: { tagId: true }
+                });
+                
+                // b. Expand to include ancestors
+                let expandedTagIdsToRemove = new Set();
+                for (const pt of projectTags) {
+                    expandedTagIdsToRemove.add(pt.tagId);
+                    try {
+                        const ancestors = await getAncestors(pt.tagId);
+                        for (const ancestor of ancestors) {
+                            expandedTagIdsToRemove.add(ancestor.id);
+                        }
+                    } catch (err) {
+                        console.warn(`Failed to fetch ancestors for tag ${pt.tagId}:`, err.message);
+                    }
+                }
+                
+                const tagsToRemoveArray = Array.from(expandedTagIdsToRemove);
+
+                // Filter to ONLY project-scoped tags (preserve company/personal tags)
+                const projectTagsToWipe = await prisma.tag.findMany({
+                    where: {
+                        id: { in: tagsToRemoveArray },
+                        scope: 'project'
+                    },
+                    select: { id: true }
+                });
+                const projectTagsToWipeIds = projectTagsToWipe.map(t => t.id);
+
+                // c. Find the outside assets linked to moving projects
+                const outsideProjectSources = await prisma.projectSource.findMany({
+                    where: {
+                        projectId: { in: movingProjectIds },
+                        sourceableType: 'ASSET',
+                        assetId: { notIn: movingAssetIds }
+                    },
+                    select: { assetId: true }
+                });
+                const outsideAssetIds = outsideProjectSources.map(s => s.assetId).filter(Boolean);
+
+                // d. Remove ONLY project-scoped inherited tags from the outside assets
+                if (outsideAssetIds.length > 0 && projectTagsToWipeIds.length > 0) {
+                    await prisma.assetTag.deleteMany({
+                        where: {
+                            assetId: { in: outsideAssetIds },
+                            tagId: { in: projectTagsToWipeIds }
+                        }
+                    });
+                }
+
+                // e. Unlink outside assets from the moving projects
+                await prisma.projectSource.deleteMany({
+                    where: {
+                        projectId: { in: movingProjectIds },
+                        sourceableType: 'ASSET',
+                        assetId: { notIn: movingAssetIds }
+                    }
+                });
+
+                // f. Unlink outside folders from the moving projects
+                await prisma.projectSource.deleteMany({
+                    where: {
+                        projectId: { in: movingProjectIds },
+                        sourceableType: 'FOLDER',
+                        folderId: { notIn: movingFolderIds }
+                    }
+                });
+
+                // g. Wipe default tags from the moving projects themselves
+                // Since they are moving to a new workspace, their old workspace tags are invalid
+                await prisma.projectTag.deleteMany({
+                    where: {
+                        projectId: { in: movingProjectIds }
+                    }
+                });
+            }
+        }
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Folder moved successfully.',
+            data: updatedFolder
+        });
+    } catch (error) {
+        console.error('Failed to move folder:', error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
