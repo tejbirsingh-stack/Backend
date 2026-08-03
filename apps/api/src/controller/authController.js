@@ -53,23 +53,21 @@ module.exports.login = async (request, reply) => {
     const roleName = (user.roleRelation && user.roleRelation.name) ? user.roleRelation.name : (user.role || "");
     const isSuperAdmin = roleName.toLowerCase().replace(/[_ -]+/g, "") === "superadmin";
 
-    // Check user status and email verification ONLY for Super Admin
-    if (isSuperAdmin) {
-      if (!user.status || user.status.toLowerCase() !== "active") {
-        return reply.status(403).send({
-          success: false,
-          error: "Forbidden",
-          message: "Account is not active",
-        });
-      }
+    // Check user status and email verification
+    if (user.status && user.status.toLowerCase() !== "active") {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Account is not active",
+      });
+    }
 
-      if (!user.emailVerified) {
-        return reply.status(403).send({
-          success: false,
-          error: "Forbidden",
-          message: "Your account has not been verified. Please verify your email before logging in.",
-        });
-      }
+    if (!user.emailVerified) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Your account has not been verified. Please check your email and verify your account before logging in.",
+      });
     }
 
     // Check if MFA is enabled and verify the code
@@ -380,18 +378,11 @@ module.exports.register = async (request, reply) => {
       console.error("Failed to send verification email during registration:", emailErr);
     }
 
-    // Create a session for the new user
-    const session = await authService.createSession(
-      user.id,
-      request.headers["user-agent"],
-      request.ip
-    );
-
     user.role = superAdminRole?.name;
-    logSuccess(ACTIVITY_NAME.USER_REGISTER, "User registered successfully.", null, user);  //Log user activity
+    logSuccess(ACTIVITY_NAME.USER_REGISTER, "User registered successfully. Verification email sent.", null, user);  //Log user activity
 
     return reply.status(201).send({
-      message: "User registered successfully",
+      message: "User registered successfully. Please check your email and verify your account before logging in.",
       user: {
         id: user.id,
         name: user.name,
@@ -400,10 +391,8 @@ module.exports.register = async (request, reply) => {
         role: user.role,
         status: user.status,
         phone: user.phone,
-        emailVerified: user.emailVerified || false,
+        emailVerified: false,
       },
-      token: session.token,
-      expiresAt: session.expiresAt,
     });
   } catch (error) {
     console.error("Registration Error:", error);
@@ -1290,9 +1279,6 @@ module.exports.microsoftLogin = async (request, reply) => {
     const email = (decodedPayload.preferred_username || decodedPayload.email || decodedPayload.upn).toLowerCase().trim();
     const name = decodedPayload.name || email.split("@")[0];
 
-    // 3. Find User or create new User 
-    const authService = require("../services/auth-service");
-
     // Validate business email domain (B2B check: Layer 1 Free domain check & Layer 2 DNS MX verification)
     const emailValidation = await authService.validateBusinessEmail(email);
     if (!emailValidation.isValid) {
@@ -1535,42 +1521,7 @@ module.exports.getRoles = async (request, reply) => {
   }
 };
 
-// Verify Email Handler
-module.exports.verifyEmail = async (request, reply) => {
-  const { token } = request.body || request.query || {};
 
-  try {
-    if (!token) {
-      return reply.status(400).send({
-        success: false,
-        error: "Bad Request",
-        message: "This verification link is invalid or has already been used.",
-      });
-    }
-
-    const userId = await authService.verifyEmailVerificationToken(token);
-
-    if (!userId) {
-      return reply.status(400).send({
-        success: false,
-        error: "Bad Request",
-        message: "This verification link is invalid or has already been used.",
-      });
-    }
-
-    return reply.status(200).send({
-      success: true,
-      message: "Your email address has been verified successfully. You can now log in.",
-    });
-  } catch (error) {
-    console.error("Verify email error:", error);
-    return reply.status(500).send({
-      success: false,
-      error: "Internal Server Error",
-      message: "Failed to verify email address.",
-    });
-  }
-};
 
 // Logout Handler
 module.exports.logout = async (request, reply) => {

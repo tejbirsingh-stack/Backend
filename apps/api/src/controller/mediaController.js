@@ -768,10 +768,41 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
   const isNonWebImage = NON_WEB_IMAGE_EXTS.has(targetExt);
 
   if (b2Key && b2Storage.isEnabled() && (download || !isNonWebImage)) {
-    const freshUrl = await b2Storage.getPresignedUrl(b2Key);
-    if (freshUrl) {
-      console.log(`Redirecting request for ${filename} to fresh B2 URL`);
-      return reply.code(307).redirect(freshUrl);
+    try {
+      const rangeHeader = request.headers.range;
+      const mediaStream = await b2Storage.getB2MediaStream(b2Key, rangeHeader);
+
+      const mimeType = inferMimeType(path.basename(b2Key || filename)) || mediaStream.contentType || 'application/octet-stream';
+      const name = filename.replace(/^\d+-/, "");
+
+      reply.header("Accept-Ranges", "bytes");
+      reply.header(
+        "Content-Disposition",
+        download ? `attachment; filename="${name}"` : "inline"
+      );
+      reply.type(mimeType);
+
+      if (mediaStream.contentRange) {
+        reply.code(206);
+        reply.header("Content-Range", mediaStream.contentRange);
+      } else if (rangeHeader && mediaStream.isPartial) {
+        reply.code(206);
+      } else {
+        reply.code(200);
+      }
+
+      if (mediaStream.contentLength) {
+        reply.header("Content-Length", mediaStream.contentLength);
+      }
+
+      return reply.send(mediaStream.stream);
+    } catch (b2ProxyErr) {
+      console.error(`B2 Proxy streaming error for ${b2Key}:`, b2ProxyErr.message);
+      const freshUrl = await b2Storage.getPresignedUrl(b2Key);
+      if (freshUrl) {
+        console.log(`Fallback redirecting request for ${filename} to fresh B2 URL`);
+        return reply.code(307).redirect(freshUrl);
+      }
     }
   }
 
