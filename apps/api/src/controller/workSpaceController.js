@@ -786,7 +786,7 @@ module.exports.moveFolder = async (request, reply) => {
             });
             const movingAssetIds = movingAssets.map(a => a.id);
 
-            // 4. Update folders and projects to the new workspaceId
+            // 4. Update folders, projects, and assets to the new workspaceId
             await prisma.folder.updateMany({
                 where: { id: { in: movingFolderIds } },
                 data: { workspaceId: newWorkspaceId }
@@ -795,6 +795,14 @@ module.exports.moveFolder = async (request, reply) => {
             if (movingProjectIds.length > 0) {
                 await prisma.project.updateMany({
                     where: { id: { in: movingProjectIds } },
+                    data: { workspaceId: newWorkspaceId }
+                });
+            }
+
+            // Update workspaceId on all assets physically inside the moving folders
+            if (movingAssetIds.length > 0) {
+                await prisma.asset.updateMany({
+                    where: { id: { in: movingAssetIds } },
                     data: { workspaceId: newWorkspaceId }
                 });
             }

@@ -53,7 +53,7 @@ async function enforceWorkspaceFolderStructure(prisma, ownerType, ownerId) {
     // Verify the workspace actually exists
     const workspace = await prisma.workspace.findUnique({ where: { id: ownerId } });
     if (!workspace) {
-      return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId };
+      return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId, resolvedWorkspaceId: ownerId };
     }
 
     const tzSetting = await prisma.systemTimezone.findFirst({
@@ -103,9 +103,35 @@ async function enforceWorkspaceFolderStructure(prisma, ownerType, ownerId) {
       });
     }
 
-    return { resolvedOwnerType: 'FOLDER', resolvedOwnerId: monthFolder.id, resolvedFolderName: monthFolder.name };
+    return { resolvedOwnerType: 'FOLDER', resolvedOwnerId: monthFolder.id, resolvedFolderName: monthFolder.name, resolvedWorkspaceId: ownerId };
   }
-  return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId, resolvedFolderName: null };
+
+  // ownerType === 'FOLDER' — resolve workspaceId from the folder record
+  let resolvedWorkspaceId = null;
+  if (ownerType === 'FOLDER' && ownerId) {
+    try {
+      const folder = await prisma.folder.findUnique({ where: { id: ownerId }, select: { workspaceId: true } });
+      if (folder) resolvedWorkspaceId = folder.workspaceId;
+    } catch (_) { /* best-effort */ }
+  }
+
+  return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId, resolvedFolderName: null, resolvedWorkspaceId };
+}
+
+/**
+ * Derive the workspaceId for an asset given its ownerType and ownerId.
+ * - WORKSPACE owner  → workspaceId = ownerId
+ * - FOLDER owner     → workspaceId = folder.workspaceId
+ */
+async function resolveWorkspaceId(prisma, ownerType, ownerId) {
+  if (ownerType === 'WORKSPACE') return ownerId;
+  if (ownerType === 'FOLDER' && ownerId) {
+    try {
+      const folder = await prisma.folder.findUnique({ where: { id: ownerId }, select: { workspaceId: true } });
+      return folder ? folder.workspaceId : null;
+    } catch (_) { return null; }
+  }
+  return null;
 }
 
 function sanitizeB2ErrorMessage(message) {
@@ -1736,6 +1762,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
         let reqOwnerType = request.query.ownerType || "WORKSPACE";
         let reqOwnerId = request.query.ownerId || request.user.orgId;
         const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
+        // Derive workspaceId — always store it directly on the asset
+        const uploadWorkspaceId = resolved.resolvedWorkspaceId ||
+          await resolveWorkspaceId(request.server.prisma, resolved.resolvedOwnerType, resolved.resolvedOwnerId);
         // Write to the New Architecture
         const newAsset = await request.server.prisma.asset.create({
           data: {
@@ -1746,6 +1775,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             uploadedByUserId: request.user.id,
             ownerType: resolved.resolvedOwnerType,
             ownerId: resolved.resolvedOwnerId,
+            workspaceId: uploadWorkspaceId,
             files: {
               create: {
                 fileClass: "original",
@@ -2477,6 +2507,9 @@ module.exports.completeResumableUpload = async (request, reply) => {
     let reqOwnerType = session.ownerType || "WORKSPACE";
     let reqOwnerId = session.ownerId || request.user.orgId;
     const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
+    // Derive workspaceId — always store it directly on the asset
+    const uploadWorkspaceId = resolved.resolvedWorkspaceId ||
+      await resolveWorkspaceId(request.server.prisma, resolved.resolvedOwnerType, resolved.resolvedOwnerId);
 
     // Save the asset metadata in PostgreSQL via Prisma (New Architecture)
     const newAsset = await request.server.prisma.asset.create({
@@ -2488,6 +2521,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
         uploadedByUserId: request.user.id,
         ownerType: resolved.resolvedOwnerType,
         ownerId: resolved.resolvedOwnerId,
+        workspaceId: uploadWorkspaceId,
         files: {
           create: {
             fileClass: "original",
@@ -3448,13 +3482,9 @@ module.exports.moveMediaFile = async (request, reply) => {
       newWorkspaceId = workspaceId;
     }
 
-    let oldWorkspaceId;
-    if (asset.ownerType === 'WORKSPACE') {
-      oldWorkspaceId = asset.ownerId;
-    } else if (asset.ownerType === 'FOLDER') {
-      const oldFolder = await prisma.folder.findUnique({ where: { id: asset.ownerId } });
-      if (oldFolder) oldWorkspaceId = oldFolder.workspaceId;
-    }
+    // Use the stored workspaceId directly (always populated since the new column was added)
+    const oldWorkspaceId = asset.workspaceId ||
+      (asset.ownerType === 'WORKSPACE' ? asset.ownerId : null); // fallback for any legacy rows
 
     if (oldWorkspaceId && newWorkspaceId && oldWorkspaceId !== newWorkspaceId) {
       // It moved to a different workspace.
@@ -3485,7 +3515,8 @@ module.exports.moveMediaFile = async (request, reply) => {
       where: { id },
       data: {
         ownerType: newOwnerType,
-        ownerId: newOwnerId
+        ownerId: newOwnerId,
+        workspaceId: newWorkspaceId
       }
     });
 
