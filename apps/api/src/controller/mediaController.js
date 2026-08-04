@@ -223,6 +223,19 @@ function inferMimeType(filename = "") {
   return "application/octet-stream";
 }
 
+function computeResolutionTier(width, height) {
+  const w = Number(width || 0);
+  const h = Number(height || 0);
+  if (!w || !h) return undefined;
+  const maxDim = Math.max(w, h);
+  const minDim = Math.min(w, h);
+  if (maxDim >= 3840 || minDim >= 2160) return '4K';
+  if (maxDim >= 2560 || minDim >= 1440) return '2K';
+  if (maxDim >= 1920 || minDim >= 1080) return '1080p';
+  if (maxDim >= 1280 || minDim >= 720) return '720p';
+  return 'SD';
+}
+
 function toFrontendAssetShape(asset) {
   const mimeType = asset.mimeType || inferMimeType(asset.name || asset.fileName || asset.filePath || "");
   const normalizedType = determineAssetType(asset, { mimeType, fileName: asset.name || asset.fileName || asset.filePath });
@@ -798,11 +811,11 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       return reply.send(mediaStream.stream);
     } catch (b2ProxyErr) {
       console.error(`B2 Proxy streaming error for ${b2Key}:`, b2ProxyErr.message);
-      const freshUrl = await b2Storage.getPresignedUrl(b2Key);
-      if (freshUrl) {
-        console.log(`Fallback redirecting request for ${filename} to fresh B2 URL`);
-        return reply.code(307).redirect(freshUrl);
-      }
+      return reply.code(502).send({
+        success: false,
+        error: "Bad Gateway",
+        message: "Failed to stream media from cloud storage proxy",
+      });
     }
   }
 
@@ -941,27 +954,48 @@ module.exports.getMediaAssets = async (request, reply) => {
           ? asset.aiTags
           : (Array.isArray(customProps.tags) ? customProps.tags : []));
 
+      const techSpecs = asset.metadata?.technicalSpecs || {};
+      const width = techSpecs.width || customProps.width;
+      const height = techSpecs.height || customProps.height;
+      const resTier = computeResolutionTier(width, height);
+      const fpsVal = techSpecs.fps || customProps.fps;
+      const durationVal = techSpecs.durationSeconds || techSpecs.duration || customProps.durationSeconds || customProps.duration;
+      const fileSizeVal = Number(originalFile?.sizeBytes || 0);
+
       return {
         id: asset.id,
         name: asset.title,
         path: proxyFile ? proxyFile.filePath : originalFile?.filePath || '',
         type: determineAssetType(asset, originalFile),
-        size: Number(originalFile?.sizeBytes || 0),
+        size: fileSizeVal,
+        file_size: fileSizeVal,
+        resolution_tier: resTier,
+        resolutionTier: resTier,
+        fps: fpsVal,
+        duration: durationVal,
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
         thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
         uploadedBy: asset.uploadedBy || null,
         tags: tagList,
         metadata: {
-          duration: asset.metadata?.technicalSpecs?.durationSeconds,
+          duration: durationVal,
+          resolution_tier: resTier,
+          fps: fpsVal,
           b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
           storageLocation: 'b2',
-          technicalSpecs: asset.metadata?.technicalSpecs || {}
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          }
         },
         status: asset.status,
         customMetadata: {
-          ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
-          technicalSpecs: asset.metadata?.technicalSpecs || {},
+          ...customProps,
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          },
           originalFilePath: originalFile?.filePath,
           transcodingProgress: transcodeJob?.status === 'processing'
             ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
@@ -1072,6 +1106,21 @@ module.exports.searchMediaAssets = async (request, reply) => {
 module.exports.fileStreamPreview = async (request, reply) => {
   try {
     const { filename } = request.params;
+
+    // Validate Stream Token if provided in query parameters (e.g. ?token=... or ?streamToken=...)
+    const token = request.query?.token || request.query?.streamToken;
+    if (token) {
+      try {
+        request.server.jwt.verify(token);
+      } catch (tokenErr) {
+        return reply.code(401).send({
+          success: false,
+          error: "Unauthorized",
+          message: "Stream token expired or invalid",
+        });
+      }
+    }
+
     return await handleMediaRedirectOrServe(request, reply, filename, false);
   } catch (error) {
     return reply.code(500).send({
@@ -1092,6 +1141,20 @@ module.exports.getThumbnail = async (request, reply) => {
       return reply.code(404).send({ error: "Invalid Asset ID" });
     }
 
+    // Validate token if provided
+    const token = request.query?.token || request.query?.streamToken;
+    if (token) {
+      try {
+        request.server.jwt.verify(token);
+      } catch (tokenErr) {
+        return reply.code(401).send({
+          success: false,
+          error: "Unauthorized",
+          message: "Stream token expired or invalid",
+        });
+      }
+    }
+
     const asset = await request.server.prisma.asset.findUnique({
       where: { id },
       include: { files: true }
@@ -1108,8 +1171,15 @@ module.exports.getThumbnail = async (request, reply) => {
     if (proxyFile) {
       const proxyThumbKey = `${proxyFile.filePath}_thumb1.jpg`;
       if (b2Storage.isEnabled()) {
-        const freshUrl = await b2Storage.getPresignedUrl(proxyThumbKey);
-        if (freshUrl) return reply.code(307).redirect(freshUrl);
+        try {
+          const mediaStream = await b2Storage.getB2MediaStream(proxyThumbKey);
+          reply.header("Accept-Ranges", "bytes");
+          reply.type("image/jpeg");
+          reply.code(200);
+          return reply.send(mediaStream.stream);
+        } catch (err) {
+          console.warn(`B2 Proxy thumbnail stream fallback for ${proxyThumbKey}:`, err.message);
+        }
       }
       const localProxyThumb = path.join(getUploadsDir(), proxyThumbKey);
       if (fs.existsSync(localProxyThumb)) {
@@ -1122,10 +1192,6 @@ module.exports.getThumbnail = async (request, reply) => {
 
     // 2. Standard web images (jpg, png, webp, gif, svg)
     if (asset.type === 'image' && !NON_WEB_IMAGE_EXTS.has(ext)) {
-      if (b2Storage.isEnabled()) {
-        const freshUrl = await b2Storage.getPresignedUrl(filePath);
-        if (freshUrl) return reply.code(307).redirect(freshUrl);
-      }
       return await handleMediaRedirectOrServe(request, reply, filePath, false);
     }
 
@@ -3359,27 +3425,48 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
           ? asset.aiTags
           : (Array.isArray(customProps.tags) ? customProps.tags : []));
 
+      const techSpecs = asset.metadata?.technicalSpecs || {};
+      const width = techSpecs.width || customProps.width;
+      const height = techSpecs.height || customProps.height;
+      const resTier = computeResolutionTier(width, height);
+      const fpsVal = techSpecs.fps || customProps.fps;
+      const durationVal = techSpecs.durationSeconds || techSpecs.duration || customProps.durationSeconds || customProps.duration;
+      const fileSizeVal = Number(originalFile?.sizeBytes || 0);
+
       return {
         id: asset.id,
         name: asset.title,
         path: proxyFile ? proxyFile.filePath : originalFile?.filePath || '',
         type: determineAssetTypeInline(asset, originalFile),
-        size: Number(originalFile?.sizeBytes || 0),
+        size: fileSizeVal,
+        file_size: fileSizeVal,
+        resolution_tier: resTier,
+        resolutionTier: resTier,
+        fps: fpsVal,
+        duration: durationVal,
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
         thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
         uploadedBy: asset.uploadedBy || null,
         tags: tagList,
         metadata: {
-          duration: asset.metadata?.technicalSpecs?.durationSeconds,
+          duration: durationVal,
+          resolution_tier: resTier,
+          fps: fpsVal,
           b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
           storageLocation: 'b2',
-          technicalSpecs: asset.metadata?.technicalSpecs || {}
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          }
         },
         status: asset.status,
         customMetadata: {
-          ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
-          technicalSpecs: asset.metadata?.technicalSpecs || {},
+          ...customProps,
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          },
           originalFilePath: originalFile?.filePath,
           transcodingProgress: transcodeJob?.status === 'processing'
             ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
