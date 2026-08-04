@@ -3241,7 +3241,12 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
       where: { assetId }
     });
 
-    return reply.send({ success: true, overrides: assetUsers });
+    const assetGroups = await request.server.prisma.assetGroup.findMany({
+      where: { assetId },
+      include: { group: true }
+    });
+
+    return reply.send({ success: true, overrides: assetUsers, groupOverrides: assetGroups });
   } catch (error) {
     console.error("Failed to fetch asset access overrides:", error);
     return reply.status(500).send({ success: false, error: error.message });
@@ -3327,6 +3332,85 @@ module.exports.removeAssetAccessOverride = async (request, reply) => {
   }
 };
 
+module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
+  try {
+    const { id: assetId, groupId: targetGroupId } = request.params;
+    const { accessLevel } = request.body;
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      select: { uploadedByUserId: true, orgId: true }
+    });
+
+    if (!asset) {
+      return reply.status(404).send({ success: false, error: "Asset not found" });
+    }
+
+    const isOwner = asset.uploadedByUserId === request.user.id;
+    const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
+
+    if (!isOwner && !isAdmin) {
+      return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
+    }
+
+    const override = await request.server.prisma.assetGroup.upsert({
+      where: {
+        assetId_groupId: {
+          assetId,
+          groupId: targetGroupId
+        }
+      },
+      update: {
+        accessLevel
+      },
+      create: {
+        assetId,
+        groupId: targetGroupId,
+        accessLevel
+      }
+    });
+
+    return reply.send({ success: true, override });
+  } catch (error) {
+    console.error("Failed to update asset group access override:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+module.exports.removeAssetGroupAccessOverride = async (request, reply) => {
+  try {
+    const { id: assetId, groupId: targetGroupId } = request.params;
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      select: { uploadedByUserId: true, orgId: true }
+    });
+
+    if (!asset) {
+      return reply.status(404).send({ success: false, error: "Asset not found" });
+    }
+
+    const isOwner = asset.uploadedByUserId === request.user.id;
+    const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
+
+    if (!isOwner && !isAdmin) {
+      return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can remove access." });
+    }
+
+    await request.server.prisma.assetGroup.deleteMany({
+      where: {
+        assetId,
+        groupId: targetGroupId
+      }
+    });
+
+    return reply.send({ success: true, message: "Group override removed" });
+  } catch (error) {
+    console.error("Failed to remove asset group access override:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
 module.exports.getSharedMediaAssets = async (request, reply) => {
   try {
     const userId = request.user?.id;
@@ -3338,11 +3422,28 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
     const dbAssets = await request.server.prisma.asset.findMany({
       where: {
         deletedAt: null,
-        users: {
-          some: {
-            userId: userId
+        OR: [
+          {
+            users: {
+              some: {
+                userId: userId
+              }
+            }
+          },
+          {
+            assetGroups: {
+              some: {
+                group: {
+                  members: {
+                    some: {
+                      userId: userId
+                    }
+                  }
+                }
+              }
+            }
           }
-        },
+        ],
         uploadedByUserId: {
           not: userId
         }

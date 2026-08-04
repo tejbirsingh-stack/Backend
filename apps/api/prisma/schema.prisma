@@ -31,6 +31,7 @@ model Organization {
   auditLogs    AuditLog[]
   notifications Notification[]
   annotationGroups AnnotationGroup[]
+  userGroups       UserGroup[]
 
   workspaces Workspace[]
   @@map("organizations")
@@ -83,6 +84,8 @@ model User {
   favorites            Favorite[]
   createdTags          Tag[]      @relation("TagCreatedBy")
   addedProjectTags     ProjectTag[] @relation("ProjectTagAddedBy")
+  userGroupMembers     UserGroupMember[]
+  createdUserGroups    UserGroup[]  @relation("GroupCreatedBy")
 
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
@@ -156,7 +159,6 @@ model Workspace {
   users  WorkspaceUser[]
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
-  assets   Asset[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -251,14 +253,8 @@ model Asset {
   files                   AssetFile[]
   metadata                AssetMetadata?
   transcodeJobs           TranscodeJob[]
-  ownerType               MediaAssetOwnerType // WORKSPACE or FOLDER
-  ownerId                 String              @db.Uuid // points to Workspace.id or Folder.id depending on ownerType
-
-  // Direct workspace reference — always set regardless of ownerType.
-  // Enables instant workspace-scoped queries without joins.
-  workspaceId             String?             @map("workspace_id")
-  workspace               Workspace?          @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
-
+  ownerType               MediaAssetOwnerType // WORKSPACE, FOLDER, or PROJECT
+  ownerId                 String              @db.Uuid // points to Workspace.id, Folder.id, or Project.id depending on ownerType
   uploadedByUserId        String?             @db.Uuid
   uploadedBy              User?               @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
   annotations             Annotation[]
@@ -272,6 +268,7 @@ model Asset {
 
   sources ProjectSource[] @relation("AssetAsSource")
   users   AssetUser[]
+  assetGroups AssetGroup[]
 
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
@@ -281,7 +278,6 @@ model Asset {
   @@index([type])
   @@index([compressedKey])
   @@index([ownerType, ownerId])
-  @@index([workspaceId])
   @@map("assets")
 }
 
@@ -302,6 +298,24 @@ model AssetUser {
   @@index([assetId])
   @@index([userId])
   @@map("asset_users")
+}
+
+model AssetGroup {
+  id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId String @map("asset_id") @db.Uuid
+  groupId String @map("group_id") @db.Uuid
+  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  group UserGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([assetId, groupId])
+  @@index([assetId])
+  @@index([groupId])
+  @@map("asset_groups")
 }
 
 model Project {
@@ -631,6 +645,38 @@ model AnnotationGroupMember {
   @@id([groupId, userId])
   @@index([userId])
   @@map("annotation_group_members")
+}
+
+model UserGroup {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String       @db.Uuid
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name         String       @db.VarChar(100)
+  description  String?      @db.VarChar(500)
+  createdById  String?      @db.Uuid
+  createdBy    User?        @relation("GroupCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt    DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
+
+  members      UserGroupMember[]
+  assetGroups  AssetGroup[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@map("user_groups")
+}
+
+model UserGroupMember {
+  groupId   String    @db.Uuid
+  userId    String    @db.Uuid
+  addedAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  group     UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  @@index([userId])
+  @@map("user_group_members")
 }
 
 model Role {

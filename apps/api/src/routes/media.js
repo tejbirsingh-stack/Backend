@@ -227,6 +227,8 @@ const {
   getAssetAccessOverrides,
   updateAssetAccessOverride,
   removeAssetAccessOverride,
+  updateAssetGroupAccessOverride,
+  removeAssetGroupAccessOverride,
   getSharedMediaAssets,
   moveMediaFile
   // checkDuplicateMediaFile
@@ -301,6 +303,10 @@ module.exports = function (fastify, opts, done) {
   fastify.get("/:id/access", { preValidation: [fastify.authenticate] }, getAssetAccessOverrides);
   fastify.patch("/:id/access/:userId", { preValidation: [fastify.authenticate] }, updateAssetAccessOverride);
   fastify.delete("/:id/access/:userId", { preValidation: [fastify.authenticate] }, removeAssetAccessOverride);
+
+  //11.6 Asset Group Access Role Overrides
+  fastify.put("/:id/group-access/:groupId", { preValidation: [fastify.authenticate] }, updateAssetGroupAccessOverride);
+  fastify.delete("/:id/group-access/:groupId", { preValidation: [fastify.authenticate] }, removeAssetGroupAccessOverride);
 
   //12. Initialize a Resumable Multipart Upload Session
   fastify.post("/upload/init", { preHandler: [fastify.authenticate] }, initiateResumableUpload);
