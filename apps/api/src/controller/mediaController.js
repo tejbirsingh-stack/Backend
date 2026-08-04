@@ -3243,7 +3243,15 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
 
     const assetGroups = await request.server.prisma.assetGroup.findMany({
       where: { assetId },
-      include: { group: true }
+      include: {
+        group: {
+          include: {
+            members: {
+              select: { userId: true }
+            }
+          }
+        }
+      }
     });
 
     return reply.send({ success: true, overrides: assetUsers, groupOverrides: assetGroups });
