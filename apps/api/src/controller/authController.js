@@ -905,6 +905,7 @@ module.exports.resetPassword = async (request, reply) => {
     const updateData = {
       passwordHash,
       status: "active",
+      emailVerified: true,
     };
     if (name && typeof name === "string" && name.trim().length > 0) {
       updateData.name = name.trim();

@@ -54,6 +54,11 @@ module.exports.getMediaAnnotations = async (request, reply) => {
                     initials: ((ann.guestName || ann.data?.guestName || ann.guestEmail || ann.data?.guestEmail || 'G')[0] || 'G').toUpperCase(),
                     isGuest: true,
                 } : null),
+                readByUsers: ann.data?.readByUsers || [],
+                unread: Boolean(
+                    ((ann.userId && ann.userId !== userId) || (!ann.userId && (ann.guestName || ann.guestEmail || ann.data?.guestEmail))) &&
+                    !(ann.data?.readByUsers || []).includes(userId)
+                ),
                 createdAt: ann.createdAt,
                 updatedAt: ann.updatedAt, 
             })),    
@@ -672,6 +677,58 @@ module.exports.updateAnnotationGroup = async (request, reply) => {
             success: false,
             error: "Failed to update annotation group",
             message: error.message
+        });
+    }
+};
+
+module.exports.markAnnotationRead = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const userId = request.user.id;
+        const { unread } = request.body || {};
+
+        const existing = await request.server.prisma.annotation.findUnique({
+            where: { id }
+        });
+
+        if (!existing) {
+            return reply.code(404).send({ success: false, error: 'Annotation not found' });
+        }
+
+        const currentData = existing.data || {};
+        const readByUsers = Array.isArray(currentData.readByUsers) ? [...currentData.readByUsers] : [];
+
+        let updatedUsers = readByUsers;
+        if (unread) {
+            updatedUsers = readByUsers.filter((uId) => uId !== userId);
+        } else {
+            if (!readByUsers.includes(userId)) {
+                updatedUsers.push(userId);
+            }
+        }
+
+        const updated = await request.server.prisma.annotation.update({
+            where: { id },
+            data: {
+                data: {
+                    ...currentData,
+                    readByUsers: updatedUsers,
+                }
+            }
+        });
+
+        return reply.code(200).send({
+            success: true,
+            annotationId: id,
+            unread: !!unread,
+            readByUsers: updatedUsers,
+        });
+    } catch (error) {
+        request.log.error(error);
+        return reply.code(500).send({
+            success: false,
+            error: 'Failed to mark annotation read state',
+            message: error.message,
         });
     }
 };

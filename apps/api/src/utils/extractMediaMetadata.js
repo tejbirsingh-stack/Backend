@@ -88,7 +88,16 @@ async function extractServerSideMetadata(filePathOrUrl) {
     const height = tags.ImageHeight || tags.SourceImageHeight || tags.Height;
     const resolution = (width && height) ? `${width} × ${height} px` : null;
     const orientation = (width && height) ? (width >= height ? 'Landscape' : 'Portrait') : (tags.Orientation ? String(tags.Orientation) : null);
-    const megapixels = (width && height) ? `${((width * height) / 1000000).toFixed(2)} MP` : null;
+    let resolutionTier = null;
+    if (width && height) {
+      const maxDim = Math.max(width, height);
+      const minDim = Math.min(width, height);
+      if (maxDim >= 3840 || minDim >= 2160) resolutionTier = '4K UHD';
+      else if (maxDim >= 2560 || minDim >= 1440) resolutionTier = '2K QHD';
+      else if (maxDim >= 1920 || minDim >= 1080) resolutionTier = '1080p HD';
+      else if (maxDim >= 1280 || minDim >= 720) resolutionTier = '720p HD';
+      else resolutionTier = 'SD';
+    }
 
     const durationSec = tags.Duration ? (typeof tags.Duration === 'number' ? Math.round(tags.Duration) : Math.round(parseFloat(tags.Duration))) : null;
     let formattedDuration = null;
@@ -132,6 +141,7 @@ async function extractServerSideMetadata(filePathOrUrl) {
       ...(iso ? { iso: String(iso).trim() } : {}),
       ...(focalLength ? { focalLength: String(focalLength).trim() } : {}),
       ...(resolution ? { resolution } : {}),
+      ...(resolutionTier ? { resolutionTier, resolution_tier: resolutionTier } : {}),
       ...(orientation ? { orientation } : {}),
       ...(megapixels ? { megapixels } : {}),
       ...(width ? { width } : {}),
