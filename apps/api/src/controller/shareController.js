@@ -127,6 +127,28 @@ async function createShareLink(req, reply) {
     const appBase = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
     const publicUrl = `${appBase.replace(/\/$/, '')}/s/${recipientToken}`;
 
+    // 5. Create System activity log in Annotation table
+    try {
+      const userName = user?.name || user?.email || 'User';
+      const accessLabel = visibility === 'public' ? 'a public share link' : 'a password-protected share link';
+      await prisma.annotation.create({
+        data: {
+          orgId,
+          assetId,
+          userId: user?.id || null,
+          type: 'system',
+          data: {
+            action: 'SHARE_CREATED',
+            text: `${userName} created ${accessLabel}`,
+            authorName: userName,
+            visibility,
+          }
+        }
+      });
+    } catch (logErr) {
+      req.log.error('Failed to log system share annotation', logErr);
+    }
+
     return reply.code(201).send({
       success: true,
       message: mode === 'email' ? `Invite sent to ${email}` : 'Share link created',
@@ -228,6 +250,25 @@ async function updateShareLink(req, reply) {
       }
     });
 
+    try {
+      const userName = req.user?.name || req.user?.email || 'User';
+      await prisma.annotation.create({
+        data: {
+          orgId: updated.orgId,
+          assetId: updated.assetId,
+          userId: req.user?.id || null,
+          type: 'system',
+          data: {
+            action: 'SHARE_UPDATED',
+            text: `${userName} updated share link settings`,
+            authorName: userName,
+          }
+        }
+      });
+    } catch (logErr) {
+      req.log.error('Failed to log system share update annotation', logErr);
+    }
+
     return reply.send({ success: true, message: 'Share link updated successfully', shareLink: updated });
   } catch (error) {
     req.log.error(error);
@@ -250,6 +291,25 @@ async function deleteShareLink(req, reply) {
     });
 
     if (shareLink) {
+      try {
+        const userName = req.user?.name || req.user?.email || 'User';
+        await prisma.annotation.create({
+          data: {
+            orgId: shareLink.orgId,
+            assetId: shareLink.assetId,
+            userId: req.user?.id || null,
+            type: 'system',
+            data: {
+              action: 'SHARE_REVOKED',
+              text: `${userName} revoked a share link`,
+              authorName: userName,
+            }
+          }
+        });
+      } catch (logErr) {
+        req.log.error('Failed to log system share revoke annotation', logErr);
+      }
+
       await prisma.shareLinkRecipient.deleteMany({
         where: { shareLinkId: targetId },
       });
@@ -403,6 +463,16 @@ async function validateShareToken(req, reply) {
       }
     }
 
+    const originalFile = asset?.files?.find(f => f.fileClass === 'original');
+    const techSpecs = asset?.metadata?.technicalSpecs || {};
+    const customProps = asset?.metadata?.customProperties || {};
+    const width = techSpecs.width || customProps.width;
+    const height = techSpecs.height || customProps.height;
+    const resTier = (width && height) ? (Math.max(width, height) >= 3840 ? '4K' : Math.max(width, height) >= 2560 ? '2K' : Math.max(width, height) >= 1920 ? '1080p' : Math.max(width, height) >= 1280 ? '720p' : 'SD') : undefined;
+    const fpsVal = techSpecs.fps || customProps.fps;
+    const durationVal = techSpecs.durationSeconds || techSpecs.duration || customProps.durationSeconds || customProps.duration;
+    const fileSizeVal = Number(originalFile?.sizeBytes || asset?.fileSize || 0);
+
     return reply.send({
       valid: true,
       requiresPassword: Boolean(shareLink.passwordHash),
@@ -416,7 +486,12 @@ async function validateShareToken(req, reply) {
         fileType: asset ? (asset.type || asset.fileType || 'video') : 'video',
         type: asset ? (asset.type || 'video') : 'video',
         mimeType: asset ? asset.mimeType : undefined,
-        fileSize: asset ? Number(asset.fileSize || 0) : 0,
+        fileSize: fileSizeVal,
+        file_size: fileSizeVal,
+        resolution_tier: resTier,
+        resolutionTier: resTier,
+        fps: fpsVal,
+        duration: durationVal,
         logoUrl: logoUrl,
         organizationName: shareLink.organization?.name || null,
       },
@@ -529,6 +604,11 @@ async function getShareAnnotations(req, reply) {
 
     const formatted = annotations.map((ann) => ({
       ...ann,
+      readByUsers: ann.data?.readByUsers || [],
+      unread: Boolean(
+        (ann.guestName || ann.guestEmail || ann.data?.guestEmail) &&
+        !(ann.data?.readByUsers || []).length
+      ),
       videoTimestamp: ann.videoTimestamp ? Number(ann.videoTimestamp) : (ann.data?.videoTimestamp ? Number(ann.data.videoTimestamp) : null),
       author: ann.user ? {
         name: ann.user.name || 'Member',

@@ -53,7 +53,7 @@ async function enforceWorkspaceFolderStructure(prisma, ownerType, ownerId) {
     // Verify the workspace actually exists
     const workspace = await prisma.workspace.findUnique({ where: { id: ownerId } });
     if (!workspace) {
-      return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId };
+      return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId, resolvedWorkspaceId: ownerId };
     }
 
     const tzSetting = await prisma.systemTimezone.findFirst({
@@ -103,9 +103,35 @@ async function enforceWorkspaceFolderStructure(prisma, ownerType, ownerId) {
       });
     }
 
-    return { resolvedOwnerType: 'FOLDER', resolvedOwnerId: monthFolder.id, resolvedFolderName: monthFolder.name };
+    return { resolvedOwnerType: 'FOLDER', resolvedOwnerId: monthFolder.id, resolvedFolderName: monthFolder.name, resolvedWorkspaceId: ownerId };
   }
-  return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId, resolvedFolderName: null };
+
+  // ownerType === 'FOLDER' — resolve workspaceId from the folder record
+  let resolvedWorkspaceId = null;
+  if (ownerType === 'FOLDER' && ownerId) {
+    try {
+      const folder = await prisma.folder.findUnique({ where: { id: ownerId }, select: { workspaceId: true } });
+      if (folder) resolvedWorkspaceId = folder.workspaceId;
+    } catch (_) { /* best-effort */ }
+  }
+
+  return { resolvedOwnerType: ownerType, resolvedOwnerId: ownerId, resolvedFolderName: null, resolvedWorkspaceId };
+}
+
+/**
+ * Derive the workspaceId for an asset given its ownerType and ownerId.
+ * - WORKSPACE owner  → workspaceId = ownerId
+ * - FOLDER owner     → workspaceId = folder.workspaceId
+ */
+async function resolveWorkspaceId(prisma, ownerType, ownerId) {
+  if (ownerType === 'WORKSPACE') return ownerId;
+  if (ownerType === 'FOLDER' && ownerId) {
+    try {
+      const folder = await prisma.folder.findUnique({ where: { id: ownerId }, select: { workspaceId: true } });
+      return folder ? folder.workspaceId : null;
+    } catch (_) { return null; }
+  }
+  return null;
 }
 
 function sanitizeB2ErrorMessage(message) {
@@ -221,6 +247,19 @@ function inferMimeType(filename = "") {
   if (ext.endsWith(".aep")) return "application/vnd.adobe.aftereffects.project";
   if (ext.endsWith(".fcp") || ext.endsWith(".fcpxmld")) return "application/x-final-cut-pro";
   return "application/octet-stream";
+}
+
+function computeResolutionTier(width, height) {
+  const w = Number(width || 0);
+  const h = Number(height || 0);
+  if (!w || !h) return undefined;
+  const maxDim = Math.max(w, h);
+  const minDim = Math.min(w, h);
+  if (maxDim >= 3840 || minDim >= 2160) return '4K';
+  if (maxDim >= 2560 || minDim >= 1440) return '2K';
+  if (maxDim >= 1920 || minDim >= 1080) return '1080p';
+  if (maxDim >= 1280 || minDim >= 720) return '720p';
+  return 'SD';
 }
 
 function toFrontendAssetShape(asset) {
@@ -798,11 +837,11 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       return reply.send(mediaStream.stream);
     } catch (b2ProxyErr) {
       console.error(`B2 Proxy streaming error for ${b2Key}:`, b2ProxyErr.message);
-      const freshUrl = await b2Storage.getPresignedUrl(b2Key);
-      if (freshUrl) {
-        console.log(`Fallback redirecting request for ${filename} to fresh B2 URL`);
-        return reply.code(307).redirect(freshUrl);
-      }
+      return reply.code(502).send({
+        success: false,
+        error: "Bad Gateway",
+        message: "Failed to stream media from cloud storage proxy",
+      });
     }
   }
 
@@ -941,27 +980,48 @@ module.exports.getMediaAssets = async (request, reply) => {
           ? asset.aiTags
           : (Array.isArray(customProps.tags) ? customProps.tags : []));
 
+      const techSpecs = asset.metadata?.technicalSpecs || {};
+      const width = techSpecs.width || customProps.width;
+      const height = techSpecs.height || customProps.height;
+      const resTier = computeResolutionTier(width, height);
+      const fpsVal = techSpecs.fps || customProps.fps;
+      const durationVal = techSpecs.durationSeconds || techSpecs.duration || customProps.durationSeconds || customProps.duration;
+      const fileSizeVal = Number(originalFile?.sizeBytes || 0);
+
       return {
         id: asset.id,
         name: asset.title,
         path: proxyFile ? proxyFile.filePath : originalFile?.filePath || '',
         type: determineAssetType(asset, originalFile),
-        size: Number(originalFile?.sizeBytes || 0),
+        size: fileSizeVal,
+        file_size: fileSizeVal,
+        resolution_tier: resTier,
+        resolutionTier: resTier,
+        fps: fpsVal,
+        duration: durationVal,
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
         thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
         uploadedBy: asset.uploadedBy || null,
         tags: tagList,
         metadata: {
-          duration: asset.metadata?.technicalSpecs?.durationSeconds,
+          duration: durationVal,
+          resolution_tier: resTier,
+          fps: fpsVal,
           b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
           storageLocation: 'b2',
-          technicalSpecs: asset.metadata?.technicalSpecs || {}
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          }
         },
         status: asset.status,
         customMetadata: {
-          ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
-          technicalSpecs: asset.metadata?.technicalSpecs || {},
+          ...customProps,
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          },
           originalFilePath: originalFile?.filePath,
           transcodingProgress: transcodeJob?.status === 'processing'
             ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
@@ -1072,6 +1132,21 @@ module.exports.searchMediaAssets = async (request, reply) => {
 module.exports.fileStreamPreview = async (request, reply) => {
   try {
     const { filename } = request.params;
+
+    // Validate Stream Token if provided in query parameters (e.g. ?token=... or ?streamToken=...)
+    const token = request.query?.token || request.query?.streamToken;
+    if (token) {
+      try {
+        request.server.jwt.verify(token);
+      } catch (tokenErr) {
+        return reply.code(401).send({
+          success: false,
+          error: "Unauthorized",
+          message: "Stream token expired or invalid",
+        });
+      }
+    }
+
     return await handleMediaRedirectOrServe(request, reply, filename, false);
   } catch (error) {
     return reply.code(500).send({
@@ -1092,6 +1167,20 @@ module.exports.getThumbnail = async (request, reply) => {
       return reply.code(404).send({ error: "Invalid Asset ID" });
     }
 
+    // Validate token if provided
+    const token = request.query?.token || request.query?.streamToken;
+    if (token) {
+      try {
+        request.server.jwt.verify(token);
+      } catch (tokenErr) {
+        return reply.code(401).send({
+          success: false,
+          error: "Unauthorized",
+          message: "Stream token expired or invalid",
+        });
+      }
+    }
+
     const asset = await request.server.prisma.asset.findUnique({
       where: { id },
       include: { files: true }
@@ -1108,8 +1197,15 @@ module.exports.getThumbnail = async (request, reply) => {
     if (proxyFile) {
       const proxyThumbKey = `${proxyFile.filePath}_thumb1.jpg`;
       if (b2Storage.isEnabled()) {
-        const freshUrl = await b2Storage.getPresignedUrl(proxyThumbKey);
-        if (freshUrl) return reply.code(307).redirect(freshUrl);
+        try {
+          const mediaStream = await b2Storage.getB2MediaStream(proxyThumbKey);
+          reply.header("Accept-Ranges", "bytes");
+          reply.type("image/jpeg");
+          reply.code(200);
+          return reply.send(mediaStream.stream);
+        } catch (err) {
+          console.warn(`B2 Proxy thumbnail stream fallback for ${proxyThumbKey}:`, err.message);
+        }
       }
       const localProxyThumb = path.join(getUploadsDir(), proxyThumbKey);
       if (fs.existsSync(localProxyThumb)) {
@@ -1122,10 +1218,6 @@ module.exports.getThumbnail = async (request, reply) => {
 
     // 2. Standard web images (jpg, png, webp, gif, svg)
     if (asset.type === 'image' && !NON_WEB_IMAGE_EXTS.has(ext)) {
-      if (b2Storage.isEnabled()) {
-        const freshUrl = await b2Storage.getPresignedUrl(filePath);
-        if (freshUrl) return reply.code(307).redirect(freshUrl);
-      }
       return await handleMediaRedirectOrServe(request, reply, filePath, false);
     }
 
@@ -1736,6 +1828,9 @@ module.exports.uploadMediaFile = async (request, reply) => {
         let reqOwnerType = request.query.ownerType || "WORKSPACE";
         let reqOwnerId = request.query.ownerId || request.user.orgId;
         const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
+        // Derive workspaceId — always store it directly on the asset
+        const uploadWorkspaceId = resolved.resolvedWorkspaceId ||
+          await resolveWorkspaceId(request.server.prisma, resolved.resolvedOwnerType, resolved.resolvedOwnerId);
         // Write to the New Architecture
         const newAsset = await request.server.prisma.asset.create({
           data: {
@@ -1746,6 +1841,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             uploadedByUserId: request.user.id,
             ownerType: resolved.resolvedOwnerType,
             ownerId: resolved.resolvedOwnerId,
+            workspaceId: uploadWorkspaceId,
             files: {
               create: {
                 fileClass: "original",
@@ -2477,6 +2573,9 @@ module.exports.completeResumableUpload = async (request, reply) => {
     let reqOwnerType = session.ownerType || "WORKSPACE";
     let reqOwnerId = session.ownerId || request.user.orgId;
     const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
+    // Derive workspaceId — always store it directly on the asset
+    const uploadWorkspaceId = resolved.resolvedWorkspaceId ||
+      await resolveWorkspaceId(request.server.prisma, resolved.resolvedOwnerType, resolved.resolvedOwnerId);
 
     // Save the asset metadata in PostgreSQL via Prisma (New Architecture)
     const newAsset = await request.server.prisma.asset.create({
@@ -2488,6 +2587,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
         uploadedByUserId: request.user.id,
         ownerType: resolved.resolvedOwnerType,
         ownerId: resolved.resolvedOwnerId,
+        workspaceId: uploadWorkspaceId,
         files: {
           create: {
             fileClass: "original",
@@ -3207,7 +3307,20 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
       where: { assetId }
     });
 
-    return reply.send({ success: true, overrides: assetUsers });
+    const assetGroups = await request.server.prisma.assetGroup.findMany({
+      where: { assetId },
+      include: {
+        group: {
+          include: {
+            members: {
+              select: { userId: true }
+            }
+          }
+        }
+      }
+    });
+
+    return reply.send({ success: true, overrides: assetUsers, groupOverrides: assetGroups });
   } catch (error) {
     console.error("Failed to fetch asset access overrides:", error);
     return reply.status(500).send({ success: false, error: error.message });
@@ -3293,6 +3406,85 @@ module.exports.removeAssetAccessOverride = async (request, reply) => {
   }
 };
 
+module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
+  try {
+    const { id: assetId, groupId: targetGroupId } = request.params;
+    const { accessLevel } = request.body;
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      select: { uploadedByUserId: true, orgId: true }
+    });
+
+    if (!asset) {
+      return reply.status(404).send({ success: false, error: "Asset not found" });
+    }
+
+    const isOwner = asset.uploadedByUserId === request.user.id;
+    const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
+
+    if (!isOwner && !isAdmin) {
+      return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
+    }
+
+    const override = await request.server.prisma.assetGroup.upsert({
+      where: {
+        assetId_groupId: {
+          assetId,
+          groupId: targetGroupId
+        }
+      },
+      update: {
+        accessLevel
+      },
+      create: {
+        assetId,
+        groupId: targetGroupId,
+        accessLevel
+      }
+    });
+
+    return reply.send({ success: true, override });
+  } catch (error) {
+    console.error("Failed to update asset group access override:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+module.exports.removeAssetGroupAccessOverride = async (request, reply) => {
+  try {
+    const { id: assetId, groupId: targetGroupId } = request.params;
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      select: { uploadedByUserId: true, orgId: true }
+    });
+
+    if (!asset) {
+      return reply.status(404).send({ success: false, error: "Asset not found" });
+    }
+
+    const isOwner = asset.uploadedByUserId === request.user.id;
+    const isAdmin = request.user.role === 'Admin' || request.user.role === 'Super Admin';
+
+    if (!isOwner && !isAdmin) {
+      return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can remove access." });
+    }
+
+    await request.server.prisma.assetGroup.deleteMany({
+      where: {
+        assetId,
+        groupId: targetGroupId
+      }
+    });
+
+    return reply.send({ success: true, message: "Group override removed" });
+  } catch (error) {
+    console.error("Failed to remove asset group access override:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
 module.exports.getSharedMediaAssets = async (request, reply) => {
   try {
     const userId = request.user?.id;
@@ -3304,11 +3496,28 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
     const dbAssets = await request.server.prisma.asset.findMany({
       where: {
         deletedAt: null,
-        users: {
-          some: {
-            userId: userId
+        OR: [
+          {
+            users: {
+              some: {
+                userId: userId
+              }
+            }
+          },
+          {
+            assetGroups: {
+              some: {
+                group: {
+                  members: {
+                    some: {
+                      userId: userId
+                    }
+                  }
+                }
+              }
+            }
           }
-        },
+        ],
         uploadedByUserId: {
           not: userId
         }
@@ -3359,27 +3568,48 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
           ? asset.aiTags
           : (Array.isArray(customProps.tags) ? customProps.tags : []));
 
+      const techSpecs = asset.metadata?.technicalSpecs || {};
+      const width = techSpecs.width || customProps.width;
+      const height = techSpecs.height || customProps.height;
+      const resTier = computeResolutionTier(width, height);
+      const fpsVal = techSpecs.fps || customProps.fps;
+      const durationVal = techSpecs.durationSeconds || techSpecs.duration || customProps.durationSeconds || customProps.duration;
+      const fileSizeVal = Number(originalFile?.sizeBytes || 0);
+
       return {
         id: asset.id,
         name: asset.title,
         path: proxyFile ? proxyFile.filePath : originalFile?.filePath || '',
         type: determineAssetTypeInline(asset, originalFile),
-        size: Number(originalFile?.sizeBytes || 0),
+        size: fileSizeVal,
+        file_size: fileSizeVal,
+        resolution_tier: resTier,
+        resolutionTier: resTier,
+        fps: fpsVal,
+        duration: durationVal,
         uploadDate: asset.createdAt.toISOString(),
         url: fileUrl,
         thumbnail: `/api/media/${encodeURIComponent(asset.id)}/thumbnail`,
         uploadedBy: asset.uploadedBy || null,
         tags: tagList,
         metadata: {
-          duration: asset.metadata?.technicalSpecs?.durationSeconds,
+          duration: durationVal,
+          resolution_tier: resTier,
+          fps: fpsVal,
           b2Key: proxyFile ? proxyFile.filePath : originalFile?.filePath,
           storageLocation: 'b2',
-          technicalSpecs: asset.metadata?.technicalSpecs || {}
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          }
         },
         status: asset.status,
         customMetadata: {
-          ...(asset.metadata?.customProperties ? (typeof asset.metadata.customProperties === 'string' ? JSON.parse(asset.metadata.customProperties) : asset.metadata.customProperties) : {}),
-          technicalSpecs: asset.metadata?.technicalSpecs || {},
+          ...customProps,
+          technicalSpecs: {
+            ...techSpecs,
+            resolution_tier: resTier,
+          },
           originalFilePath: originalFile?.filePath,
           transcodingProgress: transcodeJob?.status === 'processing'
             ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
@@ -3448,13 +3678,9 @@ module.exports.moveMediaFile = async (request, reply) => {
       newWorkspaceId = workspaceId;
     }
 
-    let oldWorkspaceId;
-    if (asset.ownerType === 'WORKSPACE') {
-      oldWorkspaceId = asset.ownerId;
-    } else if (asset.ownerType === 'FOLDER') {
-      const oldFolder = await prisma.folder.findUnique({ where: { id: asset.ownerId } });
-      if (oldFolder) oldWorkspaceId = oldFolder.workspaceId;
-    }
+    // Use the stored workspaceId directly (always populated since the new column was added)
+    const oldWorkspaceId = asset.workspaceId ||
+      (asset.ownerType === 'WORKSPACE' ? asset.ownerId : null); // fallback for any legacy rows
 
     if (oldWorkspaceId && newWorkspaceId && oldWorkspaceId !== newWorkspaceId) {
       // It moved to a different workspace.
@@ -3485,7 +3711,8 @@ module.exports.moveMediaFile = async (request, reply) => {
       where: { id },
       data: {
         ownerType: newOwnerType,
-        ownerId: newOwnerId
+        ownerId: newOwnerId,
+        workspaceId: newWorkspaceId
       }
     });
 

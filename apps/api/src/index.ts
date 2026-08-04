@@ -322,6 +322,7 @@ async function setupServer() {
     fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
     fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
     fastify.register(require('./routes/share-routes'), { prefix: '/api' });
+    fastify.register(require('./routes/user-groups'), { prefix: '/api' });
     fastify.register(require('./routes/tags'), { prefix: '/api/tags' });
 
     console.log('All routes registerd successfully')

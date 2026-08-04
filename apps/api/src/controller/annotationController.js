@@ -54,6 +54,11 @@ module.exports.getMediaAnnotations = async (request, reply) => {
                     initials: ((ann.guestName || ann.data?.guestName || ann.guestEmail || ann.data?.guestEmail || 'G')[0] || 'G').toUpperCase(),
                     isGuest: true,
                 } : null),
+                readByUsers: ann.data?.readByUsers || [],
+                unread: Boolean(
+                    ((ann.userId && ann.userId !== userId) || (!ann.userId && (ann.guestName || ann.guestEmail || ann.data?.guestEmail))) &&
+                    !(ann.data?.readByUsers || []).includes(userId)
+                ),
                 createdAt: ann.createdAt,
                 updatedAt: ann.updatedAt, 
             })),    
@@ -68,7 +73,6 @@ module.exports.getMediaAnnotations = async (request, reply) => {
     }
 }
 
-// Save Annotations Media
 module.exports.saveMediaAnnotations = async (request, reply) => {
     try {
         const { mediaId } = request.params;
@@ -111,7 +115,7 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
         // --- SENDGRID EMAIL NOTIFICATIONS ---
         // Fire asynchronously to avoid blocking the response
         if (data && data.text && data.text.trim().length > 0) {
-            (async () => {
+            await (async () => {
                 try {
                     const commentText = data.text;
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
@@ -135,13 +139,18 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                     const commenterName = commenter?.name || 'A team member';
                     const mediaType = video.type === 'audio' ? 'audio' : video.type === 'image' ? 'image' : 'video';
                     const videoName = video.title || `a ${mediaType}`;
-                    const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+                    const appBaseUrl = request.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
                     const videoUrl = `${appBaseUrl.replace(/\/$/, '')}/media/${mediaId}`;
 
-                    // Fetch organization users to check for @mentions
+                    // Fetch organization users and groups to check for @mentions
                     const orgUsers = await request.server.prisma.user.findMany({
                         where: { orgId: orgId },
                         select: { id: true, name: true, email: true }
+                    });
+
+                    const orgGroups = await request.server.prisma.userGroup.findMany({
+                        where: { orgId: orgId },
+                        include: { members: { include: { user: true } } }
                     });
 
                     // Find who is mentioned in commentText (e.g. "@Anil Jangra")
@@ -152,8 +161,28 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                         return mentionPattern.test(commentText);
                     });
 
-                    if (mentionedUsers.length > 0) {
-                        for (const u of mentionedUsers) {
+                    // Find if any groups are mentioned (e.g. "@Artist Team")
+                    const mentionedGroups = orgGroups.filter(g => {
+                        if (!g.name) return false;
+                        const nameEscaped = escapeRegExp(g.name);
+                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
+                        return mentionPattern.test(commentText);
+                    });
+
+                    // Combine them uniquely, excluding the commenter
+                    let allUsersToNotify = [...mentionedUsers];
+                    for (const group of mentionedGroups) {
+                        for (const member of group.members) {
+                            if (member.user && member.user.id !== userId && !allUsersToNotify.some(u => u.id === member.user.id)) {
+                                allUsersToNotify.push(member.user);
+                            }
+                        }
+                    }
+
+
+
+                    if (allUsersToNotify.length > 0) {
+                        for (const u of allUsersToNotify) {
                             await emailService.sendMentionNotificationEmail(
                                 u.email,
                                 u.name || 'User',
@@ -245,7 +274,7 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
 
         // --- SENDGRID EMAIL NOTIFICATIONS (For Comments added to existing shapes) ---
         if (data && data.text && data.text.trim().length > 0 && data.text !== (existing.data?.text || '')) {
-            (async () => {
+            await (async () => {
                 try {
                     const commentText = data.text;
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
@@ -269,13 +298,18 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                     const commenterName = commenter?.name || 'A team member';
                     const mediaType = video.type === 'audio' ? 'audio' : video.type === 'image' ? 'image' : 'video';
                     const videoName = video.title || `a ${mediaType}`;
-                    const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+                    const appBaseUrl = request.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
                     const videoUrl = `${appBaseUrl.replace(/\/$/, '')}/media/${existing.assetId}`;
 
-                    // Fetch organization users to check for @mentions
+                    // Fetch organization users and groups to check for @mentions
                     const orgUsers = await request.server.prisma.user.findMany({
                         where: { orgId: request.user.orgId },
                         select: { id: true, name: true, email: true }
+                    });
+
+                    const orgGroups = await request.server.prisma.userGroup.findMany({
+                        where: { orgId: request.user.orgId },
+                        include: { members: { include: { user: true } } }
                     });
 
                     // Find who is mentioned in commentText (e.g. "@Anil Jangra")
@@ -286,8 +320,28 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                         return mentionPattern.test(commentText);
                     });
 
-                    if (mentionedUsers.length > 0) {
-                        for (const u of mentionedUsers) {
+                    // Find if any groups are mentioned (e.g. "@Artist Team")
+                    const mentionedGroups = orgGroups.filter(g => {
+                        if (!g.name) return false;
+                        const nameEscaped = escapeRegExp(g.name);
+                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
+                        return mentionPattern.test(commentText);
+                    });
+
+                    // Combine them uniquely, excluding the commenter
+                    let allUsersToNotify = [...mentionedUsers];
+                    for (const group of mentionedGroups) {
+                        for (const member of group.members) {
+                            if (member.user && member.user.id !== userId && !allUsersToNotify.some(u => u.id === member.user.id)) {
+                                allUsersToNotify.push(member.user);
+                            }
+                        }
+                    }
+
+
+
+                    if (allUsersToNotify.length > 0) {
+                        for (const u of allUsersToNotify) {
                             await emailService.sendMentionNotificationEmail(
                                 u.email,
                                 u.name || 'User',
@@ -623,6 +677,58 @@ module.exports.updateAnnotationGroup = async (request, reply) => {
             success: false,
             error: "Failed to update annotation group",
             message: error.message
+        });
+    }
+};
+
+module.exports.markAnnotationRead = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const userId = request.user.id;
+        const { unread } = request.body || {};
+
+        const existing = await request.server.prisma.annotation.findUnique({
+            where: { id }
+        });
+
+        if (!existing) {
+            return reply.code(404).send({ success: false, error: 'Annotation not found' });
+        }
+
+        const currentData = existing.data || {};
+        const readByUsers = Array.isArray(currentData.readByUsers) ? [...currentData.readByUsers] : [];
+
+        let updatedUsers = readByUsers;
+        if (unread) {
+            updatedUsers = readByUsers.filter((uId) => uId !== userId);
+        } else {
+            if (!readByUsers.includes(userId)) {
+                updatedUsers.push(userId);
+            }
+        }
+
+        const updated = await request.server.prisma.annotation.update({
+            where: { id },
+            data: {
+                data: {
+                    ...currentData,
+                    readByUsers: updatedUsers,
+                }
+            }
+        });
+
+        return reply.code(200).send({
+            success: true,
+            annotationId: id,
+            unread: !!unread,
+            readByUsers: updatedUsers,
+        });
+    } catch (error) {
+        request.log.error(error);
+        return reply.code(500).send({
+            success: false,
+            error: 'Failed to mark annotation read state',
+            message: error.message,
         });
     }
 };
