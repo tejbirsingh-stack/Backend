@@ -266,7 +266,7 @@ async function setupServer() {
       error: error.message,
       stack: error.stack,
       url: request.url,
-      method: request.method
+      method: request.method 
     });
 
     // Increment error metrics

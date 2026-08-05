@@ -139,6 +139,28 @@ class AuthService {
     };
   }
 
+  // Validate password rules (min 8 chars, max 255 chars, uppercase, lowercase, number)
+  validatePassword(password) {
+    if (!password || typeof password !== "string") {
+      return { isValid: false, message: "Password is required." };
+    }
+    const trimmed = password.trim();
+    if (trimmed.length < 8) {
+      return { isValid: false, message: "Password must be at least 8 characters long." };
+    }
+    if (trimmed.length > 255) {
+      return { isValid: false, message: "Password cannot exceed 255 characters." };
+    }
+    const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
+    if (!passwordPattern.test(trimmed)) {
+      return {
+        isValid: false,
+        message: "Password must include at least one uppercase letter, one lowercase letter, and a number."
+      };
+    }
+    return { isValid: true };
+  }
+
   // Find a user by email
   async findUserByEmail(email) {
     const user = await prisma.user.findUnique({
@@ -154,6 +176,8 @@ class AuthService {
         mfaEnabled: true,
         status: true,
         emailVerified: true,
+        timezone: true,
+        avatarUrl: true,
         organization: {
           select: {
             id: true,
@@ -197,6 +221,8 @@ class AuthService {
         roleId: true,
         status: true,
         emailVerified: true,
+        timezone: true,
+        avatarUrl: true,
         roleRelation: {
           select: {
             id: true,

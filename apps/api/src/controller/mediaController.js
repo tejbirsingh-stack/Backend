@@ -1826,7 +1826,22 @@ module.exports.uploadMediaFile = async (request, reply) => {
         }
 
         let reqOwnerType = request.query.ownerType || "WORKSPACE";
-        let reqOwnerId = request.query.ownerId || request.user.orgId;
+        let reqOwnerId = request.query.ownerId;
+        if (!reqOwnerId || reqOwnerId === request.user?.orgId) {
+          if (request.user?.orgId) {
+            const primaryWorkspace = await request.server.prisma.workspace.findFirst({
+              where: { orgId: request.user.orgId },
+              select: { id: true }
+            });
+            if (primaryWorkspace) {
+              reqOwnerId = primaryWorkspace.id;
+            } else {
+              reqOwnerId = request.user.orgId;
+            }
+          } else {
+            reqOwnerId = request.user?.orgId;
+          }
+        }
         const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
         // Derive workspaceId — always store it directly on the asset
         const uploadWorkspaceId = resolved.resolvedWorkspaceId ||
@@ -1841,7 +1856,6 @@ module.exports.uploadMediaFile = async (request, reply) => {
             uploadedByUserId: request.user.id,
             ownerType: resolved.resolvedOwnerType,
             ownerId: resolved.resolvedOwnerId,
-            workspaceId: uploadWorkspaceId,
             files: {
               create: {
                 fileClass: "original",
@@ -2571,7 +2585,22 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const assetSummary = summary || session.summary || "";
 
     let reqOwnerType = session.ownerType || "WORKSPACE";
-    let reqOwnerId = session.ownerId || request.user.orgId;
+    let reqOwnerId = session.ownerId;
+    if (!reqOwnerId || reqOwnerId === request.user?.orgId) {
+      if (request.user?.orgId) {
+        const primaryWorkspace = await request.server.prisma.workspace.findFirst({
+          where: { orgId: request.user.orgId },
+          select: { id: true }
+        });
+        if (primaryWorkspace) {
+          reqOwnerId = primaryWorkspace.id;
+        } else {
+          reqOwnerId = request.user.orgId;
+        }
+      } else {
+        reqOwnerId = request.user?.orgId;
+      }
+    }
     const resolved = await enforceWorkspaceFolderStructure(request.server.prisma, reqOwnerType, reqOwnerId);
     // Derive workspaceId — always store it directly on the asset
     const uploadWorkspaceId = resolved.resolvedWorkspaceId ||
@@ -2587,7 +2616,6 @@ module.exports.completeResumableUpload = async (request, reply) => {
         uploadedByUserId: request.user.id,
         ownerType: resolved.resolvedOwnerType,
         ownerId: resolved.resolvedOwnerId,
-        workspaceId: uploadWorkspaceId,
         files: {
           create: {
             fileClass: "original",
