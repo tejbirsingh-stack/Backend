@@ -2205,7 +2205,7 @@ async function performInstantDuplicateCheck(assetId, prisma) {
     for (const match of exactMatches) {
       if (asset.metadata?.checksum && match.metadata?.checksum) {
         if (asset.metadata.checksum === match.metadata.checksum) {
-           duplicateOf.push(match.id);
+          duplicateOf.push(match.id);
         }
       } else {
         duplicateOf.push(match.id);
@@ -2878,51 +2878,51 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
           // Tier 3: Storyboard pHash (The Visual Math)
           const baseKey = compressedKey || originalFile?.filePath;
 
-        if (baseKey) {
-          // 1. Download and Hash the 5 thumbnails Coconut just created
-          for (let i = 1; i <= 5; i++) {
-            const thumbKey = `${baseKey}_thumb${i}.jpg`;
-            const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600); // 1-hour link
+          if (baseKey) {
+            // 1. Download and Hash the 5 thumbnails Coconut just created
+            for (let i = 1; i <= 5; i++) {
+              const thumbKey = `${baseKey}_thumb${i}.jpg`;
+              const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600); // 1-hour link
 
-            if (thumbUrl) {
-              try {
-                let fetchResponse = null;
-                for (let attempt = 1; attempt <= 3; attempt++) {
-                  const res = await fetch(thumbUrl);
-                  if (res.ok) {
-                    fetchResponse = res;
-                    break;
+              if (thumbUrl) {
+                try {
+                  let fetchResponse = null;
+                  for (let attempt = 1; attempt <= 3; attempt++) {
+                    const res = await fetch(thumbUrl);
+                    if (res.ok) {
+                      fetchResponse = res;
+                      break;
+                    }
+                    if (res.status === 404 && attempt < 3) {
+                      await new Promise(resolve => setTimeout(resolve, 1500));
+                    } else {
+                      throw new Error(`Failed to fetch thumbnail (Status: ${res.status})`);
+                    }
                   }
-                  if (res.status === 404 && attempt < 3) {
-                    await new Promise(resolve => setTimeout(resolve, 1500));
-                  } else {
-                    throw new Error(`Failed to fetch thumbnail (Status: ${res.status})`);
-                  }
+
+                  if (!fetchResponse) throw new Error("Thumbnail not found in B2 after 3 attempts");
+
+                  const arrayBuffer = await fetchResponse.arrayBuffer();
+                  const buffer = Buffer.from(arrayBuffer);
+
+                  const hashStr = await imageHashAsync({ data: buffer, name: 'thumb.jpg' }, 16, true);
+
+                  await request.server.prisma.videoFrameHash.create({
+                    data: {
+                      assetId: newAssetId,
+                      frameIndex: i,
+                      hashValue: hashStr
+                    }
+                  });
+                } catch (e) {
+                  console.error(`[Webhook] Failed to hash thumb ${i}:`, e.message);
                 }
-
-                if (!fetchResponse) throw new Error("Thumbnail not found in B2 after 3 attempts");
-
-                const arrayBuffer = await fetchResponse.arrayBuffer();
-                const buffer = Buffer.from(arrayBuffer);
-
-                const hashStr = await imageHashAsync({ data: buffer, name: 'thumb.jpg' }, 16, true);
-
-                await request.server.prisma.videoFrameHash.create({
-                  data: {
-                    assetId: newAssetId,
-                    frameIndex: i,
-                    hashValue: hashStr
-                  }
-                });
-              } catch (e) {
-                console.error(`[Webhook] Failed to hash thumb ${i}:`, e.message);
               }
             }
-          }
 
-          // 2. PostgreSQL Hamming Distance Calculation
-          if (suspectIds.length > 0) {
-            const duplicateMatches = await request.server.prisma.$queryRawUnsafe(`
+            // 2. PostgreSQL Hamming Distance Calculation
+            if (suspectIds.length > 0) {
+              const duplicateMatches = await request.server.prisma.$queryRawUnsafe(`
               SELECT vfh."assetId", COUNT(*) as match_count
               FROM video_frame_hashes vfh
               JOIN video_frame_hashes new_vfh ON new_vfh."frameIndex" = vfh."frameIndex"
@@ -2933,9 +2933,9 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
               HAVING COUNT(*) >= 3
             `, newAssetId, suspectIds);
 
-            duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
+              duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
+            }
           }
-        }
         } // End of video Tier 3
       }
 
@@ -3474,9 +3474,9 @@ module.exports.moveMediaFile = async (request, reply) => {
       const workspace = await prisma.workspace.findFirst({
         where: { id: workspaceId, orgId }
       });
-      if (!workspace) {
+      if (!workspace)
         return reply.code(404).send({ success: false, message: 'Target workspace not found.' });
-      }
+
       newOwnerType = 'WORKSPACE';
       newOwnerId = workspaceId;
       newWorkspaceId = workspaceId;
@@ -3496,18 +3496,18 @@ module.exports.moveMediaFile = async (request, reply) => {
 
       // 2. Remove tags that are specific to the old workspace (project-scoped tags)
       const projectTagsToWipe = await prisma.tag.findMany({
-          where: { scope: 'project' },
-          select: { id: true }
+        where: { scope: 'project' },
+        select: { id: true }
       });
       const projectTagIds = projectTagsToWipe.map(t => t.id);
 
       if (projectTagIds.length > 0) {
-          await prisma.assetTag.deleteMany({
-              where: {
-                  assetId: id,
-                  tagId: { in: projectTagIds }
-              }
-          });
+        await prisma.assetTag.deleteMany({
+          where: {
+            assetId: id,
+            tagId: { in: projectTagIds }
+          }
+        });
       }
     }
 

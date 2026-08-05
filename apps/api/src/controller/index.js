@@ -15,4 +15,5 @@ module.exports = {
   ...require('./workSpaceController'),
   ...require('./favoritesController'),
   ...require('./tagController'),
+  ...require('./libraryController'),
 };
