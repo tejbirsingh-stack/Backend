@@ -13,6 +13,9 @@ async function routes(fastify, options) {
   //3. Logout route
   fastify.post("/logout", logout);
 
+  // Logout All Sessions
+  fastify.post("/logout-all", { preHandler: authenticate }, require('../controller/authController').logoutAll);
+
   fastify.post("/registerrole", { preHandler: authenticate }, registerRole);
 
   fastify.get("/roles", { preHandler: authenticate }, getRoles);

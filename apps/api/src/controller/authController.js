@@ -145,7 +145,9 @@ module.exports.login = async (request, reply) => {
       roleId: user.roleId,
       role: user.role || (user.roleRelation ? user.roleRelation.name : null),
       roleRelation: user.roleRelation,
-      organization: user.organization
+      organization: user.organization,
+      timezone: user.timezone,
+      avatarUrl: user.avatarUrl
     };
     const token = await reply.jwtSign(payload);
 
@@ -711,6 +713,8 @@ module.exports.getMe = async (request, reply) => {
         emailVerified: true,
         phone: true,
         jobTitle: true,
+        timezone: true,
+        avatarUrl: true,
         mfaEnabled: true,
         lastLoginAt: true,
         lastActiveAt: true,
@@ -1582,6 +1586,45 @@ module.exports.logout = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       message: "Logged out locally",
+    });
+  }
+};
+
+// Logout All Active Sessions
+module.exports.logoutAll = async (request, reply) => {
+  try {
+    const userId = request.user?.id;
+    if (!userId) {
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "User context not found",
+      });
+    }
+
+    // Revoke all active sessions in the database for this user
+    if (request.server && request.server.prisma) {
+      await request.server.prisma.userSession.updateMany({
+        where: {
+          userId: userId,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+        },
+      });
+    }
+
+    return reply.status(200).send({
+      success: true,
+      message: "All active sessions have been successfully revoked",
+    });
+  } catch (error) {
+    console.error("Logout All error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to revoke all sessions",
     });
   }
 };

@@ -44,6 +44,9 @@ model User {
   email       String    @unique @db.VarChar(255)
   emailVerified Boolean @default(false) // Email verification status
   name        String?   @db.VarChar(100)
+  timezone    String?   @db.VarChar(100)
+  avatarUrl   String?   @db.VarChar(1000)
+  avatarKey   String?   @db.VarChar(1000)
   passwordHash String?  @db.VarChar(255) // Added for direct password auth
   phone       String?   @db.VarChar(50) // Store User Phone Number
   hubspotUtk  String?   @db.VarChar(255) // Store Hubspot Cookie

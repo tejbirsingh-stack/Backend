@@ -2587,7 +2587,6 @@ module.exports.completeResumableUpload = async (request, reply) => {
         uploadedByUserId: request.user.id,
         ownerType: resolved.resolvedOwnerType,
         ownerId: resolved.resolvedOwnerId,
-        workspaceId: uploadWorkspaceId,
         files: {
           create: {
             fileClass: "original",
