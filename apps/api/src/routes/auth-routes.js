@@ -1,9 +1,15 @@
 // Authentication routes for login, registration, and session management
 const { authenticate } = require("../middleware/auth-middleware");
 
-const { login, register, logout, setupMfa, enableMfa, disableMfa, getMe, forgotPassword, resetPassword, googleLogin, microsoftLogin, registerRole, getRoles, getUsers, verifyEmail } = require("../controller");
+const { login, register, logout, setupMfa, enableMfa, disableMfa, getMe, forgotPassword, resetPassword, googleLogin, microsoftLogin, registerRole, getRoles, getUsers, verifyEmail, sendSignupOtp, verifySignupOtp, completeSignup, checkEmail } = require("../controller");
 
 async function routes(fastify, options) {
+  // New Onboarding Signup routes
+  fastify.post("/check-email", checkEmail);
+  fastify.post("/send-signup-otp", sendSignupOtp);
+  fastify.post("/verify-signup-otp", verifySignupOtp);
+  fastify.post("/complete-signup", completeSignup);
+
   //1. Login route
   fastify.post("/login", login);
 

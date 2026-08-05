@@ -6,6 +6,16 @@ const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 
+function slugifyWorkspaceName(value) {
+  if (!value || typeof value !== "string") return "workspace";
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
 function formatDomainToOrgName(email, defaultName) {
   try {
     if (email && typeof email === "string" && email.includes("@")) {
@@ -21,6 +31,106 @@ function formatDomainToOrgName(email, defaultName) {
     // fallback if domain parsing fails
   }
   return defaultName || "Workspace";
+}
+
+async function syncToHubspot(payload) {
+  const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
+  const formId = process.env.HUBSPOT_FORM_ID?.trim();
+  const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
+
+  if (!portalId || !formId) {
+    console.warn("[HubSpot Sync] Skipped: HUBSPOT_PORTAL_ID or HUBSPOT_FORM_ID missing in env.");
+    return;
+  }
+
+  const { email, firstName, lastName, name, workspaceName, companyWebsite, mobileNumber, teamSize, firstFocus, planId, billingCycle, hubspotUtk, referer, ip } = payload;
+
+  let firstname = firstName ? String(firstName).trim() : "";
+  let lastname = lastName ? String(lastName).trim() : "";
+
+  if (!firstname) {
+    const rawName = name || email.split("@")[0].replace(/[._]+/g, " ");
+    const nameParts = rawName.split(" ").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1));
+    firstname = nameParts[0] || "User";
+    if (!lastname) {
+      lastname = nameParts.slice(1).join(" ") || "";
+    }
+  }
+
+  let formattedWebsite = companyWebsite ? String(companyWebsite).trim() : "";
+  if (formattedWebsite && !formattedWebsite.startsWith("http://") && !formattedWebsite.startsWith("https://")) {
+    formattedWebsite = `https://${formattedWebsite}`;
+  }
+
+  const rawFields = [
+    { objectTypeId: "0-1", name: "email", value: email },
+    { objectTypeId: "0-1", name: "firstname", value: firstname },
+    { objectTypeId: "0-1", name: "lastname", value: lastname },
+    { objectTypeId: "0-1", name: "company", value: workspaceName || "" },
+    { objectTypeId: "0-1", name: "website", value: formattedWebsite },
+    { objectTypeId: "0-1", name: "phone", value: mobileNumber || "" },
+    { objectTypeId: "0-1", name: "numemployees", value: teamSize || "" },
+    { objectTypeId: "0-1", name: "primary_use_case", value: firstFocus || "" },
+    { objectTypeId: "0-1", name: "selected_plan", value: planId || "" },
+    { objectTypeId: "0-1", name: "billing_cycle", value: billingCycle || "" },
+  ];
+
+  const validFields = rawFields.filter(f => f.value !== undefined && f.value !== null && String(f.value).trim().length > 0);
+
+  const requestBody = {
+    fields: validFields,
+    context: {
+      ...(hubspotUtk && typeof hubspotUtk === "string" && hubspotUtk.trim().length > 0
+        ? { hutk: hubspotUtk.trim() }
+        : {}),
+      pageUri: process.env.FRONTEND_URL || (referer && !referer.includes("localhost") ? referer : "https://noahcloud.ai/signup"),
+      pageName: "New Onboarding Signup Page",
+      ipAddress: ip || "127.0.0.1",
+    },
+    skipValidation: true,
+  };
+
+  const secureEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
+  const publicEndpoint = `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formId}`;
+
+  const endpoint = accessToken ? secureEndpoint : publicEndpoint;
+  const headers = { "Content-Type": "application/json" };
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  console.log(`[HubSpot Sync] Submitting payload for ${email} (PortalID: ${portalId}, FormID: ${formId})...`);
+
+  try {
+    if (typeof fetch !== "undefined") {
+      let res = await fetch(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+      });
+
+      let resText = await res.text();
+      if (!res.ok && accessToken) {
+        console.warn(`[HubSpot Sync] Secure endpoint failed with HTTP ${res.status}: ${resText}. Retrying with public endpoint...`);
+        res = await fetch(publicEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+        resText = await res.text();
+      }
+
+      if (!res.ok) {
+        console.error(`[HubSpot Sync ERROR] Submission failed (HTTP ${res.status}):`, resText);
+      } else {
+        console.log(`[HubSpot Sync SUCCESS] Synced ${email} to HubSpot! Response:`, resText);
+      }
+    } else {
+      console.warn("[HubSpot Sync] fetch is not available in Node environment.");
+    }
+  } catch (err) {
+    console.error("[HubSpot Sync ERROR] Connection exception:", err.message);
+  }
 } // 1. Login Handler
 module.exports.login = async (request, reply) => {
   try {
@@ -1076,8 +1186,15 @@ module.exports.googleLogin = async (request, reply) => {
     // b. Extract user info from verified token
     let user = await authService.findUserByEmail(normalizedEmail);
 
-    //c. Since app requires an `orgId` to register, auto-generate them  
+    // c. Reject login if user is not registered and mode is login
     if (!user) {
+      if (!request.body?.isSignUp && request.body?.mode !== "signup") {
+        return reply.status(404).send({
+          success: false,
+          error: "Not Found",
+          message: "Email ID is not registered. Please sign up first.",
+        });
+      }
       const orgName = formatDomainToOrgName(normalizedEmail, `${name || "User"}'s Workspace`);
       const orgSlug = `workspace-${crypto.randomBytes(4).toString("hex")}`;
 
@@ -1304,6 +1421,13 @@ module.exports.microsoftLogin = async (request, reply) => {
     let user = await authService.findUserByEmail(email);
 
     if (!user) {
+      if (!request.body?.isSignUp && request.body?.mode !== "signup") {
+        return reply.status(404).send({
+          success: false,
+          error: "Not Found",
+          message: "Email ID is not registered. Please sign up first.",
+        });
+      }
       // Auto-generate a new Organization if they are a new user
       const slugBase = email.split("@")[0].replace(/[^a-z0-9]/gi, "-").toLowerCase();
       const orgName = formatDomainToOrgName(email, `${name}'s Workspace`);
@@ -1582,6 +1706,460 @@ module.exports.logout = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       message: "Logged out locally",
+    });
+  }
+};
+
+// Check Email Availability Handler
+module.exports.checkEmail = async (request, reply) => {
+  try {
+    const { email } = request.body || {};
+    if (!email) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Work email is required",
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Business email validation
+    const emailValidation = await authService.validateBusinessEmail(normalizedEmail);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: emailValidation.message,
+      });
+    }
+
+    const existingUser = await request.server.prisma.user.findFirst({
+      where: { email: normalizedEmail },
+    });
+
+    if (existingUser && (existingUser.passwordHash || existingUser.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        exists: true,
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    return reply.status(200).send({
+      success: true,
+      exists: false,
+      message: "Email is available",
+    });
+  } catch (error) {
+    console.error("checkEmail error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to check email availability",
+      details: error.message || String(error),
+    });
+  }
+};
+
+// Send Signup OTP Handler
+module.exports.sendSignupOtp = async (request, reply) => {
+  try {
+    const { email } = request.body || {};
+    if (!email) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Work email is required",
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Business email validation
+    const emailValidation = await authService.validateBusinessEmail(normalizedEmail);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: emailValidation.message,
+      });
+    }
+
+    // Check if email already registered with password or active status
+    const existingUser = await authService.findUserByEmail(normalizedEmail);
+    if (existingUser && (existingUser.passwordHash || existingUser.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    // Generate 6-digit OTP code
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    if (existingUser) {
+      await request.server.prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          emailOTP: otpCode,
+          emailOtpExpiresAt: expiresAt,
+        },
+      });
+    } else {
+      // Find default or first org or create temp org for pending registration
+      let defaultOrg = await request.server.prisma.organization.findFirst();
+      if (!defaultOrg) {
+        defaultOrg = await request.server.prisma.organization.create({
+          data: {
+            name: "Pending Organization",
+            slug: `pending-${Date.now()}`,
+            planType: "free",
+          },
+        });
+      }
+      await request.server.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          emailOTP: otpCode,
+          emailOtpExpiresAt: expiresAt,
+          status: "pending_signup",
+          orgId: defaultOrg.id,
+        },
+      });
+    }
+
+    // Send OTP email
+    const emailService = request.server.emailService || require("../services/email-service");
+    if (emailService && typeof emailService.sendMfaCode === "function") {
+      try {
+        await emailService.sendMfaCode(normalizedEmail, "New Member", otpCode);
+      } catch (eErr) {
+        console.warn("Could not send OTP email via emailService:", eErr.message);
+      }
+    }
+
+    return reply.status(200).send({
+      success: true,
+      message: "Verification code sent to email",
+    });
+  } catch (error) {
+    console.error("sendSignupOtp error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to send verification code",
+      details: error.message || String(error),
+    });
+  }
+};
+
+// Verify Signup OTP Handler
+module.exports.verifySignupOtp = async (request, reply) => {
+  try {
+    const { email, code } = request.body || {};
+    if (!email || !code) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Email and verification code are required",
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const trimmedCode = code.trim();
+
+    const user = await request.server.prisma.user.findFirst({
+      where: { email: normalizedEmail },
+    });
+
+    if (!user) {
+      return reply.status(404).send({
+        success: false,
+        error: "Not Found",
+        message: "User not found for this email",
+      });
+    }
+
+    // Verify OTP code (fallback to 123456 in dev environment for testing ease)
+    const isDevFallback = process.env.NODE_ENV !== "production" && trimmedCode === "123456";
+    const isValidOtp =
+      isDevFallback ||
+      (user.emailOTP &&
+        user.emailOTP === trimmedCode &&
+        user.emailOtpExpiresAt &&
+        new Date() <= new Date(user.emailOtpExpiresAt));
+
+    if (!isValidOtp) {
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired verification code",
+      });
+    }
+
+    // Mark email as verified
+    await request.server.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerified: true,
+        emailOTP: null,
+        emailOtpExpiresAt: null,
+      },
+    });
+
+    return reply.status(200).send({
+      success: true,
+      message: "Email verified successfully",
+    });
+  } catch (error) {
+    console.error("verifySignupOtp error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to verify code",
+      details: error.message || String(error),
+    });
+  }
+};
+
+// Complete Signup Handler (Saves to DB & Syncs to HubSpot)
+module.exports.completeSignup = async (request, reply) => {
+  try {
+    const {
+      email,
+      firstName,
+      lastName,
+      name,
+      password,
+      workspaceName,
+      companyWebsite,
+      mobileNumber,
+      teamSize,
+      firstFocus,
+      planId = "free",
+      billingCycle = "annual",
+      hubspotUtk,
+    } = request.body || {};
+
+    if (!email || !workspaceName) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Email and workspace name are required",
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    let user = await request.server.prisma.user.findFirst({
+      where: { email: normalizedEmail },
+      include: { organization: true },
+    });
+
+    let passwordHash = null;
+    if (password && typeof password === "string" && password.trim().length > 0) {
+      const passwordValidation = authService.validatePassword(password);
+      if (!passwordValidation.isValid) {
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: passwordValidation.message,
+        });
+      }
+      passwordHash = await authService.hashPassword(password.trim());
+    }
+
+    const slugBase = slugifyWorkspaceName(workspaceName);
+    const uniqueSlug = `${slugBase}-${Date.now()}`;
+
+    let organization = null;
+    const orgMetadata = {
+      website: companyWebsite || null,
+      teamSize: teamSize || null,
+      primaryFocus: firstFocus || null,
+      billingCycle: billingCycle || "annual",
+    };
+
+    if (user && user.orgId && user.status === "pending_signup") {
+      organization = await request.server.prisma.organization.update({
+        where: { id: user.orgId },
+        data: {
+          name: workspaceName.trim(),
+          slug: uniqueSlug,
+          planType: planId,
+          metadata: orgMetadata,
+        },
+      });
+    } else {
+      organization = await request.server.prisma.organization.create({
+        data: {
+          name: workspaceName.trim(),
+          slug: uniqueSlug,
+          planType: planId,
+          metadata: orgMetadata,
+        },
+      });
+    }
+
+    let superAdminRole = await request.server.prisma.role.findFirst({
+      where: {
+        OR: [
+          { id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15" },
+          { name: "Super Admin" },
+          { name: "super_admin" },
+          { name: "SuperAdmin" },
+        ],
+      },
+    });
+    if (!superAdminRole) {
+      superAdminRole = await request.server.prisma.role.findFirst();
+    }
+
+    let finalFirstName = firstName ? String(firstName).trim() : "";
+    let finalLastName = lastName ? String(lastName).trim() : "";
+
+    if (!finalFirstName && name) {
+      const parts = String(name).trim().split(" ");
+      finalFirstName = parts[0];
+      finalLastName = parts.slice(1).join(" ");
+    }
+
+    if (!finalFirstName) {
+      const nameFromEmail = normalizedEmail.split("@")[0].replace(/[._]+/g, " ");
+      const parts = nameFromEmail.split(" ").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1));
+      finalFirstName = parts[0] || "User";
+      finalLastName = parts.slice(1).join(" ") || "";
+    }
+
+    const computedFullName = `${finalFirstName} ${finalLastName}`.trim();
+
+    const userPreferences = {
+      teamSize: teamSize || null,
+      firstFocus: firstFocus || null,
+      billingCycle: billingCycle || "annual",
+    };
+
+    if (user) {
+      user = await request.server.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          orgId: organization.id,
+          name: computedFullName,
+          ...(passwordHash ? { passwordHash } : {}),
+          phone: mobileNumber || user.phone || null,
+          hubspotUtk: hubspotUtk || user.hubspotUtk || null,
+          roleId: superAdminRole ? superAdminRole.id : user.roleId,
+          status: "active",
+          emailVerified: true,
+          preferences: userPreferences,
+        },
+      });
+    } else {
+      user = await request.server.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: computedFullName,
+          passwordHash: passwordHash || null,
+          orgId: organization.id,
+          phone: mobileNumber || null,
+          hubspotUtk: hubspotUtk || null,
+          roleId: superAdminRole ? superAdminRole.id : null,
+          status: "active",
+          emailVerified: true,
+          preferences: userPreferences,
+        },
+      });
+    }
+
+    const workspace = await request.server.prisma.workspace.create({
+      data: {
+        name: workspaceName.trim(),
+        description: `Workspace for ${workspaceName.trim()}`,
+        color: "#4f46e5",
+        orgId: organization.id,
+      },
+    });
+
+    await request.server.prisma.workspaceUser.create({
+      data: {
+        workspaceId: workspace.id,
+        userId: user.id,
+      },
+    });
+
+    // --- HUBSPOT BACKGROUND SYNC ---
+    syncToHubspot({
+      email: normalizedEmail,
+      firstName: finalFirstName,
+      lastName: finalLastName,
+      name: computedFullName,
+      workspaceName,
+      companyWebsite,
+      mobileNumber,
+      teamSize,
+      firstFocus,
+      planId,
+      billingCycle,
+      hubspotUtk,
+      referer: request.headers.referer,
+      ip: request.ip,
+    });
+
+    const payload = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      orgId: user.orgId,
+      roleId: user.roleId,
+      role: superAdminRole ? superAdminRole.name : "Super Admin",
+      organization: organization,
+    };
+    const token = await reply.jwtSign(payload);
+
+    const session = await authService.createSession(
+      user.id,
+      request.headers["user-agent"],
+      request.ip,
+      token
+    );
+
+    user.role = superAdminRole ? superAdminRole.name : "Super Admin";
+
+    return reply.status(200).send({
+      success: true,
+      message: "Signup completed successfully",
+      accessToken: token,
+      token: session.token,
+      expiresAt: session.expiresAt,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        orgId: user.orgId,
+        role: user.role,
+        organization: organization,
+        workspace: {
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug,
+        },
+      },
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+        slug: workspace.slug,
+      },
+    });
+  } catch (error) {
+    console.error("Complete Signup Error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to complete signup",
+      details: error.message || String(error),
     });
   }
 };
