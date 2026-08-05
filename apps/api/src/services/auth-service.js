@@ -176,6 +176,8 @@ class AuthService {
         mfaEnabled: true,
         status: true,
         emailVerified: true,
+        timezone: true,
+        avatarUrl: true,
         organization: {
           select: {
             id: true,
@@ -219,6 +221,8 @@ class AuthService {
         roleId: true,
         status: true,
         emailVerified: true,
+        timezone: true,
+        avatarUrl: true,
         roleRelation: {
           select: {
             id: true,

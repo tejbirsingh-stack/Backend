@@ -1,5 +1,15 @@
 // User and Team Management Controller
 const { roles } = require('../lib');
+const path = require('path');
+const B2StorageService = require("../b2-storage.cjs");
+
+const b2Storage = new B2StorageService({
+  keyId: process.env.B2_KEY_ID,
+  applicationKey: process.env.B2_APPLICATION_KEY,
+  bucketName: process.env.B2_BUCKET_NAME,
+  endpoint: process.env.B2_ENDPOINT,
+  region: process.env.B2_REGION,
+});
 
 // 1. Get all users belonging to the logged-in user's organization (orgId)
 module.exports.getUsers = async (request, reply) => {
@@ -179,6 +189,305 @@ module.exports.getRoles = async (request, reply) => {
       error: "Internal Server Error",
       message: "Failed to fetch roles",
       details: error.message || String(error),
+    });
+  }
+};
+
+module.exports.updateProfile = async (request, reply) => {
+  try {
+    const { name, timezone } = request.body;
+    
+    if (!request.user || !request.user.id) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const updatedUser = await request.server.prisma.user.update({
+      where: { id: request.user.id },
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        ...(timezone !== undefined ? { timezone } : {})
+      }
+    });
+
+    return reply.send({
+      success: true,
+      user: updatedUser
+    });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to update profile", message: error.message });
+  }
+};
+
+module.exports.uploadProfilePhoto = async (request, reply) => {
+  try {
+    const data = await request.file();
+    if (!data) {
+      return reply.code(400).send({ error: "No file uploaded" });
+    }
+
+    if (!request.user || !request.user.id) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const userId = request.user.id;
+    let orgId = request.user.orgId;
+
+    const user = await request.server.prisma.user.findUnique({
+      where: { id: userId },
+      include: { organization: true }
+    });
+
+    if (!user) {
+      return reply.code(404).send({ error: "User not found" });
+    }
+
+    orgId = orgId || user.orgId;
+    if (!orgId || !user.organization) {
+      return reply.code(400).send({ error: "User is not associated with an organization" });
+    }
+
+    // Sanitize organization name and email for B2 key
+    const sanitizedOrgName = user.organization.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const sanitizedEmail = user.email.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    const folderName = `${sanitizedEmail}_${userId}`;
+    
+    const ext = path.extname(data.filename) || '.png';
+    const uniqueFilename = `profile_${Date.now()}${ext}`;
+    
+    // Path: noah-uploads / [organization name] / Profile Photo / [Username_emailid_uniqueid] / [filename]
+    const b2Key = `noah-uploads/${sanitizedOrgName}/Profile Photo/${folderName}/${uniqueFilename}`;
+
+    // Upload to B2
+    const uploadedAsset = await b2Storage.uploadStream(
+      data.file,
+      b2Key,
+      data.mimetype,
+      { type: 'profile_photo', userId: userId }
+    );
+
+    // If the user already had an avatar, permanently delete the old one from B2 to save space
+    if (user.avatarKey && user.avatarKey !== uploadedAsset.key) {
+      try {
+        await b2Storage.permanentlyDeleteFile(user.avatarKey);
+      } catch (delErr) {
+        request.log.warn(`Failed to delete old avatar ${user.avatarKey}: ${delErr.message}`);
+      }
+    }
+
+    // Internal dynamic URL that redirects to the latest presigned B2 URL with cache-busting
+    const internalAvatarUrl = `/api/users/${userId}/avatar?t=${Date.now()}`;
+
+    // Update User model with avatar details
+    const updatedUser = await request.server.prisma.user.update({
+      where: { id: userId },
+      data: {
+        avatarUrl: internalAvatarUrl,
+        avatarKey: uploadedAsset.key
+      }
+    });
+
+    return reply.send({
+      success: true,
+      avatarUrl: internalAvatarUrl,
+      avatarKey: uploadedAsset.key,
+      user: updatedUser
+    });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to upload profile photo", message: error.message });
+  }
+};
+
+module.exports.getAvatar = async (request, reply) => {
+  try {
+    const { id } = request.params;
+    
+    const user = await request.server.prisma.user.findUnique({
+      where: { id },
+      select: { avatarKey: true, avatarUrl: true }
+    });
+
+    if (!user || (!user.avatarKey && !user.avatarUrl)) {
+      return reply.code(404).send({ error: "Avatar not found" });
+    }
+
+    // If we have an avatar key, generate a fresh presigned URL
+    if (user.avatarKey) {
+      if (b2Storage.isEnabled()) {
+        const presignedUrl = await b2Storage.getPresignedUrl(user.avatarKey, 3600);
+        if (presignedUrl) {
+          // Temporarily redirect to the fresh B2 presigned URL
+          return reply.redirect(presignedUrl, 302);
+        }
+      }
+    } else if (user.avatarUrl && user.avatarUrl.startsWith('http')) {
+      // Fallback for legacy external URLs
+      return reply.redirect(user.avatarUrl, 302);
+    }
+
+    return reply.code(404).send({ error: "Avatar storage unavailable" });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to fetch avatar", details: error.message, stack: error.stack });
+  }
+};
+
+
+module.exports.updateUserAdmin = async (request, reply) => {
+  try {
+    const { id } = request.params;
+    const { email, roleId } = request.body;
+    
+    // 1. Verify Super Admin role
+    let currentUserRole = request.user?.role || "";
+    if (request.user?.id) {
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true },
+      });
+      if (liveUser && liveUser.roleRelation && liveUser.roleRelation.name) {
+        currentUserRole = liveUser.roleRelation.name;
+      } else if (liveUser && liveUser.role) {
+        currentUserRole = liveUser.role;
+      }
+    }
+    const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
+
+    if (normalizedRole !== "superadmin") {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Access denied. Only Super Admin can edit users.",
+      });
+    }
+
+    if (!id || (!email && !roleId)) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "User ID, and at least one of email or role are required.",
+      });
+    }
+
+    const targetUser = await request.server.prisma.user.findUnique({
+      where: { id }
+    });
+
+    if (!targetUser) {
+      return reply.status(404).send({ success: false, error: "Not Found", message: "User not found" });
+    }
+
+    const dataToUpdate = {};
+
+    if (email) {
+      const normalizedEmail = email.toLowerCase().trim();
+      const existingUser = await request.server.prisma.user.findUnique({
+        where: { email: normalizedEmail }
+      });
+
+      if (existingUser && existingUser.id !== id) {
+        return reply.status(409).send({
+          success: false,
+          error: "Conflict",
+          message: "Email is already in use by another user",
+        });
+      }
+      dataToUpdate.email = normalizedEmail;
+    }
+
+    if (roleId) {
+      // Find role by ID or Name
+      const targetRole = await request.server.prisma.role.findFirst({
+        where: {
+          OR: [
+            { id: roleId },
+            { name: roleId }
+          ]
+        }
+      });
+      if (!targetRole) {
+         return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
+      }
+      dataToUpdate.roleId = targetRole.id;
+      dataToUpdate.role = targetRole.name;
+    }
+
+    const updatedUser = await request.server.prisma.user.update({
+      where: { id },
+      data: dataToUpdate,
+      include: {
+        roleRelation: true
+      }
+    });
+
+    return reply.send({
+      success: true,
+      user: updatedUser
+    });
+
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to update user", message: error.message });
+  }
+};
+module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
+  try {
+    const { userIds, action } = request.body; // action: 'active', 'inactive', 'delete'
+    
+    // 1. Verify Super Admin role
+    let currentUserRole = request.user?.role || "";
+    if (request.user?.id) {
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true },
+      });
+      if (liveUser && liveUser.roleRelation && liveUser.roleRelation.name) {
+        currentUserRole = liveUser.roleRelation.name;
+      } else if (liveUser && liveUser.role) {
+        currentUserRole = liveUser.role;
+      }
+    }
+    const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
+
+    if (normalizedRole !== "superadmin") {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Access denied. Only Super Admin can edit users.",
+      });
+    }
+
+    if (!Array.isArray(userIds) || userIds.length === 0 || !['active', 'inactive', 'delete'].includes(action)) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Valid userIds array and action ('active', 'inactive', 'delete') are required.",
+      });
+    }
+
+    if (action === 'delete') {
+      await request.server.prisma.user.deleteMany({
+        where: { id: { in: userIds } }
+      });
+    } else {
+      await request.server.prisma.user.updateMany({
+        where: { id: { in: userIds } },
+        data: { status: action === 'active' ? 'Active' : 'Pending' }
+      });
+    }
+
+    return reply.send({
+      success: true,
+      message: `Successfully updated ${userIds.length} users`
+    });
+
+  } catch (error) {
+    request.log.error(error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to perform bulk update on users",
     });
   }
 };

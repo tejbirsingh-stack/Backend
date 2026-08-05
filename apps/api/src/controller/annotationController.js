@@ -21,7 +21,8 @@ module.exports.getMediaAnnotations = async (request, reply) => {
                     select: {
                         id: true,
                         name: true,
-                        email: true
+                        email: true,
+                        avatarUrl: true
                     }
                 }
             }
@@ -40,7 +41,7 @@ module.exports.getMediaAnnotations = async (request, reply) => {
                 author: ann.user ? {
                     name: ann.user.name || 'Unknown User',
                     email: ann.user.email,
-                    avatarUrl: ann.data?.author?.avatarUrl || null,
+                    avatarUrl: ann.user.avatarUrl || ann.data?.author?.avatarUrl || null,
                     initials: (ann.user.name || '').split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() || 'U',
                     isGuest: false,
                 } : ((ann.guestName || ann.guestEmail || ann.data?.guestName || ann.data?.guestEmail) ? {
