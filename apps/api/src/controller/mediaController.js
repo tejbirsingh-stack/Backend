@@ -5,6 +5,7 @@ const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 const { getAncestors } = require("../services/tagHierarchy");
+const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -909,15 +910,14 @@ module.exports.getMediaAssets = async (request, reply) => {
 
 
 
-    const effectiveOrgId = orgId || request.user?.orgId;
-
-    // Build where condition for New Architecture
+    const tenancyWhere = projectScopeWhere(request.user);
     const where = {
+      ...tenancyWhere,
       deletedAt: null,
     };
 
-    if (effectiveOrgId) {
-      where.orgId = effectiveOrgId;
+    if (orgId) {
+      where.orgId = orgId;
     }
 
     if (query) {

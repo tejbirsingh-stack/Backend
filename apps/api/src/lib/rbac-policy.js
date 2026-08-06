@@ -1,7 +1,3 @@
-const { PrismaClient } = require('@prisma/client');
-
-const prisma = new PrismaClient();
-
 const ROLE_IDS = {
   SYSTEM_ADMIN: '350c047a-60a1-4a84-8bdb-79748e9a906e',
   ADMIN: '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401',
@@ -58,46 +54,20 @@ const ROLE_PERMISSIONS_MAP = {
   ],
 };
 
-async function main() {
-  console.log('Retiring legacy permission slugs...');
-  await prisma.permission.deleteMany({
-    where: { slug: 'upload_delete_media' },
-  });
-
-  console.log('Seeding 16 canonical permissions...');
-  for (const perm of PERMISSIONS) {
-    await prisma.permission.upsert({
-      where: { slug: perm.slug },
-      update: { name: perm.name },
-      create: { slug: perm.slug, name: perm.name },
-    });
-  }
-
-  console.log('Assigning permissions to 5 roles...');
-  for (const [roleId, permSlugs] of Object.entries(ROLE_PERMISSIONS_MAP)) {
-    const roleExists = await prisma.role.findUnique({ where: { id: roleId } });
-    if (!roleExists) continue;
-
-    await prisma.rolePermission.deleteMany({ where: { roleId } });
-
-    for (const slug of permSlugs) {
-      const perm = await prisma.permission.findUnique({ where: { slug } });
-      if (perm) {
-        await prisma.rolePermission.create({
-          data: { roleId, permissionId: perm.id },
-        });
-      }
-    }
-  }
-
-  console.log('Done!');
+function roleHasPermission(roleId, permissionSlug) {
+  const allowed = ROLE_PERMISSIONS_MAP[roleId] || [];
+  return allowed.includes(permissionSlug);
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+function isOrgWideRole(roleOrId) {
+  const orgWideRoles = ['Super Admin', 'Admin', ROLE_IDS.SUPER_ADMIN, ROLE_IDS.ADMIN, ROLE_IDS.SYSTEM_ADMIN];
+  return orgWideRoles.includes(roleOrId);
+}
+
+module.exports = {
+  ROLE_IDS,
+  PERMISSIONS,
+  ROLE_PERMISSIONS_MAP,
+  roleHasPermission,
+  isOrgWideRole,
+};

@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const { authenticator } = require("otplib");
 const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
+const { loadUserAuthzContext } = require("../lib/rbac-access");
 const dns = require("dns").promises;
 let config;
 try {
@@ -349,10 +350,17 @@ class AuthService {
       },
     });
 
-    if (!session) return null;
+    if (!session || !session.user) return null;
 
-    if (session.user && session.user.roleRelation && session.user.roleRelation.name) {
-      session.user.role = session.user.roleRelation.name;
+    const authz = await loadUserAuthzContext(prisma, session.user.id);
+    if (authz) {
+      session.user.role = authz.role || session.user.roleRelation?.name || 'User';
+      session.user.permissions = authz.permissions;
+      session.user.allowedProjectIds = authz.allowedProjectIds;
+      session.user.isOrgWide = authz.isOrgWide;
+    } else {
+      session.user.permissions = [];
+      session.user.allowedProjectIds = [];
     }
 
     // Update last active timestamp
