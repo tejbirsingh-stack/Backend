@@ -1,3 +1,4 @@
+const { Prisma } = require('@prisma/client');
 const { encodeCursor, decodeCursor, fingerprint } = require('../utils/libraryCursor');
 
 async function listItems(prisma, params) {
@@ -19,173 +20,184 @@ async function listItems(prisma, params) {
   const fp = fingerprint(params);
   const cursor = decodeCursor(pageToken, fp);
 
-  let cursorCondition = '';
+  let cursorCondition = Prisma.empty;
   const limit = parseInt(pageSize, 10) + 1;
   const isDesc = sortOrder === 'desc';
 
   // For keyset pagination
   if (cursor) {
-    const op = isDesc ? '<' : '>';
-    cursorCondition = `AND (
-      sort_date ${op} '${cursor.sv}' 
-      OR (sort_date = '${cursor.sv}' AND id ${op} '${cursor.id}')
-    )`;
+    if (isDesc) {
+      cursorCondition = Prisma.sql`AND (
+        sort_date < ${new Date(cursor.sv)} 
+        OR (sort_date = ${new Date(cursor.sv)} AND id < ${cursor.id})
+      )`;
+    } else {
+      cursorCondition = Prisma.sql`AND (
+        sort_date > ${new Date(cursor.sv)} 
+        OR (sort_date = ${new Date(cursor.sv)} AND id > ${cursor.id})
+      )`;
+    }
   }
 
-  let query = '';
-
-  let assetWhere = `WHERE "deletedAt" IS NULL AND "workspace_id" = '${workspaceId}'`;
-  let folderWhere = `WHERE "workspace_id" = '${workspaceId}'`;
-  let projectWhere = `WHERE "workspace_id" = '${workspaceId}'`;
+  const assetConditions = [
+    Prisma.sql`"deletedAt" IS NULL`,
+    Prisma.sql`"workspace_id" = ${workspaceId}`,
+    Prisma.sql`(
+      "visibility" = 'public' 
+      OR ("visibility" = 'private' AND "uploadedByUserId" = ${params.userId}::uuid)
+      OR id IN (SELECT "asset_id" FROM "asset_users" WHERE "user_id" = ${params.userId}::uuid)
+      OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
+    )`
+  ];
+  const folderConditions = [Prisma.sql`"workspace_id" = ${workspaceId}`];
+  const projectConditions = [Prisma.sql`"workspace_id" = ${workspaceId}`];
 
   if (view === 'favorites' && params.userId) {
-    assetWhere += ` AND id IN (SELECT "assetId" FROM "favorites" WHERE "userId" = '${params.userId}')`;
-    folderWhere += ` AND id IN (SELECT "folderId" FROM "favorites" WHERE "userId" = '${params.userId}')`;
-    projectWhere += ` AND id IN (SELECT "projectId" FROM "favorites" WHERE "userId" = '${params.userId}')`;
+    assetConditions.push(Prisma.sql`id IN (SELECT "assetId" FROM "favorites" WHERE "userId" = ${params.userId}::uuid)`);
+    folderConditions.push(Prisma.sql`id IN (SELECT "folderId" FROM "favorites" WHERE "userId" = ${params.userId}::uuid)`);
+    projectConditions.push(Prisma.sql`id IN (SELECT "projectId" FROM "favorites" WHERE "userId" = ${params.userId}::uuid)`);
   } else if (view === 'duplicates') {
-    assetWhere += ` AND "status" = 'duplicate'`;
-    folderWhere += ` AND false`;
-    projectWhere += ` AND false`;
+    assetConditions.push(Prisma.sql`"status" = 'duplicate'`);
+    folderConditions.push(Prisma.sql`false`);
+    projectConditions.push(Prisma.sql`false`);
   } else if (view === 'shared') {
-    // Show all assets that have ever been shared (active OR expired).
-    // Only exclude assets whose ALL share links were revoked (intentional deletion).
-    assetWhere += ` AND id IN (
-      SELECT "assetId" FROM "share_links"
-      WHERE "assetId" IS NOT NULL
-        AND "revokedAt" IS NULL
-    )`;
-    folderWhere += ` AND false`;
-    projectWhere += ` AND false`;
+    assetConditions.push(Prisma.sql`"uploadedByUserId" != ${params.userId}::uuid AND (
+      id IN (SELECT "asset_id" FROM "asset_users" WHERE "user_id" = ${params.userId}::uuid)
+      OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
+    )`);
+    folderConditions.push(Prisma.sql`false`);
+    projectConditions.push(Prisma.sql`false`);
   } else if (view === 'folder' && params.folderId) {
-    assetWhere += ` AND "ownerType" = 'FOLDER' AND "ownerId" = '${params.folderId}'`;
-    folderWhere += ` AND "parent_folder_id" = '${params.folderId}'`;
-    projectWhere += ` AND "owner_type" = 'FOLDER' AND "folder_id" = '${params.folderId}'`;
+    assetConditions.push(Prisma.sql`"ownerType" = 'FOLDER' AND "ownerId" = ${params.folderId}::uuid`);
+    folderConditions.push(Prisma.sql`"parent_folder_id" = ${params.folderId}::uuid`);
+    projectConditions.push(Prisma.sql`"owner_type" = 'FOLDER' AND "folder_id" = ${params.folderId}::uuid`);
   } else if (view === 'project' && params.projectId) {
-    assetWhere += ` AND id IN (SELECT "asset_id" FROM "project_sources" WHERE "project_id" = '${params.projectId}' AND "sourceable_type" = 'ASSET')`;
-    folderWhere += ` AND id IN (SELECT "folder_id" FROM "project_sources" WHERE "project_id" = '${params.projectId}' AND "sourceable_type" = 'FOLDER')`;
-    projectWhere += ` AND false`;
+    assetConditions.push(Prisma.sql`id IN (SELECT "asset_id" FROM "project_sources" WHERE "project_id" = ${params.projectId}::uuid AND "sourceable_type" = 'ASSET')`);
+    folderConditions.push(Prisma.sql`id IN (SELECT "folder_id" FROM "project_sources" WHERE "project_id" = ${params.projectId}::uuid AND "sourceable_type" = 'FOLDER')`);
+    projectConditions.push(Prisma.sql`false`);
   } else if (view === 'projects') {
-    assetWhere += ` AND false`;
-    folderWhere += ` AND false`;
-    projectWhere += ``;
+    assetConditions.push(Prisma.sql`false`);
+    folderConditions.push(Prisma.sql`false`);
   }
 
   if (q) {
-      // Very basic SQL injection protection for ILIKE, though proper prepared statements are preferred
-      const safeQ = q.replace(/'/g, "''");
-      assetWhere += ` AND "title" ILIKE '%${safeQ}%'`;
-      folderWhere += ` AND "name" ILIKE '%${safeQ}%'`;
-      projectWhere += ` AND "name" ILIKE '%${safeQ}%'`;
+    const likeQuery = `%${q}%`;
+    assetConditions.push(Prisma.sql`"title" ILIKE ${likeQuery}`);
+    folderConditions.push(Prisma.sql`"name" ILIKE ${likeQuery}`);
+    projectConditions.push(Prisma.sql`"name" ILIKE ${likeQuery}`);
+  }
+
+  if (mediaType && mediaType !== 'all') {
+    if (mediaType === 'folder') {
+      assetConditions.push(Prisma.sql`false`);
+      projectConditions.push(Prisma.sql`false`);
+    } else if (mediaType === 'project') {
+      assetConditions.push(Prisma.sql`false`);
+      folderConditions.push(Prisma.sql`false`);
+    } else {
+      folderConditions.push(Prisma.sql`false`);
+      projectConditions.push(Prisma.sql`false`);
+      assetConditions.push(Prisma.sql`"type" = ${mediaType}`);
+    }
+  }
+
+  if (dateRange && dateRange !== 'all') {
+    const now = new Date();
+    let startDate = null;
+    if (dateRange === 'today') {
+      now.setHours(0, 0, 0, 0);
+      startDate = now;
+    } else if (dateRange === '7days') {
+      now.setDate(now.getDate() - 7);
+      startDate = now;
+    } else if (dateRange === '30days') {
+      now.setDate(now.getDate() - 30);
+      startDate = now;
+    } else if (dateRange === 'custom' && dateFrom) {
+      startDate = new Date(dateFrom);
     }
 
-    if (mediaType && mediaType !== 'all') {
-      if (mediaType === 'folder') {
-        assetWhere += ` AND false`;
-        projectWhere += ` AND false`;
-      } else if (mediaType === 'project') {
-        assetWhere += ` AND false`;
-        folderWhere += ` AND false`;
-      } else {
-        folderWhere += ` AND false`;
-        projectWhere += ` AND false`;
-        assetWhere += ` AND "type" = '${mediaType}'`;
-      }
+    if (startDate) {
+      assetConditions.push(Prisma.sql`"createdAt" >= ${startDate}`);
+      folderConditions.push(Prisma.sql`"created_at" >= ${startDate}`);
+      projectConditions.push(Prisma.sql`"created_at" >= ${startDate}`);
     }
 
-    if (dateRange && dateRange !== 'all') {
-      const now = new Date();
-      let startDate = null;
-      if (dateRange === 'today') {
-        now.setHours(0, 0, 0, 0);
-        startDate = now;
-      } else if (dateRange === '7days') {
-        now.setDate(now.getDate() - 7);
-        startDate = now;
-      } else if (dateRange === '30days') {
-        now.setDate(now.getDate() - 30);
-        startDate = now;
-      } else if (dateRange === 'custom' && dateFrom) {
-        startDate = new Date(dateFrom);
-      }
-
-      if (startDate) {
-        const iso = startDate.toISOString();
-        assetWhere += ` AND "createdAt" >= '${iso}'`;
-        folderWhere += ` AND "created_at" >= '${iso}'`;
-        projectWhere += ` AND "created_at" >= '${iso}'`;
-      }
-
-      if (dateRange === 'custom' && dateTo) {
-        const endDate = new Date(dateTo);
-        endDate.setHours(23, 59, 59, 999);
-        const isoEnd = endDate.toISOString();
-        assetWhere += ` AND "createdAt" <= '${isoEnd}'`;
-        folderWhere += ` AND "created_at" <= '${isoEnd}'`;
-        projectWhere += ` AND "created_at" <= '${isoEnd}'`;
-      }
+    if (dateRange === 'custom' && dateTo) {
+      const endDate = new Date(dateTo);
+      endDate.setHours(23, 59, 59, 999);
+      assetConditions.push(Prisma.sql`"createdAt" <= ${endDate}`);
+      folderConditions.push(Prisma.sql`"created_at" <= ${endDate}`);
+      projectConditions.push(Prisma.sql`"created_at" <= ${endDate}`);
     }
+  }
 
-    if (tagIds) {
-      const ids = tagIds.split(',').filter(Boolean);
-      if (ids.length > 0) {
-        const tagList = ids.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
-        assetWhere += ` AND EXISTS (
-          SELECT 1 FROM "asset_tags" 
-          JOIN "tags" ON "tags"."id" = "asset_tags"."tagId" 
-          WHERE "asset_tags"."assetId" = "assets".id 
-          AND ("tags"."name" IN (${tagList}) OR "tags"."id"::text IN (${tagList}))
-        )`;
-        folderWhere += ` AND false`;
-        projectWhere += ` AND false`;
-      }
+  if (tagIds) {
+    const ids = tagIds.split(',').filter(Boolean);
+    if (ids.length > 0) {
+      assetConditions.push(Prisma.sql`EXISTS (
+        SELECT 1 FROM "asset_tags" 
+        JOIN "tags" ON "tags"."id" = "asset_tags"."tagId" 
+        WHERE "asset_tags"."assetId" = "assets".id 
+        AND ("tags"."name" IN (${Prisma.join(ids)}) OR "tags"."id"::text IN (${Prisma.join(ids)}))
+      )`);
+      folderConditions.push(Prisma.sql`false`);
+      projectConditions.push(Prisma.sql`false`);
     }
+  }
 
-    query = `
-      SELECT 
-        id::text as id, 
-        title as name, 
-        'asset'::text as type, 
-        "createdAt" as sort_date,
-        COALESCE((SELECT MAX("sizeBytes") FROM "asset_files" WHERE "assetId" = "assets".id), 0)::bigint as sort_size
-      FROM "assets"
-      ${assetWhere}
+  const assetWhere = assetConditions.length ? Prisma.sql`WHERE ${Prisma.join(assetConditions, ' AND ')}` : Prisma.empty;
+  const folderWhere = folderConditions.length ? Prisma.sql`WHERE ${Prisma.join(folderConditions, ' AND ')}` : Prisma.empty;
+  const projectWhere = projectConditions.length ? Prisma.sql`WHERE ${Prisma.join(projectConditions, ' AND ')}` : Prisma.empty;
 
-      UNION ALL
+  const query = Prisma.sql`
+    SELECT 
+      id::text as id, 
+      title as name, 
+      'asset'::text as type, 
+      "createdAt" as sort_date,
+      COALESCE((SELECT MAX("sizeBytes") FROM "asset_files" WHERE "assetId" = "assets".id), 0)::bigint as sort_size
+    FROM "assets"
+    ${assetWhere}
 
-      SELECT 
-        id::text as id, 
-        name, 
-        'folder'::text as type, 
-        "created_at" as sort_date,
-        0::bigint as sort_size
-      FROM "folders"
-      ${folderWhere}
+    UNION ALL
 
-      UNION ALL
+    SELECT 
+      id::text as id, 
+      name, 
+      'folder'::text as type, 
+      "created_at" as sort_date,
+      0::bigint as sort_size
+    FROM "folders"
+    ${folderWhere}
 
-      SELECT 
-        id::text as id, 
-        name, 
-        'project'::text as type, 
-        "created_at" as sort_date,
-        0::bigint as sort_size
-      FROM "projects"
-      ${projectWhere}
-    `;
+    UNION ALL
+
+    SELECT 
+      id::text as id, 
+      name, 
+      'project'::text as type, 
+      "created_at" as sort_date,
+      0::bigint as sort_size
+    FROM "projects"
+    ${projectWhere}
+  `;
 
   const orderBy = sortBy === 'date' ? 'sort_date' : sortBy === 'name' ? 'name' : 'sort_size';
+  const direction = isDesc ? 'DESC' : 'ASC';
+  const orderBySql = Prisma.raw(`ORDER BY ${orderBy} ${direction}, id ${direction}`);
 
-  const finalQuery = `
+  const finalQuery = Prisma.sql`
     WITH UnifiedList AS (
       ${query}
     )
     SELECT * FROM UnifiedList
     WHERE 1=1 ${cursorCondition}
-    ORDER BY ${orderBy} ${isDesc ? 'DESC' : 'ASC'}, id ${isDesc ? 'DESC' : 'ASC'}
+    ${orderBySql}
     LIMIT ${limit}
   `;
 
-  const rawResults = await prisma.$queryRawUnsafe(finalQuery);
+  const rawResults = await prisma.$queryRaw(finalQuery);
 
   let hasNextPage = rawResults.length === limit;
   if (hasNextPage) {

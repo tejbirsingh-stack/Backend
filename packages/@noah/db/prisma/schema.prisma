@@ -251,6 +251,7 @@ model Asset {
   title        String       @db.VarChar(255)
   type         String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
   status       String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
+  visibility   String       @default("public") @db.VarChar(50) // 'public', 'private'
   compressedKey     String?      @db.VarChar(1000) // Deterministic key for the compressed proxy file
   aiTags       Json         @default("[]") @db.JsonB
 
