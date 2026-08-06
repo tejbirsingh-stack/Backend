@@ -417,6 +417,13 @@ module.exports.register = async (request, reply) => {
       });
     }
 
+    if (!superAdminRole || !superAdminRole.id) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Super Admin role ID not found. Registration cannot proceed without a valid role ID.",
+      });
+    }
+
     // Store user in database
     const user = await request.server.prisma.user.create({
       data: {
@@ -1232,6 +1239,15 @@ module.exports.googleLogin = async (request, reply) => {
           }
         });
       }
+
+      if (!defaultRole || !defaultRole.id) {
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: "Default role ID not found. Registration cannot proceed without a valid role ID.",
+        });
+      }
+
       // Create User
       user = await request.server.prisma.user.create({
         data: {
@@ -1464,6 +1480,14 @@ module.exports.microsoftLogin = async (request, reply) => {
             name: "Super Admin",
             show: 0,
           }
+        });
+      }
+
+      if (!defaultRole || !defaultRole.id) {
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: "Default role ID not found. Registration cannot proceed without a valid role ID.",
         });
       }
 
@@ -2021,6 +2045,23 @@ module.exports.completeSignup = async (request, reply) => {
     if (!superAdminRole) {
       superAdminRole = await request.server.prisma.role.findFirst();
     }
+    if (!superAdminRole) {
+      superAdminRole = await request.server.prisma.role.create({
+        data: {
+          id: "996cc58f-8823-4b6f-bcb9-76b2c1f2dd15",
+          name: "Super Admin",
+          show: 0,
+        },
+      });
+    }
+
+    if (!superAdminRole || !superAdminRole.id) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Super Admin role ID not found. Registration cannot proceed without a valid role ID.",
+      });
+    }
 
     let finalFirstName = firstName ? String(firstName).trim() : "";
     let finalLastName = lastName ? String(lastName).trim() : "";
@@ -2055,7 +2096,7 @@ module.exports.completeSignup = async (request, reply) => {
           ...(passwordHash ? { passwordHash } : {}),
           phone: mobileNumber || user.phone || null,
           hubspotUtk: hubspotUtk || user.hubspotUtk || null,
-          roleId: superAdminRole ? superAdminRole.id : user.roleId,
+          roleId: superAdminRole.id,
           status: "active",
           emailVerified: true,
           preferences: userPreferences,
@@ -2070,7 +2111,7 @@ module.exports.completeSignup = async (request, reply) => {
           orgId: organization.id,
           phone: mobileNumber || null,
           hubspotUtk: hubspotUtk || null,
-          roleId: superAdminRole ? superAdminRole.id : null,
+          roleId: superAdminRole.id,
           status: "active",
           emailVerified: true,
           preferences: userPreferences,
