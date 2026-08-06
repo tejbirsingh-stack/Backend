@@ -884,6 +884,7 @@ module.exports.getMe = async (request, reply) => {
             id: true,
             name: true,
             slug: true,
+            planType: true,
           },
         },
         roleRelation: {
