@@ -166,3 +166,60 @@ module.exports.deleteUserGroup = async (request, reply) => {
     return reply.code(500).send({ error: "Failed to delete user group", message: error.message });
   }
 };
+
+module.exports.getUserGroup = async (request, reply) => {
+  try {
+    const { id } = request.params;
+    const group = await request.server.prisma.userGroup.findUnique({
+      where: { id },
+      include: {
+        members: {
+          include: {
+            user: { select: { id: true, name: true, email: true } }
+          }
+        },
+        createdBy: { select: { name: true } }
+      }
+    });
+    if (!group) {
+      return reply.code(404).send({ error: "Group not found" });
+    }
+    return reply.send(group);
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to fetch user group" });
+  }
+};
+
+module.exports.addUserGroupMembers = async (request, reply) => {
+  try {
+    const { id } = request.params;
+    const { memberIds } = request.body || {};
+    if (!Array.isArray(memberIds) || memberIds.length === 0) {
+      return reply.code(400).send({ error: "memberIds array is required" });
+    }
+    await request.server.prisma.userGroupMember.createMany({
+      data: memberIds.map((userId) => ({ groupId: id, userId })),
+      skipDuplicates: true,
+    });
+    return reply.send({ success: true, message: "Members added successfully" });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to add group members" });
+  }
+};
+
+module.exports.removeUserGroupMember = async (request, reply) => {
+  try {
+    const { id, userId } = request.params;
+    await request.server.prisma.userGroupMember.deleteMany({
+      where: { groupId: id, userId },
+    });
+    return reply.send({ success: true, message: "Member removed successfully" });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to remove group member" });
+  }
+};
+
+module.exports.listUserGroups = module.exports.getUserGroups;

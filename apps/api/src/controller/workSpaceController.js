@@ -1,10 +1,21 @@
 const prisma = require('../utils/prisma');
 const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
 const { getAncestors } = require('../services/tagHierarchy');
+function formatWorkspaceNameWithSuffix(value) {
+  if (!value || typeof value !== "string") return "Workspace-ARK";
+  let trimmed = value.trim();
+  if (trimmed.endsWith("-Workspace-ARK")) {
+    return trimmed;
+  }
+  trimmed = trimmed.replace(/-Workspace$/i, "").replace(/-ARK$/i, "").replace(/-Workspace-ARK$/i, "").trim();
+  return `${trimmed}-Workspace-ARK`;
+}
+
 module.exports.storeWorkplace = async (request, reply) => {
     try {
-        const { name, description, color } = request.body;
+        const { name, description, color, inviteEmails, inviteGroupIds } = request.body;
         const { orgId } = request.user;
+        const userId = request.user?.id || request.user?.userId || request.user?.sub;
 
         if (!orgId || !name) {
             return reply.code(400).send({
@@ -27,10 +38,15 @@ module.exports.storeWorkplace = async (request, reply) => {
             });
         }
 
+        const formattedWorkspaceName = formatWorkspaceNameWithSuffix(name);
+
         const existing = await prisma.workspace.findFirst({
             where: {
                 orgId,
-                name
+                OR: [
+                    { name: formattedWorkspaceName },
+                    { name: name.trim() }
+                ]
             }
         });
         if (existing)
@@ -43,11 +59,60 @@ module.exports.storeWorkplace = async (request, reply) => {
         const workspace = await prisma.workspace.create({
             data: {
                 orgId,
-                name,
+                name: formattedWorkspaceName,
                 description,
                 color
             }
         });
+
+        // 1. Link creator user to WorkspaceUser (same as signup flow)
+        if (userId) {
+            await prisma.workspaceUser.create({
+                data: {
+                    workspaceId: workspace.id,
+                    userId: userId
+                }
+            }).catch(err => {
+                console.error("Failed to create workspaceUser for creator:", err);
+            });
+        }
+
+        // 2. Link invited users if inviteEmails supplied
+        if (Array.isArray(inviteEmails) && inviteEmails.length > 0) {
+            for (const email of inviteEmails) {
+                if (!email || typeof email !== 'string') continue;
+                const invitedUser = await prisma.user.findFirst({
+                    where: { email: email.toLowerCase().trim(), orgId }
+                });
+                if (invitedUser && invitedUser.id !== userId) {
+                    await prisma.workspaceUser.create({
+                        data: {
+                            workspaceId: workspace.id,
+                            userId: invitedUser.id
+                        }
+                    }).catch(() => {});
+                }
+            }
+        }
+
+        // 3. Link members of invited groups if inviteGroupIds supplied
+        if (Array.isArray(inviteGroupIds) && inviteGroupIds.length > 0) {
+            const groupMembers = await prisma.userGroupMember.findMany({
+                where: { groupId: { in: inviteGroupIds } },
+                select: { userId: true }
+            });
+            for (const gm of groupMembers) {
+                if (gm.userId && gm.userId !== userId) {
+                    await prisma.workspaceUser.create({
+                        data: {
+                            workspaceId: workspace.id,
+                            userId: gm.userId
+                        }
+                    }).catch(() => {});
+                }
+            }
+        }
+
         logSuccess(ACTIVITY_NAME.WORKSPACE_CREATED, "Workspace created successfully.", request);
         return reply.code(201).send({
             success: true,
