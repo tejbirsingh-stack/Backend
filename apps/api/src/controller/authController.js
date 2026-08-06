@@ -33,6 +33,16 @@ function formatDomainToOrgName(email, defaultName) {
   return defaultName || "Workspace";
 }
 
+function formatWorkspaceNameWithSuffix(value) {
+  if (!value || typeof value !== "string") return "Workspace-ARK";
+  let trimmed = value.trim();
+  if (trimmed.endsWith("-Workspace-ARK")) {
+    return trimmed;
+  }
+  trimmed = trimmed.replace(/-Workspace$/i, "").replace(/-ARK$/i, "").replace(/-Workspace-ARK$/i, "").trim();
+  return `${trimmed}-Workspace-ARK`;
+}
+
 async function syncToHubspot(payload) {
   const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
   const formId = process.env.HUBSPOT_FORM_ID?.trim();
@@ -62,11 +72,12 @@ async function syncToHubspot(payload) {
     formattedWebsite = `https://${formattedWebsite}`;
   }
 
+  const formattedCompany = formatWorkspaceNameWithSuffix(workspaceName || "");
   const rawFields = [
     { objectTypeId: "0-1", name: "email", value: email },
     { objectTypeId: "0-1", name: "firstname", value: firstname },
     { objectTypeId: "0-1", name: "lastname", value: lastname },
-    { objectTypeId: "0-1", name: "company", value: workspaceName || "" },
+    { objectTypeId: "0-1", name: "company", value: formattedCompany },
     { objectTypeId: "0-1", name: "website", value: formattedWebsite },
     { objectTypeId: "0-1", name: "phone", value: mobileNumber || "" },
     { objectTypeId: "0-1", name: "numemployees", value: teamSize || "" },
@@ -156,6 +167,15 @@ module.exports.login = async (request, reply) => {
         success: false,
         error: "Unauthorized",
         message: "Invalid email or password",
+      });
+    }
+
+    // Reject login if user has no roleId assigned in database
+    if (!user.roleId) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "No role assigned to this user. Login rejected. Please contact administrator.",
       });
     }
 
@@ -618,15 +638,38 @@ module.exports.registerRole = async (request, reply) => {
 
 
 
-    // 5. Fetch role from Roles table where id = roleId
-    const roleObj = await request.server.prisma.role.findUnique({
-      where: { id: roleId },
-    });
-    if (!roleObj) {
+    // 5. Fetch role from Roles table where id = roleId or name = roleId
+    if (!roleId) {
       return reply.status(400).send({
         success: false,
         error: "Bad Request",
-        message: "Invalid role ID: Role not found in roles table",
+        message: "Role is not found",
+      });
+    }
+
+    let roleObj = null;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidRegex.test(roleId)) {
+      roleObj = await request.server.prisma.role.findUnique({
+        where: { id: roleId },
+      });
+    }
+    if (!roleObj) {
+      roleObj = await request.server.prisma.role.findFirst({
+        where: {
+          OR: [
+            { name: roleId },
+            { name: { equals: roleId, mode: "insensitive" } }
+          ]
+        }
+      });
+    }
+
+    if (!roleObj || !roleObj.id) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Role is not found",
       });
     }
 
@@ -634,7 +677,7 @@ module.exports.registerRole = async (request, reply) => {
     const user = await request.server.prisma.user.create({
       data: {
         email: normalizedEmail,
-        roleId: roleId,
+        roleId: roleObj.id,
         orgId: finalOrgId,
         status: "inactive",
         mfaEnabled: true, // Default to true as per existing registration logic
@@ -862,11 +905,11 @@ module.exports.getMe = async (request, reply) => {
       },
     });
 
-    if (!user) {
-      return reply.status(404).send({
+    if (!user || !user.roleId) {
+      return reply.status(403).send({
         success: false,
-        error: "Not Found",
-        message: "User not found",
+        error: "Forbidden",
+        message: "No role assigned to this user",
       });
     }
 
@@ -1197,6 +1240,15 @@ module.exports.googleLogin = async (request, reply) => {
     // b. Extract user info from verified token
     let user = await authService.findUserByEmail(normalizedEmail);
 
+    // Reject login if existing user has no roleId assigned in database
+    if (user && !user.roleId) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "No role assigned to this user. Login rejected. Please contact administrator.",
+      });
+    }
+
     // c. Reject login if user is not registered and mode is login
     if (!user) {
       if (!request.body?.isSignUp && request.body?.mode !== "signup") {
@@ -1439,6 +1491,15 @@ module.exports.microsoftLogin = async (request, reply) => {
     }
 
     let user = await authService.findUserByEmail(email);
+
+    // Reject login if existing user has no roleId assigned in database
+    if (user && !user.roleId) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "No role assigned to this user. Login rejected. Please contact administrator.",
+      });
+    }
 
     if (!user) {
       if (!request.body?.isSignUp && request.body?.mode !== "signup") {
@@ -2000,7 +2061,8 @@ module.exports.completeSignup = async (request, reply) => {
       passwordHash = await authService.hashPassword(password.trim());
     }
 
-    const slugBase = slugifyWorkspaceName(workspaceName);
+    const formattedWorkspaceName = formatWorkspaceNameWithSuffix(workspaceName);
+    const slugBase = slugifyWorkspaceName(formattedWorkspaceName);
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
@@ -2015,7 +2077,7 @@ module.exports.completeSignup = async (request, reply) => {
       organization = await request.server.prisma.organization.update({
         where: { id: user.orgId },
         data: {
-          name: workspaceName.trim(),
+          name: formattedWorkspaceName,
           slug: uniqueSlug,
           planType: planId,
           metadata: orgMetadata,
@@ -2024,7 +2086,7 @@ module.exports.completeSignup = async (request, reply) => {
     } else {
       organization = await request.server.prisma.organization.create({
         data: {
-          name: workspaceName.trim(),
+          name: formattedWorkspaceName,
           slug: uniqueSlug,
           planType: planId,
           metadata: orgMetadata,
@@ -2121,8 +2183,8 @@ module.exports.completeSignup = async (request, reply) => {
 
     const workspace = await request.server.prisma.workspace.create({
       data: {
-        name: workspaceName.trim(),
-        description: `Workspace for ${workspaceName.trim()}`,
+        name: formattedWorkspaceName,
+        description: `Workspace for ${formattedWorkspaceName}`,
         color: "#4f46e5",
         orgId: organization.id,
       },
@@ -2141,7 +2203,7 @@ module.exports.completeSignup = async (request, reply) => {
       firstName: finalFirstName,
       lastName: finalLastName,
       name: computedFullName,
-      workspaceName,
+      workspaceName: formattedWorkspaceName,
       companyWebsite,
       mobileNumber,
       teamSize,

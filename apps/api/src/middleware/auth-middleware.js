@@ -34,10 +34,10 @@ async function authenticate(request, reply) {
           if (decoded.id) {
             const dbUser = await request.server.prisma.user.findUnique({
               where: { id: decoded.id },
-              select: { id: true, status: true },
+              select: { id: true, status: true, roleId: true },
             });
-            if (!dbUser || dbUser.status !== "active") {
-              throw new Error("User account no longer exists or is inactive");
+            if (!dbUser || dbUser.status !== "active" || !dbUser.roleId) {
+              throw new Error("User account no longer exists, is inactive, or has no role assigned");
             }
             request.server.prisma.user
               .update({
