@@ -159,6 +159,7 @@ model Workspace {
 
   folders  Folder[]
   projects Project[]
+  assets   Asset[]
   users  WorkspaceUser[]
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
@@ -260,6 +261,8 @@ model Asset {
   ownerId                 String              @db.Uuid // points to Workspace.id, Folder.id, or Project.id depending on ownerType
   uploadedByUserId        String?             @db.Uuid
   uploadedBy              User?               @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
+  workspaceId             String?             @map("workspace_id")
+  workspace               Workspace?          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   annotations             Annotation[]
   collectionAssets        CollectionAsset[]
   assetVersions           AssetVersion[]
