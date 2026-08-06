@@ -69,11 +69,11 @@ async function listItems(prisma, params) {
     projectConditions.push(Prisma.sql`false`);
   } else if (view === 'folder' && params.folderId) {
     assetConditions.push(Prisma.sql`"ownerType" = 'FOLDER' AND "ownerId" = ${params.folderId}::uuid`);
-    folderConditions.push(Prisma.sql`"parent_folder_id" = ${params.folderId}::uuid`);
-    projectConditions.push(Prisma.sql`"owner_type" = 'FOLDER' AND "folder_id" = ${params.folderId}::uuid`);
+    folderConditions.push(Prisma.sql`"parent_folder_id" = ${params.folderId}`);
+    projectConditions.push(Prisma.sql`"owner_type" = 'FOLDER' AND "folder_id" = ${params.folderId}`);
   } else if (view === 'project' && params.projectId) {
-    assetConditions.push(Prisma.sql`id IN (SELECT "asset_id" FROM "project_sources" WHERE "project_id" = ${params.projectId}::uuid AND "sourceable_type" = 'ASSET')`);
-    folderConditions.push(Prisma.sql`id IN (SELECT "folder_id" FROM "project_sources" WHERE "project_id" = ${params.projectId}::uuid AND "sourceable_type" = 'FOLDER')`);
+    assetConditions.push(Prisma.sql`id IN (SELECT "asset_id" FROM "project_sources" WHERE "project_id" = ${params.projectId} AND "sourceable_type" = 'ASSET')`);
+    folderConditions.push(Prisma.sql`id IN (SELECT "folder_id" FROM "project_sources" WHERE "project_id" = ${params.projectId} AND "sourceable_type" = 'FOLDER')`);
     projectConditions.push(Prisma.sql`false`);
   } else if (view === 'projects') {
     assetConditions.push(Prisma.sql`false`);
@@ -227,9 +227,21 @@ async function listItems(prisma, params) {
         } : {})
       }
     }) : [],
-    folderIds.length > 0 ? prisma.folder.findMany({ where: { id: { in: folderIds } } }) : [],
-    projectIds.length > 0 ? prisma.project.findMany({ where: { id: { in: projectIds } } }) : []
+    folderIds.length > 0 ? prisma.folder.findMany({ 
+      where: { id: { in: folderIds } },
+      include: { _count: { select: { children: true, projects: true } } }
+    }) : [],
+    projectIds.length > 0 ? prisma.project.findMany({ 
+      where: { id: { in: projectIds } },
+      include: { _count: { select: { sources: true } } }
+    }) : []
   ]);
+
+  const folderAssetCounts = folderIds.length > 0 ? await prisma.asset.groupBy({
+    by: ['ownerId'],
+    where: { ownerType: 'FOLDER', ownerId: { in: folderIds }, deletedAt: null },
+    _count: { _all: true }
+  }) : [];
 
   // Map to frontend DTO shape
   const mappedItems = rawResults.map(raw => {
@@ -284,6 +296,10 @@ async function listItems(prisma, params) {
     } else if (raw.type === 'folder') {
       const f = folders.find(x => x.id === raw.id);
       if (!f) return null;
+      
+      const ac = folderAssetCounts.find(a => a.ownerId === f.id)?._count?._all || 0;
+      const itemCount = (f._count?.children || 0) + (f._count?.projects || 0) + ac;
+      
       return {
         id: f.id,
         title: f.name,
@@ -291,7 +307,8 @@ async function listItems(prisma, params) {
         isFolder: true,
         createdAt: f.createdAt.toISOString(),
         color: f.color,
-        workspaceId: f.workspaceId
+        workspaceId: f.workspaceId,
+        itemCount
       };
     } else if (raw.type === 'project') {
       const p = projects.find(x => x.id === raw.id);
@@ -302,7 +319,8 @@ async function listItems(prisma, params) {
         type: 'folder',
         isProject: true,
         createdAt: p.createdAt.toISOString(),
-        workspaceId: p.workspaceId
+        workspaceId: p.workspaceId,
+        itemCount: p._count?.sources || 0
       };
     }
   }).filter(Boolean);
