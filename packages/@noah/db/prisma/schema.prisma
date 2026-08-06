@@ -164,8 +164,8 @@ model Workspace {
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([orgId])
   @@map("workspaces")
@@ -205,8 +205,8 @@ model Folder {
   sources ProjectSource[] @relation("FolderAsSource")
   users   FolderUser[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   favorites Favorite[]
 
@@ -341,8 +341,8 @@ model Project {
 
   favorites Favorite[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([workspaceId])
   @@index([folderId])
@@ -388,7 +388,7 @@ model ProjectSource {
   asset   Asset?  @relation("AssetAsSource", fields: [assetId], references: [id], onDelete: Cascade)
   folder  Folder? @relation("FolderAsSource", fields: [folderId], references: [id], onDelete: Cascade)
 
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([projectId, assetId])
   @@unique([projectId, folderId])
@@ -826,8 +826,8 @@ model SystemTimezone {
   timezone    String   @default("Europe/London")
   type        String   @default("workspace")
   enabled     Boolean  @default(true)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("system_timezones")
 }
