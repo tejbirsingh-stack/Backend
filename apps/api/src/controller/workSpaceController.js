@@ -138,42 +138,13 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
             });
         }
 
-        const projectIds = allProjects.map(p => p.id);
-
-        const mediaAssets = await prisma.asset.findMany({
-            where: {
-                deletedAt: null,
-                OR: [
-                    { ownerType: 'WORKSPACE', ownerId: id },
-                    { ownerType: 'FOLDER', ownerId: { in: folderIds } }
-                ],
-                ...(tagsArray.length > 0 ? {
-                    assetTags: {
-                        some: {
-                            tag: {
-                                name: { in: tagsArray }
-                            }
-                        }
-                    }
-                } : {})
-            },
-            include: {
-                files: true,
-                metadata: true,
-                sources: true,
-            },
-            orderBy: {
-                createdAt: 'desc',
-            },
-        });
-
         const projects = allProjects;
 
         return reply.code(200).send({
             success: true,
             message: 'Workspace contents fetched successfully.',
             data: {
-                media: mediaAssets,
+                media: [], // Deprecated: Media items are now fetched via the paginated library API
                 folders,
                 projects,
                 allProjects,
@@ -404,21 +375,7 @@ module.exports.findAllProjects = async (request, reply) => {
 module.exports.findFolderData = async (request, reply) => {
     try {
         const { id } = request.params; // folderId
-        const mediaAssets = await prisma.asset.findMany({
-            where: {
-                ownerType: 'FOLDER',
-                ownerId: id,
-                deletedAt: null,
-            },
-            include: {
-                files: true,
-                metadata: true,
-                sources: true,
-            },
-            orderBy: {
-                createdAt: 'desc',
-            },
-        });
+
 
         const folders = await prisma.folder.findMany({
             where: {
@@ -452,7 +409,7 @@ module.exports.findFolderData = async (request, reply) => {
             message: 'Folder contents fetched successfully.',
             data: {
                 folderInfo,
-                media: mediaAssets,
+                media: [], // Deprecated: fetched via pagination API
                 folders,
                 projects
             }
@@ -486,7 +443,7 @@ module.exports.findProjectData = async (request, reply) => {
             }
         });
 
-        const projectAssets = projectSources.filter(ps => ps.sourceableType === 'ASSET' && ps.asset && ps.asset.deletedAt === null).map(ps => ps.asset);
+        const projectAssets = []; // Deprecated: fetched via pagination API
         const projectFolders = projectSources.filter(ps => ps.sourceableType === 'FOLDER' && ps.folder).map(ps => ps.folder);
 
         return reply.code(200).send({
