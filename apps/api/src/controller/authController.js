@@ -388,7 +388,9 @@ module.exports.register = async (request, reply) => {
     } else {
       // Auto-generate a new Organization if orgId was not provided
       const slugBase = email.split('@')[0].replace(/[^a-z0-9]/gi, '-').toLowerCase();
-      const derivedOrgName = formatDomainToOrgName(email, orgName || `${name}'s Workspace`);
+      const derivedOrgName = formatDomainToOrgName(email, orgName || name);
+      const rawOrgName = orgName || name || email.split('@')[0];
+      const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
       organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
@@ -398,13 +400,10 @@ module.exports.register = async (request, reply) => {
       });
       finalOrgId = organization.id;
 
-      //get first name from name
-      const firstName = name.trim().split(/\s+/)[0];
-
       // Automatically create a default workspace for the new organization
       await request.server.prisma.workspace.create({
         data: {
-          name: `${firstName}-Workspace`,
+          name: formattedWorkspaceName,
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: finalOrgId,
@@ -1258,13 +1257,15 @@ module.exports.googleLogin = async (request, reply) => {
           message: "Email ID is not registered. Please sign up first.",
         });
       }
-      const orgName = formatDomainToOrgName(normalizedEmail, `${name || "User"}'s Workspace`);
+      const derivedOrgName = formatDomainToOrgName(normalizedEmail, name || "User");
+      const rawOrgName = name || normalizedEmail.split('@')[0];
+      const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
       const orgSlug = `workspace-${crypto.randomBytes(4).toString("hex")}`;
 
       // Create Organization
       const organization = await request.server.prisma.organization.create({
         data: {
-          name: orgName,
+          name: derivedOrgName,
           slug: orgSlug,
           planType: "free"
         }
@@ -1320,7 +1321,7 @@ module.exports.googleLogin = async (request, reply) => {
       // Automatically create a default workspace for the new organization
       await request.server.prisma.workspace.create({
         data: {
-          name: `${firstName}-Workspace`,
+          name: formattedWorkspaceName,
           description: "Default workspace for " + fullName,
           color: "#4f46e5",
           orgId: organization.id,
@@ -1511,11 +1512,13 @@ module.exports.microsoftLogin = async (request, reply) => {
       }
       // Auto-generate a new Organization if they are a new user
       const slugBase = email.split("@")[0].replace(/[^a-z0-9]/gi, "-").toLowerCase();
-      const orgName = formatDomainToOrgName(email, `${name}'s Workspace`);
+      const derivedOrgName = formatDomainToOrgName(email, name || "User");
+      const rawOrgName = name || email.split("@")[0];
+      const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
 
       const organization = await request.server.prisma.organization.create({
         data: {
-          name: orgName,
+          name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
           planType: "free",
         },
@@ -1572,7 +1575,7 @@ module.exports.microsoftLogin = async (request, reply) => {
       // Automatically create a default workspace for the new organization
       await request.server.prisma.workspace.create({
         data: {
-          name: `${firstName}-Workspace`,
+          name: formattedWorkspaceName,
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: organization.id,
@@ -1899,24 +1902,22 @@ module.exports.sendSignupOtp = async (request, reply) => {
         },
       });
     } else {
-      // Find default or first org or create temp org for pending registration
-      let defaultOrg = await request.server.prisma.organization.findFirst();
-      if (!defaultOrg) {
-        defaultOrg = await request.server.prisma.organization.create({
-          data: {
-            name: "Pending Organization",
-            slug: `pending-${Date.now()}`,
-            planType: "free",
-          },
-        });
-      }
+      // Create a new organization for pending registration using email domain
+      const derivedOrgName = formatDomainToOrgName(normalizedEmail);
+      const pendingOrg = await request.server.prisma.organization.create({
+        data: {
+          name: derivedOrgName,
+          slug: `pending-${Date.now()}`,
+          planType: "free",
+        },
+      });
       await request.server.prisma.user.create({
         data: {
           email: normalizedEmail,
           emailOTP: otpCode,
           emailOtpExpiresAt: expiresAt,
           status: "pending_signup",
-          orgId: defaultOrg.id,
+          orgId: pendingOrg.id,
         },
       });
     }
@@ -2061,6 +2062,7 @@ module.exports.completeSignup = async (request, reply) => {
       passwordHash = await authService.hashPassword(password.trim());
     }
 
+    const derivedOrgName = formatDomainToOrgName(normalizedEmail, workspaceName);
     const formattedWorkspaceName = formatWorkspaceNameWithSuffix(workspaceName);
     const slugBase = slugifyWorkspaceName(formattedWorkspaceName);
     const uniqueSlug = `${slugBase}-${Date.now()}`;
@@ -2077,7 +2079,7 @@ module.exports.completeSignup = async (request, reply) => {
       organization = await request.server.prisma.organization.update({
         where: { id: user.orgId },
         data: {
-          name: formattedWorkspaceName,
+          name: derivedOrgName,
           slug: uniqueSlug,
           planType: planId,
           metadata: orgMetadata,
@@ -2086,7 +2088,7 @@ module.exports.completeSignup = async (request, reply) => {
     } else {
       organization = await request.server.prisma.organization.create({
         data: {
-          name: formattedWorkspaceName,
+          name: derivedOrgName,
           slug: uniqueSlug,
           planType: planId,
           metadata: orgMetadata,
