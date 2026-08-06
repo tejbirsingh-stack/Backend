@@ -47,8 +47,13 @@ async function listItems(prisma, params) {
     folderWhere += ` AND false`;
     projectWhere += ` AND false`;
   } else if (view === 'shared') {
-    // Currently no shared logic
-    assetWhere += ` AND false`;
+    // Show all assets that have ever been shared (active OR expired).
+    // Only exclude assets whose ALL share links were revoked (intentional deletion).
+    assetWhere += ` AND id IN (
+      SELECT "assetId" FROM "share_links"
+      WHERE "assetId" IS NOT NULL
+        AND "revokedAt" IS NULL
+    )`;
     folderWhere += ` AND false`;
     projectWhere += ` AND false`;
   } else if (view === 'folder' && params.folderId) {
@@ -123,8 +128,13 @@ async function listItems(prisma, params) {
     if (tagIds) {
       const ids = tagIds.split(',').filter(Boolean);
       if (ids.length > 0) {
-        const tagList = ids.map(id => `'${id}'`).join(',');
-        assetWhere += ` AND EXISTS (SELECT 1 FROM "asset_tags" WHERE "asset_tags"."assetId" = "assets".id AND "asset_tags"."tagId" IN (${tagList}))`;
+        const tagList = ids.map(id => `'${id.replace(/'/g, "''")}'`).join(',');
+        assetWhere += ` AND EXISTS (
+          SELECT 1 FROM "asset_tags" 
+          JOIN "tags" ON "tags"."id" = "asset_tags"."tagId" 
+          WHERE "asset_tags"."assetId" = "assets".id 
+          AND ("tags"."name" IN (${tagList}) OR "tags"."id"::text IN (${tagList}))
+        )`;
         folderWhere += ` AND false`;
         projectWhere += ` AND false`;
       }
@@ -187,8 +197,24 @@ async function listItems(prisma, params) {
   const folderIds = rawResults.filter(r => r.type === 'folder').map(r => r.id);
   const projectIds = rawResults.filter(r => r.type === 'project').map(r => r.id);
 
+  const now = new Date();
   const [assets, folders, projects] = await Promise.all([
-    assetIds.length > 0 ? prisma.asset.findMany({ where: { id: { in: assetIds } }, include: { files: true, metadata: true, assetTags: { include: { tag: true } } } }) : [],
+    assetIds.length > 0 ? prisma.asset.findMany({
+      where: { id: { in: assetIds } },
+      include: {
+        files: true,
+        metadata: true,
+        assetTags: { include: { tag: true } },
+        ...(view === 'shared' ? {
+          shareLinks: {
+            where: { revokedAt: null },
+            orderBy: { createdAt: 'desc' },
+            take: 10,
+            select: { id: true, name: true, visibility: true, mode: true, expiresAt: true, createdAt: true, downloadCount: true }
+          }
+        } : {})
+      }
+    }) : [],
     folderIds.length > 0 ? prisma.folder.findMany({ where: { id: { in: folderIds } } }) : [],
     projectIds.length > 0 ? prisma.project.findMany({ where: { id: { in: projectIds } } }) : []
   ]);
@@ -228,7 +254,20 @@ async function listItems(prisma, params) {
         uploadedBy: a.uploadedByUserId || null,
         tags: dbTags,
         status: a.status,
-        workspaceId: a.workspaceId
+        workspaceId: a.workspaceId,
+        ...(a.shareLinks ? (() => {
+          const nowTs = Date.now();
+          const active = a.shareLinks.filter(sl => new Date(sl.expiresAt).getTime() > nowTs);
+          const expired = a.shareLinks.filter(sl => new Date(sl.expiresAt).getTime() <= nowTs);
+          return {
+            shareCount: a.shareLinks.length,
+            activeShareCount: active.length,
+            expiredShareCount: expired.length,
+            isShareActive: active.length > 0,
+            sharedAt: a.shareLinks[0]?.createdAt?.toISOString() || null,
+            shareLinks: a.shareLinks,
+          };
+        })() : {})
       };
     } else if (raw.type === 'folder') {
       const f = folders.find(x => x.id === raw.id);

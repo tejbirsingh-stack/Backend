@@ -1856,6 +1856,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             uploadedByUserId: request.user.id,
             ownerType: resolved.resolvedOwnerType,
             ownerId: resolved.resolvedOwnerId,
+            workspaceId: uploadWorkspaceId,
             files: {
               create: {
                 fileClass: "original",
@@ -2243,37 +2244,22 @@ async function performInstantDuplicateCheck(assetId, prisma) {
     const originalFile = asset.files.find(f => f.fileClass === 'original');
     if (!originalFile?.sizeBytes) return;
 
-    // -- DETERMINE ASSET WORKSPACE SCOPE --
-    let workspaceId = null;
-    let folderIds = [];
-    if (asset.ownerType === 'WORKSPACE') {
-      workspaceId = asset.ownerId;
-    } else if (asset.ownerType === 'FOLDER') {
-      const folder = await prisma.folder.findUnique({ where: { id: asset.ownerId } });
-      if (folder) workspaceId = folder.workspaceId;
+    // -- USE workspaceId DIRECTLY (added to Asset model) --
+    const workspaceId = asset.workspaceId;
+    if (!workspaceId) {
+      console.warn(`[Instant Check] Asset ${assetId} has no workspaceId, skipping duplicate check.`);
+      return;
     }
-
-    if (workspaceId) {
-      const folders = await prisma.folder.findMany({ where: { workspaceId }, select: { id: true } });
-      folderIds = folders.map(f => f.id);
-    }
-
-    const scopeWhere = workspaceId ? {
-      OR: [
-        { ownerType: 'WORKSPACE', ownerId: workspaceId },
-        { ownerType: 'FOLDER', ownerId: { in: folderIds } }
-      ]
-    } : {};
 
     const whereClause = {
       id: { not: assetId },
+      workspaceId,
       orgId: asset.orgId,
       deletedAt: null,
       type: asset.type,
-      ...scopeWhere
     };
 
-    // Tier 1: Exact File Size Match
+    // Tier 1: Exact File Size Match + optional checksum comparison
     const exactMatches = await prisma.asset.findMany({
       where: {
         ...whereClause,
@@ -2288,11 +2274,25 @@ async function performInstantDuplicateCheck(assetId, prisma) {
           duplicateOf.push(match.id);
         }
       } else {
+        // No checksum available on one or both — treat same size as duplicate
         duplicateOf.push(match.id);
       }
     }
 
-    // Tier 2: Dimension Match (for Images only)
+    // Tier 2: Title Match (for Images) — catches re-uploads with same filename
+    if (duplicateOf.length === 0 && asset.type === 'image') {
+      if (asset.title) {
+        const titleMatches = await prisma.asset.findMany({
+          where: {
+            ...whereClause,
+            title: { equals: asset.title, mode: 'insensitive' }
+          }
+        });
+        titleMatches.forEach(m => { if (!duplicateOf.includes(m.id)) duplicateOf.push(m.id); });
+      }
+    }
+
+    // Tier 3: Dimension Match (for Images)
     if (duplicateOf.length === 0 && asset.type === 'image') {
       const w = asset.metadata?.technicalSpecs?.width;
       const h = asset.metadata?.technicalSpecs?.height;
@@ -2301,15 +2301,17 @@ async function performInstantDuplicateCheck(assetId, prisma) {
           where: whereClause,
           include: { metadata: true }
         });
-        const match = potentialSuspects.find(s => {
-          return s.metadata?.technicalSpecs?.width === w && s.metadata?.technicalSpecs?.height === h;
-        });
+        const match = potentialSuspects.find(s =>
+          s.metadata?.technicalSpecs?.width === w && s.metadata?.technicalSpecs?.height === h
+        );
         if (match) duplicateOf.push(match.id);
       }
     }
 
     if (duplicateOf.length > 0) {
       const currentCustomProps = typeof asset.metadata?.customProperties === 'object' ? asset.metadata.customProperties : {};
+
+      // Mark the newly uploaded asset as duplicate
       await prisma.asset.update({
         where: { id: assetId },
         data: {
@@ -2324,12 +2326,42 @@ async function performInstantDuplicateCheck(assetId, prisma) {
           }
         }
       });
+
+      // Also ensure the originals are marked as duplicate (bidirectional)
+      for (const originalId of duplicateOf) {
+        const orig = await prisma.asset.findUnique({
+          where: { id: originalId },
+          include: { metadata: true }
+        });
+        if (orig && orig.status !== 'duplicate') {
+          const origCustomProps = typeof orig.metadata?.customProperties === 'object' ? orig.metadata.customProperties : {};
+          const existingDups = Array.isArray(origCustomProps.duplicates) ? origCustomProps.duplicates : [];
+          if (!existingDups.includes(assetId)) {
+            await prisma.asset.update({
+              where: { id: originalId },
+              data: {
+                status: 'duplicate',
+                metadata: {
+                  update: {
+                    customProperties: {
+                      ...origCustomProps,
+                      duplicates: [...existingDups, assetId]
+                    }
+                  }
+                }
+              }
+            });
+          }
+        }
+      }
+
       console.log(`[Instant Check] Asset ${assetId} marked duplicate. Duplicates found: ${duplicateOf.length}`);
     }
   } catch (error) {
     console.error(`[Instant Check] Failed for asset ${assetId}:`, error);
   }
 }
+
 
 //12. Initialize a Resumable Multipart Upload Session
 module.exports.initiateResumableUpload = async (request, reply) => {
@@ -2616,6 +2648,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
         uploadedByUserId: request.user.id,
         ownerType: resolved.resolvedOwnerType,
         ownerId: resolved.resolvedOwnerId,
+        workspaceId: uploadWorkspaceId,
         files: {
           create: {
             fileClass: "original",
