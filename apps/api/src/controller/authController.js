@@ -172,6 +172,14 @@ module.exports.login = async (request, reply) => {
       });
     }
 
+    if (user.organization?.status && String(user.organization.status).toLowerCase() === "suspended") {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "This organization has been suspended. Contact NOAH support.",
+      });
+    }
+
     if (!user.emailVerified) {
       return reply.status(403).send({
         success: false,
