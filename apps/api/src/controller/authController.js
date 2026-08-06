@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
+const { loadUserAuthzContext } = require("../lib/rbac-access");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -266,7 +267,11 @@ module.exports.login = async (request, reply) => {
       });
     }
 
-    // Generate JWT token
+    // Generate JWT token with full authorization context
+    const authz = await loadUserAuthzContext(request.server.prisma, user.id);
+    const permissions = authz?.permissions || [];
+    const allowedProjectIds = authz?.allowedProjectIds || [];
+
     const payload = {
       id: user.id,
       email: user.email,
@@ -274,7 +279,8 @@ module.exports.login = async (request, reply) => {
       orgId: user.orgId,
       roleId: user.roleId,
       role: user.role || (user.roleRelation ? user.roleRelation.name : null),
-      roleRelation: user.roleRelation,
+      permissions,
+      allowedProjectIds,
       organization: user.organization,
       timezone: user.timezone,
       avatarUrl: user.avatarUrl
@@ -946,6 +952,12 @@ module.exports.getMe = async (request, reply) => {
     } else {
       user.permissions = [];
     }
+
+    const projectUsers = await request.server.prisma.projectUser.findMany({
+      where: { userId: user.id },
+      select: { projectId: true },
+    });
+    user.allowedProjectIds = projectUsers.map((pu) => pu.projectId);
 
     return {
       success: true,
