@@ -158,7 +158,8 @@ class AuthService {
           select: {
             id: true,
             name: true,
-            slug: true
+            slug: true,
+            status: true,
           }
         },
         roleId: true,
