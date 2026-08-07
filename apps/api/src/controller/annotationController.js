@@ -421,7 +421,9 @@ module.exports.deleteMediaAnnotations = async (request, reply) => {
             return reply.code(404).send({ success: false, error: "Annotation Not Found!" });
         }
 
-        if (existing.userId !== userId) {
+        const userRole = request.user.role || '';
+        const isOrgAdmin = ['Super Admin', 'Admin'].includes(userRole);
+        if (existing.userId !== userId && !isOrgAdmin) {
             return reply.code(403).send({ success: false, error: "Forbidden: You can only delete your own annotations." });
         }
 

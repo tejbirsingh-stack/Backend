@@ -5,6 +5,7 @@ const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 const { getAncestors } = require("../services/tagHierarchy");
+const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -909,16 +910,20 @@ module.exports.getMediaAssets = async (request, reply) => {
 
 
 
-    const effectiveOrgId = orgId || request.user?.orgId;
-
-    // Build where condition for New Architecture
+    const tenancyWhere = projectScopeWhere(request.user);
     const where = {
+      ...tenancyWhere,
       deletedAt: null,
     };
 
-    if (effectiveOrgId) {
-      where.orgId = effectiveOrgId;
+    if (orgId) {
+      where.orgId = orgId;
     }
+
+    where.OR = [
+      { visibility: "public" },
+      { visibility: "private", uploadedByUserId: request.user?.id }
+    ];
 
     if (query) {
       where.title = {
@@ -1749,7 +1754,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const usernameSlug = request.user?.name ? request.user.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : 'user';
         const userIdentifier = `${usernameSlug}-${shortUserId}`;
         const uniqueId = Date.now().toString();
-        const filename = `${uniqueId}-raw-${part.filename}`;
+        const safeFileName = (part.filename || 'untitled').replace(/[^a-zA-Z0-9.-]/g, '_');
+        const filename = `${uniqueId}-raw-${safeFileName}`;
 
         let actualMimeType = part.mimetype;
         if (!actualMimeType || actualMimeType === 'application/octet-stream') {
@@ -1853,6 +1859,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
             title: request.query.title || (part.filename ? part.filename.replace(/\.[^/.]+$/, '') : 'Untitled'),
             type: assetType,
             status: (isActuallyVideo || isActuallyAudio) ? "processing" : "active",
+            visibility: request.query.visibility || "public",
             uploadedByUserId: request.user.id,
             ownerType: resolved.resolvedOwnerType,
             ownerId: resolved.resolvedOwnerId,
@@ -2365,7 +2372,7 @@ async function performInstantDuplicateCheck(assetId, prisma) {
 
 //12. Initialize a Resumable Multipart Upload Session
 module.exports.initiateResumableUpload = async (request, reply) => {
-  const { fileName, fileSize, mimeType, durationSeconds, title, summary, tagIds, folderId, technicalSpecs, ownerType, ownerId, linkedProjectId } = request.body || {};
+  const { fileName, fileSize, mimeType, durationSeconds, title, summary, tagIds, folderId, technicalSpecs, ownerType, ownerId, linkedProjectId, visibility } = request.body || {};
   if (!fileName || !fileSize || !mimeType) {
     return reply.status(400).send({ message: "fileName, fileSize, and mimeType are required" });
   }
@@ -2415,7 +2422,8 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     const uniqueId = Date.now().toString();
     const baseName = (fileName || 'untitled').replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
     const folderName = `${baseName}-${uniqueId}`;
-    const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${uniqueId}-raw-${fileName}`;
+    const safeFileName = (fileName || 'untitled').replace(/[^a-zA-Z0-9.-]/g, '_');
+    const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${uniqueId}-raw-${safeFileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
@@ -2436,6 +2444,7 @@ module.exports.initiateResumableUpload = async (request, reply) => {
       ownerType,
       ownerId,
       linkedProjectId,
+      visibility: visibility || "public",
       parts: [],
     };
 
@@ -2645,6 +2654,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
         title: assetTitle,
         type: assetType,
         status: shouldQueueTranscode ? "processing" : "active",
+        visibility: request.body.visibility || session.visibility || "public",
         uploadedByUserId: request.user.id,
         ownerType: resolved.resolvedOwnerType,
         ownerId: resolved.resolvedOwnerId,

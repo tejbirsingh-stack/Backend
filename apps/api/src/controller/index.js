@@ -16,4 +16,6 @@ module.exports = {
   ...require('./favoritesController'),
   ...require('./tagController'),
   ...require('./libraryController'),
+  ...require('./shareController'),
+  ...require('./userGroups.controller'),
 };

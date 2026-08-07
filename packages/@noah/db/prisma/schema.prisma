@@ -19,9 +19,15 @@ model Organization {
   maxUsers         Int      @default(10)
   features         Json     @default("{}") @db.JsonB
   metadata         Json     @default("{}") @db.JsonB
+  status           String   @default("active") @db.VarChar(50) // active | suspended
+  currentPlanId    String?  @db.VarChar(255)
+  currentPlan      Plan?    @relation(fields: [currentPlanId], references: [id], onDelete: SetNull)
+  maxWorkspaces    Int      @default(10)
+  stripeCustomerId String?  @db.VarChar(255)
+  subscriptionStatus String? @db.VarChar(50)
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
-  
+
   users        User[]
   assets       Asset[]
   collections  Collection[]
@@ -32,6 +38,7 @@ model Organization {
   notifications Notification[]
   annotationGroups AnnotationGroup[]
   userGroups       UserGroup[]
+  moderationFlags  PlatformModerationFlag[]
 
   workspaces Workspace[]
   @@map("organizations")
@@ -164,8 +171,8 @@ model Workspace {
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([orgId])
   @@map("workspaces")
@@ -205,8 +212,8 @@ model Folder {
   sources ProjectSource[] @relation("FolderAsSource")
   users   FolderUser[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   favorites Favorite[]
 
@@ -244,6 +251,7 @@ model Asset {
   title        String       @db.VarChar(255)
   type         String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
   status       String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
+  visibility   String       @default("public") @db.VarChar(50) // 'public', 'private'
   compressedKey     String?      @db.VarChar(1000) // Deterministic key for the compressed proxy file
   aiTags       Json         @default("[]") @db.JsonB
 
@@ -341,8 +349,8 @@ model Project {
 
   favorites Favorite[]
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@index([workspaceId])
   @@index([folderId])
@@ -388,7 +396,7 @@ model ProjectSource {
   asset   Asset?  @relation("AssetAsSource", fields: [assetId], references: [id], onDelete: Cascade)
   folder  Folder? @relation("FolderAsSource", fields: [folderId], references: [id], onDelete: Cascade)
 
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([projectId, assetId])
   @@unique([projectId, folderId])
@@ -826,8 +834,8 @@ model SystemTimezone {
   timezone    String   @default("Europe/London")
   type        String   @default("workspace")
   enabled     Boolean  @default(true)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   @@map("system_timezones")
 }
@@ -856,4 +864,110 @@ model Favorite {
   @@unique([userId, projectId])
   @@index([userId])
   @@map("favorites")
+}
+
+// ---------------------------------------------------------------------------
+// Platform Admin (NOAH-owned operators — not customer org users)
+// ---------------------------------------------------------------------------
+
+model PlatformAdmin {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email               String    @unique @db.VarChar(255)
+  name                String?   @db.VarChar(100)
+  passwordHash        String    @db.VarChar(255)
+  status              String    @default("active") @db.VarChar(50) // active | inactive | suspended
+  failedLoginAttempts Int       @default(0)
+  lockoutUntil        DateTime? @db.Timestamptz(6)
+  lastLoginAt         DateTime? @db.Timestamptz(6)
+  lastActiveAt        DateTime? @db.Timestamptz(6)
+  createdAt           DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  sessions         PlatformSession[]
+  moderationFlags  PlatformModerationFlag[] @relation("FlaggedBy")
+
+  @@map("platform_admins")
+}
+
+model PlatformSession {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId      String    @db.Uuid
+  admin        PlatformAdmin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  token        String    @unique @db.Text
+  ipAddress    String?   @db.VarChar(50)
+  userAgent    String?   @db.Text
+  expiresAt    DateTime  @db.Timestamptz(6)
+  lastActiveAt DateTime  @default(now()) @db.Timestamptz(6)
+  revokedAt    DateTime? @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([adminId])
+  @@index([token])
+  @@map("platform_sessions")
+}
+
+/// Sellable plan/package catalog managed by Platform Admins
+model Plan {
+  id                 String   @id @db.VarChar(255) // slug-style id: free, basic, premium, enterprise
+  name               String   @db.VarChar(100)
+  description        String?  @db.Text
+  monthlyPriceCents  Int      @default(0)
+  yearlyPriceCents   Int      @default(0)
+  storageQuotaBytes  BigInt   @default(5368709120) // 5GB
+  maxUsers           Int      @default(2)
+  maxWorkspaces      Int      @default(1)
+  features           Json     @default("[]") @db.JsonB
+  monthlyPriceId     String?  @db.VarChar(255) // Stripe monthly price id
+  yearlyPriceId      String?  @db.VarChar(255) // Stripe yearly price id
+  isPublic           Boolean  @default(true)
+  isFeatured         Boolean  @default(false)
+  sortOrder          Int      @default(0)
+  ctaLabel           String?  @db.VarChar(100)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  organizations Organization[]
+
+  @@index([isPublic, sortOrder])
+  @@map("plans")
+}
+
+/// Lightweight landing page CMS (existing table: landing_page_content)
+model LandingPage {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug          String    @unique @db.VarChar(100) @default("main")
+  status        String    @default("draft") @db.VarChar(50) // draft | published
+  heroTitle     String?   @db.VarChar(500)
+  heroSubtitle  String?   @db.Text
+  ctaLabel      String?   @db.VarChar(100)
+  ctaHref       String?   @db.VarChar(500)
+  sections      Json      @default("[]") @db.JsonB
+  publishedAt   DateTime? @db.Timestamptz(6)
+  updatedById   String?   @db.Uuid
+  createdAt     DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@map("landing_page_content")
+}
+
+/// Cross-org content moderation flags
+model PlatformModerationFlag {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId         String   @db.Uuid
+  orgId           String   @db.Uuid
+  organization    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  reason          String   @db.VarChar(500)
+  status          String   @default("open") @db.VarChar(50) // open | quarantined | resolved | dismissed
+  notes           String?  @db.Text
+  flaggedById     String?  @db.Uuid
+  flaggedBy       PlatformAdmin? @relation("FlaggedBy", fields: [flaggedById], references: [id], onDelete: SetNull)
+  resolvedAt      DateTime? @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([status])
+  @@index([orgId])
+  @@index([assetId])
+  @@map("platform_moderation_flags")
 }
