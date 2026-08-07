@@ -49,9 +49,9 @@ async function createShareLink(req, reply) {
     password,
     name,
     visibility = 'public',
-    expiresInDays = 7,
+    expiresInDays,
     expiresAt: customExpiresAt,
-    permissions = { view: true, comment: false, download: false, downloadProxy: false },
+    permissions,
   } = req.body || {};
 
   try {
@@ -65,12 +65,46 @@ async function createShareLink(req, reply) {
     }
 
     const orgId = user.orgId || asset.orgId;
-    const expiresAt = calculateExpiry(expiresInDays, customExpiresAt);
 
-    // 2. Hash password if provided
+    // Fetch org settings to apply defaults
+    const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
+    const orgSettings = await ensureDefaultOrganizationSettings(prisma, orgId);
+
+    // 1. strictly enforce Expiry Days from orgSettings
+    let finalExpiresInDays = expiresInDays;
+    let finalCustomExpiresAt = customExpiresAt;
+    
+    if (orgSettings.defaultExpiryDays) {
+      finalExpiresInDays = orgSettings.defaultExpiryDays;
+      finalCustomExpiresAt = undefined; // Force use of days if org setting exists
+    } else if (finalExpiresInDays === undefined && !finalCustomExpiresAt) {
+      finalExpiresInDays = 30; // ultimate fallback
+    }
+    const expiresAt = calculateExpiry(finalExpiresInDays, finalCustomExpiresAt);
+
+    // 2. strictly enforce Download permissions from orgSettings
+    let defaultDownload = true;
+    if (orgSettings.allowDownloadsDefault !== undefined) {
+      defaultDownload = orgSettings.allowDownloadsDefault;
+    }
+    
+    // Merge user permissions with enforced download permissions
+    const finalPermissions = {
+      ...(permissions || { view: true, comment: false, watermark: true }),
+      download: defaultDownload,
+      downloadProxy: defaultDownload
+    };
+
+    // 3. strictly enforce Password requirement from orgSettings
     let passwordHash = null;
-    if (password && password.trim().length > 0) {
-      passwordHash = await argon2.hash(password.trim());
+    let finalPassword = password;
+    
+    if (orgSettings.requirePasswordDefault && (!finalPassword || finalPassword.trim().length === 0)) {
+      finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing
+    }
+
+    if (finalPassword && finalPassword.trim().length > 0) {
+      passwordHash = await argon2.hash(finalPassword.trim());
     }
 
     const mainToken = generateToken();
@@ -91,7 +125,7 @@ async function createShareLink(req, reply) {
         mode,
         passwordHash,
         expiresAt,
-        permissions,
+        permissions: finalPermissions,
         createdById: existingUser ? existingUser.id : null,
       },
     });
@@ -117,9 +151,9 @@ async function createShareLink(req, reply) {
         assetTitle: asset.originalName || asset.title || 'Media File',
         shareUrl,
         expiresAt,
-        permissions,
+        permissions: finalPermissions,
         hasPassword: Boolean(passwordHash),
-        password: password ? password.trim() : null,
+        password: finalPassword ? finalPassword.trim() : null,
         senderName: user.name || user.email || 'NOAH Team Member',
       });
     }
@@ -162,6 +196,7 @@ async function createShareLink(req, reply) {
         expiresAt: shareLink.expiresAt,
         permissions: shareLink.permissions,
         hasPassword: Boolean(passwordHash),
+        password: finalPassword || undefined, // Include generated password so frontend can display it
         url: publicUrl,
         recipient: recipient ? { id: recipient.id, email: recipient.email } : null,
       },

@@ -41,7 +41,25 @@ model Organization {
   moderationFlags  PlatformModerationFlag[]
 
   workspaces Workspace[]
+  settings   OrganizationSettings?
+
   @@map("organizations")
+}
+
+model OrganizationSettings {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String   @unique @db.Uuid
+  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  
+  // Share Settings
+  requirePasswordDefault Boolean @default(false) @map("require_password_default")
+  allowDownloadsDefault  Boolean @default(true) @map("allow_downloads_default")
+  defaultExpiryDays      Int     @default(30) @map("default_expiry_days")
+
+  createdAt         DateTime @default(now()) @db.Timestamptz(6) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @db.Timestamptz(6) @map("updated_at")
+
+  @@map("organization_settings")
 }
 
 model User {
