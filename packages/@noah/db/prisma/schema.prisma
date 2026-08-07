@@ -25,6 +25,7 @@ model Organization {
   maxWorkspaces    Int      @default(10)
   stripeCustomerId String?  @db.VarChar(255)
   subscriptionStatus String? @db.VarChar(50)
+  usageWarningPercent Int    @default(80)
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
@@ -39,6 +40,9 @@ model Organization {
   annotationGroups AnnotationGroup[]
   userGroups       UserGroup[]
   moderationFlags  PlatformModerationFlag[]
+  storageSystems   StorageSystem[]
+  usageEvents      UsageEvent[]
+  usageDailyRollups UsageDailyRollup[]
 
   workspaces Workspace[]
   @@map("organizations")
@@ -970,4 +974,78 @@ model PlatformModerationFlag {
   @@index([orgId])
   @@index([assetId])
   @@map("platform_moderation_flags")
+}
+
+enum StorageProvider {
+  BACKBLAZE_B2
+  AWS_S3
+  MINIO
+  ON_PREM
+}
+
+enum UsageMetric {
+  STORAGE_BYTES_DELTA
+  BANDWIDTH_BYTES
+  CLASS_A
+  CLASS_B
+  SEAT_CHANGE
+}
+
+model StorageSystem {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String          @db.Uuid
+  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  provider     StorageProvider @default(BACKBLAZE_B2)
+  name         String          @db.VarChar(100)
+  config       Json            @default("{}") @db.JsonB
+  isPrimary    Boolean         @default(true)
+  status       String          @default("active") @db.VarChar(50)
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+
+  usageEvents       UsageEvent[]
+  usageDailyRollups UsageDailyRollup[]
+
+  @@unique([orgId, provider, name])
+  @@index([orgId, provider])
+  @@map("storage_systems")
+}
+
+model UsageEvent {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String         @db.Uuid
+  organization    Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  storageSystemId String?        @db.Uuid
+  storageSystem   StorageSystem? @relation(fields: [storageSystemId], references: [id], onDelete: SetNull)
+  userId          String?        @db.Uuid
+  assetId         String?        @db.Uuid
+  assetFileId     String?        @db.Uuid
+  metric          UsageMetric
+  delta           BigInt         @default(0)
+  metadata        Json           @default("{}") @db.JsonB
+  occurredAt      DateTime       @default(now()) @db.Timestamptz(6)
+
+  @@index([orgId, occurredAt])
+  @@index([orgId, metric, occurredAt])
+  @@index([storageSystemId, occurredAt])
+  @@map("usage_events")
+}
+
+model UsageDailyRollup {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String         @db.Uuid
+  organization    Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  storageSystemId String?        @db.Uuid
+  storageSystem   StorageSystem? @relation(fields: [storageSystemId], references: [id], onDelete: SetNull)
+  date            DateTime       @db.Date
+  storageBytesEnd BigInt         @default(0)
+  bandwidthBytes  BigInt         @default(0)
+  classACount     BigInt         @default(0)
+  classBCount     BigInt         @default(0)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([orgId, storageSystemId, date])
+  @@index([orgId, date])
+  @@map("usage_daily_rollups")
 }

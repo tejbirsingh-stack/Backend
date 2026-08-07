@@ -49,6 +49,7 @@ async function routes(fastify, options) {
   //10 Google login route
   fastify.post("/loging-google", googleLogin);
   fastify.post("/login-google", googleLogin);
+  fastify.post("/google-login", googleLogin);
 
   //11. Microsoft login route
   fastify.post("/login-microsoft", microsoftLogin);

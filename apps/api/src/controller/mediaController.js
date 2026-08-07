@@ -40,6 +40,7 @@ const redisClient = new Redis({
 // *****
 
 const B2StorageService = require("../b2-storage.cjs");
+const { assertQuotaAvailable, recordStorageDelta } = require("../services/usage-meter.service");
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,
@@ -1530,12 +1531,42 @@ module.exports.deletePermanently = async (request, reply) => {
     // First delete from database if it's a UUID
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
       try {
-        assetToDelete = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+        assetToDelete = await request.server.prisma.asset.findUnique({
+          where: { id: filename },
+          include: { files: true },
+        });
         if (assetToDelete) {
+          // Delete all associated file variants (original, proxy, thumbnails) directly from B2 Cloud
+          if (b2Storage.isEnabled() && assetToDelete.files && assetToDelete.files.length > 0) {
+            for (const f of assetToDelete.files) {
+              if (f.filePath) {
+                try {
+                  await b2Storage.deleteFile(f.filePath);
+                  deletedFromB2 = true;
+                } catch (b2Err) {
+                  console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
+                }
+              }
+            }
+          }
+
+          const totalSize = assetToDelete.files.reduce((acc, f) => acc + Number(f.sizeBytes || 0), 0);
           await request.server.prisma.asset.delete({
             where: { id: filename }
           });
           dbDeleted = true;
+          if (totalSize > 0 && assetToDelete.orgId) {
+            try {
+              await recordStorageDelta(request.server.prisma, {
+                orgId: assetToDelete.orgId,
+                deltaBytes: -totalSize,
+                assetId: assetToDelete.id,
+                reason: 'permanent_delete',
+              });
+            } catch (dErr) {
+              console.warn('Failed to record storage delta for permanent delete:', dErr.message);
+            }
+          }
           if (assetToDelete.deletedByUserId) {
             await createNotification(request.server, assetToDelete.deletedByUserId, assetToDelete.orgId, 'deletion_approved', 'Permanently Deleted', `Your asset ${assetToDelete.title} has been permanently deleted.`, assetToDelete.id);
           }
@@ -2386,6 +2417,10 @@ module.exports.initiateResumableUpload = async (request, reply) => {
   }
 
   try {
+    if (request.user && request.user.orgId) {
+      await assertQuotaAvailable(request.user.orgId, fileSize);
+    }
+
     const sessionId = require("uuid").v4();
 
     // Fetch organization info to use in the B2 path
@@ -2689,6 +2724,19 @@ module.exports.completeResumableUpload = async (request, reply) => {
       }
     });
 
+    if (request.user?.orgId && session.fileSize) {
+      try {
+        await recordStorageDelta(request.server.prisma, {
+          orgId: request.user.orgId,
+          deltaBytes: session.fileSize,
+          assetId: newAsset.id,
+          reason: 'upload_complete',
+        });
+      } catch (deltaErr) {
+        console.warn('Failed to record storage delta for completed upload:', deltaErr.message);
+      }
+    }
+
     // Link Tags if provided (including project defaults)
     const resolvedTagNames = [];
     const manualTagIds = tagIds || session.tagIds || [];
@@ -2939,6 +2987,19 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
             cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
           }
         });
+
+        if (asset.orgId && proxySize > 0) {
+          try {
+            await recordStorageDelta(request.server.prisma, {
+              orgId: asset.orgId,
+              deltaBytes: proxySize,
+              assetId: newAssetId,
+              reason: 'proxy_compressed',
+            });
+          } catch (deltaErr) {
+            console.warn('[UsageMeter] Failed to record proxy storage delta:', deltaErr ? deltaErr.message : 'Unknown error');
+          }
+        }
       }
 
       // -- DETERMINE ASSET WORKSPACE SCOPE --

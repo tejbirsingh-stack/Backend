@@ -18,4 +18,5 @@ module.exports = {
   ...require('./libraryController'),
   ...require('./shareController'),
   ...require('./userGroups.controller'),
+  ...require('./usageController'),
 };

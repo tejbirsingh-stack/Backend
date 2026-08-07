@@ -326,6 +326,7 @@ async function setupServer() {
     fastify.register(require('./routes/tags'), { prefix: '/api/tags' });
     fastify.register(require('./routes/library'), { prefix: '/api/library' });
     fastify.register(require('./routes/platform'), { prefix: '/api/platform' });
+    fastify.register(require('./routes/usage'), { prefix: '/api/usage' });
 
     console.log('All routes registerd successfully')
     logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);
