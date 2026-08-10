@@ -6,6 +6,7 @@ const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
+const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -423,6 +424,9 @@ module.exports.register = async (request, reply) => {
           orgId: finalOrgId,
         }
       });
+
+      // Automatically create default share settings for the new organization
+      await ensureDefaultOrganizationSettings(request.server.prisma, finalOrgId);
     }
 
     // Hash password
@@ -1349,6 +1353,9 @@ module.exports.googleLogin = async (request, reply) => {
         }
       });
 
+      // Automatically create default share settings for the new organization
+      await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
+
       // Attach organization to user object for the response payload
       user.organization = {
         id: organization.id,
@@ -1612,6 +1619,9 @@ module.exports.microsoftLogin = async (request, reply) => {
           orgId: organization.id,
         }
       });
+
+      // Automatically create default share settings for the new organization
+      await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
     }
 
     if (user.status !== "active") {
@@ -2219,6 +2229,9 @@ module.exports.completeSignup = async (request, reply) => {
         userId: user.id,
       },
     });
+
+    // Automatically create default share settings for the new organization
+    await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
 
     // --- HUBSPOT BACKGROUND SYNC ---
     syncToHubspot({
