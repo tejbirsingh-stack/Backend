@@ -13,6 +13,7 @@ module.exports.listLibraryItems = async (request, reply) => {
     const result = await listItems(request.server.prisma, params);
     return reply.code(200).send({ success: true, data: result });
   } catch (err) {
+    console.error('Library listItems error:', err);
     if (err.code === 'INVALID_PAGE_TOKEN') {
       return reply.code(400).send({
         success: false,
@@ -20,8 +21,6 @@ module.exports.listLibraryItems = async (request, reply) => {
         message: 'Restart pagination from the first page.',
       });
     }
-    request.log.error(err);
-    console.error("listLibraryItems Error:", err);
-    return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    return reply.code(500).send({ success: false, message: 'Internal Server Error', error: err.message, stack: err.stack });
   }
 };

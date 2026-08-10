@@ -6,6 +6,7 @@ const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
+const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -2043,7 +2044,28 @@ module.exports.deleteMediaFile = async (request, reply) => {
           include: { roleRelation: true }
         });
         const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
-        const userRole = rawRoleName.trim().toLowerCase();
+        let userRole = rawRoleName.trim().toLowerCase();
+
+        // Check if asset is linked to any project
+        const projectSource = await request.server.prisma.projectSource.findFirst({
+          where: { assetId: assetToUpdate.id }
+        });
+
+        if (projectSource) {
+          try {
+            const level = await verifyProjectAccess(projectSource.projectId, request.user.id, 'Can edit', request.server.prisma);
+            if (level === 'Full Access' || (level === 'Can edit' && assetToUpdate.uploadedByUserId === request.user.id)) {
+              // Project access overrides global role to allow deletion
+              userRole = 'editor'; 
+            } else {
+              // Block if they don't meet project deletion rules (even if they are a global admin/editor)
+              return reply.code(403).send({ success: false, error: "Access Denied: You do not have permission to delete this project asset." });
+            }
+          } catch (e) {
+            // If verifyProjectAccess throws 403, it means they are 'Can view' or have no access
+            return reply.code(403).send({ success: false, error: "Access Denied: You do not have permission to delete this project asset." });
+          }
+        }
 
         // 1. Super Admin: Permanent Delete Directly
         if (userRole === 'super admin' || userRole === 'superadmin') {
@@ -2417,6 +2439,9 @@ module.exports.initiateResumableUpload = async (request, reply) => {
   }
 
   try {
+    if (linkedProjectId) {
+      await verifyProjectAccess(linkedProjectId, request.user?.id, 'Can edit', request.server.prisma);
+    }
     if (request.user && request.user.orgId) {
       await assertQuotaAvailable(request.user.orgId, fileSize);
     }

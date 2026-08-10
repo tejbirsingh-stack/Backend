@@ -423,7 +423,27 @@ module.exports.deleteMediaAnnotations = async (request, reply) => {
 
         const userRole = request.user.role || '';
         const isOrgAdmin = ['Super Admin', 'Admin'].includes(userRole);
-        if (existing.userId !== userId && !isOrgAdmin) {
+        
+        let hasFullProjectAccess = false;
+        
+        // Check if the asset is linked to a project
+        const projectSource = await request.server.prisma.projectSource.findFirst({
+            where: { assetId: existing.assetId }
+        });
+        
+        if (projectSource) {
+            try {
+                const { verifyProjectAccess } = require('../utils/projectAccessUtils');
+                const level = await verifyProjectAccess(projectSource.projectId, request.user.id, 'Can view', request.server.prisma);
+                if (level === 'Full Access') {
+                    hasFullProjectAccess = true;
+                }
+            } catch (e) {
+                // User might not have access or not Full Access
+            }
+        }
+
+        if (existing.userId !== userId && !isOrgAdmin && !hasFullProjectAccess) {
             return reply.code(403).send({ success: false, error: "Forbidden: You can only delete your own annotations." });
         }
 

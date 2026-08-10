@@ -13,7 +13,7 @@ const {
   findAllProjects,
   deleteProject,
   findTimezone,
-  getProjectGuestView,
+  searchGuestUsers,
 } = require('../controller/workSpaceController');
 const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
@@ -36,9 +36,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get('/project/find-all-data/:projectId', canRead, findProjectData);
   fastify.get('/project/find-all', canRead, findAllProjects);
   fastify.get('/timezone', canRead, findTimezone);
-
-  // Public Route
-  fastify.get('/project/guest/:token', getProjectGuestView);
+  fastify.get('/search-guests', canRead, searchGuestUsers);
 
   done();
 };
