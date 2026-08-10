@@ -20,7 +20,10 @@ async function ensureDefaultOrganizationSettings(prisma, orgId) {
       data: {
         orgId,
         requirePasswordDefault: true,
-        allowDownloadsDefault: true,
+        allowCommentsDefault: false,
+        allowDownloadOriginalDefault: true,
+        allowDownloadProxyDefault: true,
+        showCompanyWatermarkDefault: true,
         defaultExpiryDays: 30
       }
     });

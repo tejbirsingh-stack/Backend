@@ -82,29 +82,52 @@ async function createShareLink(req, reply) {
     }
     const expiresAt = calculateExpiry(finalExpiresInDays, finalCustomExpiresAt);
 
-    // 2. strictly enforce Download permissions from orgSettings
+    // 2. strictly enforce permissions from orgSettings
+    let defaultComment = false;
     let defaultDownload = true;
-    if (orgSettings.allowDownloadsDefault !== undefined) {
-      defaultDownload = orgSettings.allowDownloadsDefault;
+    let defaultDownloadProxy = true;
+    let defaultWatermark = true;
+
+    if (orgSettings.allowCommentsDefault !== undefined) {
+      defaultComment = orgSettings.allowCommentsDefault;
     }
-    
-    // Merge user permissions with enforced download permissions
+    if (orgSettings.allowDownloadOriginalDefault !== undefined) {
+      defaultDownload = orgSettings.allowDownloadOriginalDefault;
+    }
+    if (orgSettings.allowDownloadProxyDefault !== undefined) {
+      defaultDownloadProxy = orgSettings.allowDownloadProxyDefault;
+    }
+    if (orgSettings.showCompanyWatermarkDefault !== undefined) {
+      defaultWatermark = orgSettings.showCompanyWatermarkDefault;
+    }
+
+    // Merge user permissions with enforced permissions
     const finalPermissions = {
-      ...(permissions || { view: true, comment: false, watermark: true }),
+      ...(permissions || { view: true }),
+      comment: defaultComment,
       download: defaultDownload,
-      downloadProxy: defaultDownload
+      downloadProxy: defaultDownloadProxy,
+      watermark: defaultWatermark
     };
 
     // 3. strictly enforce Password requirement from orgSettings
     let passwordHash = null;
     let finalPassword = password;
     
-    if (orgSettings.requirePasswordDefault && (!finalPassword || finalPassword.trim().length === 0)) {
-      finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing
+    if (orgSettings.requirePasswordDefault !== undefined) {
+      if (orgSettings.requirePasswordDefault) {
+        if (!finalPassword || finalPassword.trim().length === 0) {
+          finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing
+        }
+      } else {
+        finalPassword = null; // Strictly enforce no password if disabled by org
+      }
     }
 
     if (finalPassword && finalPassword.trim().length > 0) {
       passwordHash = await argon2.hash(finalPassword.trim());
+    } else {
+      passwordHash = null;
     }
 
     const mainToken = generateToken();
@@ -276,12 +299,35 @@ async function updateShareLink(req, reply) {
   const { name, visibility, permissions } = req.body || {};
 
   try {
+    const existingLink = await prisma.shareLink.findUnique({ where: { id: shareLinkId } });
+    if (!existingLink) return reply.code(404).send({ error: 'Share link not found' });
+
+    let finalPermissions = permissions;
+    if (permissions) {
+      const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
+      const orgSettings = await ensureDefaultOrganizationSettings(prisma, existingLink.orgId);
+      finalPermissions = { ...permissions };
+      
+      if (orgSettings.allowCommentsDefault !== undefined) {
+        finalPermissions.comment = orgSettings.allowCommentsDefault;
+      }
+      if (orgSettings.allowDownloadOriginalDefault !== undefined) {
+        finalPermissions.download = orgSettings.allowDownloadOriginalDefault;
+      }
+      if (orgSettings.allowDownloadProxyDefault !== undefined) {
+        finalPermissions.downloadProxy = orgSettings.allowDownloadProxyDefault;
+      }
+      if (orgSettings.showCompanyWatermarkDefault !== undefined) {
+        finalPermissions.watermark = orgSettings.showCompanyWatermarkDefault;
+      }
+    }
+
     const updated = await prisma.shareLink.update({
       where: { id: shareLinkId },
       data: {
         ...(name !== undefined && { name }),
         ...(visibility !== undefined && { visibility }),
-        ...(permissions !== undefined && { permissions }),
+        ...(finalPermissions !== undefined && { permissions: finalPermissions }),
       }
     });
 

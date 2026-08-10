@@ -176,11 +176,14 @@ module.exports.updateShareSettings = async (request, reply) => {
       return reply.code(400).send({ error: 'Organization ID is required' });
     }
 
-    const { requirePasswordDefault, allowDownloadsDefault, defaultExpiryDays } = request.body;
+    const { requirePasswordDefault, allowCommentsDefault, allowDownloadOriginalDefault, allowDownloadProxyDefault, showCompanyWatermarkDefault, defaultExpiryDays } = request.body;
 
     const dataToUpdate = {};
     if (requirePasswordDefault !== undefined) dataToUpdate.requirePasswordDefault = requirePasswordDefault;
-    if (allowDownloadsDefault !== undefined) dataToUpdate.allowDownloadsDefault = allowDownloadsDefault;
+    if (allowCommentsDefault !== undefined) dataToUpdate.allowCommentsDefault = allowCommentsDefault;
+    if (allowDownloadOriginalDefault !== undefined) dataToUpdate.allowDownloadOriginalDefault = allowDownloadOriginalDefault;
+    if (allowDownloadProxyDefault !== undefined) dataToUpdate.allowDownloadProxyDefault = allowDownloadProxyDefault;
+    if (showCompanyWatermarkDefault !== undefined) dataToUpdate.showCompanyWatermarkDefault = showCompanyWatermarkDefault;
     if (defaultExpiryDays !== undefined) dataToUpdate.defaultExpiryDays = defaultExpiryDays;
 
     const settings = await request.server.prisma.organizationSettings.upsert({
