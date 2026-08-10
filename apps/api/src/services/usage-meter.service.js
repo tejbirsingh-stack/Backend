@@ -17,10 +17,12 @@ function formatBytes(bytes) {
   const b = Number(bytes);
   if (isNaN(b) || b <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  const i = Math.min(Math.floor(Math.log10(b) / 3), units.length - 1);
+  const k = 1024;
+  const i = Math.min(Math.floor(Math.log(b) / Math.log(k)), units.length - 1);
   if (i === 0) return `${b} B`;
-  const val = b / Math.pow(1000, i);
-  return `${val.toFixed(val >= 10 ? 1 : 2)} ${units[i]}`;
+  const val = b / Math.pow(k, i);
+  const formattedVal = Math.abs(val - Math.round(val)) < 0.05 ? Math.round(val) : val.toFixed(1);
+  return `${formattedVal} ${units[i]}`;
 }
 
 /**
@@ -40,7 +42,10 @@ async function assertQuotaAvailable(orgId, additionalBytes = 0) {
     throw err;
   }
 
-  const quota = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 1099511627776);
+  let quota = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 1099511627776);
+  if (quota <= 0n) {
+    quota = BigInt(5 * 1024 * 1024 * 1024); // Default 5 GB quota for Free plan
+  }
   const used = BigInt(org.storageUsedBytes || 0);
   const add = BigInt(additionalBytes);
 
