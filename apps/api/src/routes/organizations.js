@@ -1,5 +1,5 @@
 const { authenticate } = require('../middleware/auth-middleware');
-const {getOrganizations, getSingleOrganization, createOrganization, updateCompanyInfo, uploadCompanyLogo} = require('../controller');
+const {getOrganizations, getSingleOrganization, createOrganization, updateCompanyInfo, uploadCompanyLogo, getShareSettings, updateShareSettings} = require('../controller');
 
 module.exports = function (fastify, opts, done) {
   //1. Get organizations (authenticated — platform listing uses /api/platform/organizations)
@@ -16,6 +16,12 @@ module.exports = function (fastify, opts, done) {
 
   //5. Upload company logo
   fastify.post("/upload-logo", { preHandler: [authenticate] }, uploadCompanyLogo);
+
+  //6. Get share settings
+  fastify.get("/share-settings", { preHandler: [fastify.authenticate] }, getShareSettings);
+
+  //7. Update share settings
+  fastify.patch("/share-settings", { preHandler: [fastify.authenticate] }, updateShareSettings);
 
   done();
 };

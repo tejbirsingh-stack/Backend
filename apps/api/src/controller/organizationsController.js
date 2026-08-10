@@ -1,6 +1,7 @@
 // Organizations Controller
 const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
+const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,
@@ -147,5 +148,56 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
   } catch (error) {
     request.log.error(error);
     return reply.code(500).send({ error: "Failed to upload company logo", message: error.message });
+  }
+};
+
+//6. Get Share Settings
+module.exports.getShareSettings = async (request, reply) => {
+  try {
+    const orgId = request.user?.orgId;
+    if (!orgId) {
+      return reply.code(400).send({ error: 'Organization ID is required' });
+    }
+
+    const settings = await ensureDefaultOrganizationSettings(request.server.prisma, orgId);
+
+    return reply.send(settings);
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to fetch share settings", message: error.message });
+  }
+};
+
+//7. Update Share Settings
+module.exports.updateShareSettings = async (request, reply) => {
+  try {
+    const orgId = request.user?.orgId;
+    if (!orgId) {
+      return reply.code(400).send({ error: 'Organization ID is required' });
+    }
+
+    const { requirePasswordDefault, allowCommentsDefault, allowDownloadOriginalDefault, allowDownloadProxyDefault, showCompanyWatermarkDefault, defaultExpiryDays } = request.body;
+
+    const dataToUpdate = {};
+    if (requirePasswordDefault !== undefined) dataToUpdate.requirePasswordDefault = requirePasswordDefault;
+    if (allowCommentsDefault !== undefined) dataToUpdate.allowCommentsDefault = allowCommentsDefault;
+    if (allowDownloadOriginalDefault !== undefined) dataToUpdate.allowDownloadOriginalDefault = allowDownloadOriginalDefault;
+    if (allowDownloadProxyDefault !== undefined) dataToUpdate.allowDownloadProxyDefault = allowDownloadProxyDefault;
+    if (showCompanyWatermarkDefault !== undefined) dataToUpdate.showCompanyWatermarkDefault = showCompanyWatermarkDefault;
+    if (defaultExpiryDays !== undefined) dataToUpdate.defaultExpiryDays = defaultExpiryDays;
+
+    const settings = await request.server.prisma.organizationSettings.upsert({
+      where: { orgId },
+      update: dataToUpdate,
+      create: {
+        orgId,
+        ...dataToUpdate
+      }
+    });
+
+    return reply.send({ success: true, settings });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to update share settings", message: error.message });
   }
 };

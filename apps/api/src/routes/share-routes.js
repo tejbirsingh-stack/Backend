@@ -1,3 +1,4 @@
+//const { createShareLink, listAssetShareLinks, revokeShareLink, getPublicShareLink, getPublicShareAssetMedia } = require('../controller');
 const {
   createShareLink,
   getShareLinks,
@@ -12,6 +13,18 @@ const {
 } = require('../controller/shareController');
 
 module.exports = function (fastify, opts, done) {
+  // // Public endpoints (no auth required)
+  // fastify.get('/public/share-links/:token', getPublicShareLink);
+  // fastify.get('/public/share-links/:token/media', getPublicShareAssetMedia);
+
+  // // Protected endpoints (owner / admin / editor with create_share_links permission)
+  // const canShare = { preValidation: [authenticate, requirePermission('create_share_links')] };
+  // fastify.post('/media/:id/share-links', canShare, createShareLink);
+  // fastify.get('/media/:id/share-links', canShare, listAssetShareLinks);
+  // fastify.delete('/share-links/:id', canShare, revokeShareLink);
+
+  // done();
+
   // Owner endpoints (JWT Auth required)
   fastify.post('/media/:id/share', { preValidation: [fastify.authenticate] }, createShareLink);
   fastify.get('/media/:id/share-links', { preValidation: [fastify.authenticate] }, getShareLinks);
