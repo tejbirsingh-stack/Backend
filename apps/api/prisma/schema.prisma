@@ -933,7 +933,7 @@ model PlatformSession {
 
 /// Sellable plan/package catalog managed by Platform Admins
 model Plan {
-  id                 String   @id @db.VarChar(255) // slug-style id: free, basic, premium, enterprise
+  id                 String   @id @default(uuid()) @db.VarChar(255)
   name               String   @db.VarChar(100)
   description        String?  @db.Text
   monthlyPriceCents  Int      @default(0)

@@ -644,12 +644,27 @@ module.exports.registerRole = async (request, reply) => {
     // Validate that the organization exists in database
     const organization = await request.server.prisma.organization.findUnique({
       where: { id: finalOrgId },
+      include: { currentPlan: true },
     });
     if (!organization) {
       return reply.status(400).send({
         success: false,
         error: "Bad Request",
         message: "Invalid organization ID: Organization not found",
+      });
+    }
+
+    // Check organization seat limit (capacity)
+    const maxUsers = organization.currentPlan?.maxUsers ?? organization.maxUsers ?? 10;
+    const currentUsersCount = await request.server.prisma.user.count({
+      where: { orgId: finalOrgId },
+    });
+
+    if (currentUsersCount >= maxUsers) {
+      return reply.status(403).send({
+        success: false,
+        error: "SeatLimitReached",
+        message: "Member seat limit reached. Please upgrade your plan to add more members.",
       });
     }
 
@@ -2127,10 +2142,10 @@ module.exports.completeSignup = async (request, reply) => {
         ],
       },
       basic: {
-        storageQuotaBytes: BigInt(10) * GB_BYTES,
+        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
         maxUsers: 5,
         features: [
-          '10 GB Storage',
+          '300 MB Storage',
           '5 Members',
           'Media library essentials',
           'Share links & file comments',

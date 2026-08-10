@@ -1733,6 +1733,20 @@ module.exports.uploadMediaFile = async (request, reply) => {
     const totalFileSize = Number(request.query.fileSize) || Number(request.headers['x-file-size']) || 0;
     const durationSeconds = request.query.durationSeconds ? Number(request.query.durationSeconds) : null;
 
+    if (request.user && request.user.orgId) {
+      try {
+        await assertQuotaAvailable(request.user.orgId, totalFileSize);
+      } catch (quotaErr) {
+        return reply.code(quotaErr.statusCode || 403).send({
+          success: false,
+          error: "Forbidden",
+          code: quotaErr.code || "QUOTA_EXCEEDED",
+          message: quotaErr.message || "Storage limit reached. Please upgrade your plan to upload more files.",
+          details: quotaErr.details || null,
+        });
+      }
+    }
+
     // Write headers for NDJSON streaming immediately to flush them to the browser
     reply.raw.writeHead(200, {
       "Content-Type": "application/x-ndjson",

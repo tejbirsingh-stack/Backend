@@ -31,7 +31,7 @@ function formatBytes(bytes) {
 async function assertQuotaAvailable(orgId, additionalBytes = 0) {
   if (!orgId) return;
 
-  const org = await prisma.organization.findUnique({
+  let org = await prisma.organization.findUnique({
     where: { id: orgId },
     include: { currentPlan: true },
   });
@@ -42,16 +42,34 @@ async function assertQuotaAvailable(orgId, additionalBytes = 0) {
     throw err;
   }
 
-  let quota = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 1099511627776);
-  if (quota <= 0n) {
-    quota = BigInt(5 * 1024 * 1024 * 1024); // Default 5 GB quota for Free plan
+  if (!org.currentPlan && org.planType) {
+    try {
+      const matchedPlan = await prisma.plan.findFirst({
+        where: {
+          OR: [
+            { id: org.planType.toLowerCase().trim() },
+            { name: { equals: org.planType.trim(), mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (matchedPlan) {
+        org.currentPlanId = matchedPlan.id;
+        org.currentPlan = matchedPlan;
+        await prisma.organization.update({
+          where: { id: orgId },
+          data: { currentPlanId: matchedPlan.id, storageQuotaBytes: matchedPlan.storageQuotaBytes },
+        }).catch(() => {});
+      }
+    } catch {}
   }
+
+  const quota = BigInt(org.currentPlan?.storageQuotaBytes ?? 314572800n);
   const used = BigInt(org.storageUsedBytes || 0);
   const add = BigInt(additionalBytes);
 
-  if (used + add > quota) {
-    const err = new Error('Storage quota exceeded. Free space or upgrade your plan.');
-    err.statusCode = 413;
+  if (used + add >= quota) {
+    const err = new Error('Storage limit reached. Please upgrade your plan to upload more files.');
+    err.statusCode = 403;
     err.code = 'QUOTA_EXCEEDED';
     err.details = {
       storageUsedBytes: Number(used),
@@ -182,23 +200,45 @@ async function getUsageSummary(orgId) {
     if (org) org.storageSystems = [];
   }
 
-  if (!org) {
-    const err = new Error('Organization not found');
-    err.statusCode = 404;
-    throw err;
+  if (!org.currentPlan && org.planType) {
+    try {
+      const matchedPlan = await prisma.plan.findFirst({
+        where: {
+          OR: [
+            { id: org.planType.toLowerCase().trim() },
+            { name: { equals: org.planType.trim(), mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (matchedPlan) {
+        org.currentPlanId = matchedPlan.id;
+        org.currentPlan = matchedPlan;
+        prisma.organization.update({
+          where: { id: orgId },
+          data: { currentPlanId: matchedPlan.id },
+        }).catch(() => {});
+      }
+    } catch {}
   }
 
   // 1. Members / Seats
-  const membersTotal = org.currentPlan?.maxUsers ?? org.maxUsers ?? 10;
-  const membersActive = await prisma.user.count({
-    where: { orgId, status: 'active' },
+  const membersTotal = org.currentPlan?.maxUsers ?? org.maxUsers ?? 5;
+  const orgUsers = await prisma.user.findMany({
+    where: { orgId },
+    select: { status: true },
   });
-  const membersPending = await prisma.user.count({
-    where: { orgId, status: 'pending' },
-  });
-  const membersUsed = await prisma.user.count({
-    where: { orgId, status: { in: ['active', 'pending', 'invited'] } },
-  });
+
+  let membersActive = 0;
+  let membersPending = 0;
+  for (const u of orgUsers) {
+    const s = (u.status || '').toLowerCase().trim();
+    if (s === 'active') {
+      membersActive++;
+    } else {
+      membersPending++;
+    }
+  }
+  const membersUsed = orgUsers.length;
 
   const seatsPercent = (membersUsed / Math.max(membersTotal, 1)) * 100;
   let seatsWarningLevel = 'ok';
@@ -292,8 +332,8 @@ async function getUsageSummary(orgId) {
       data: { storageUsedBytes: actualTotalBytes },
     }).catch((e) => console.warn('Background storageUsedBytes sync error:', e.message));
   }
+  const storageQuotaBytes = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 314572800n);
 
-  const storageQuotaBytes = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 1099511627776);
   const storagePercent = Number((storageUsedBytes * BigInt(100)) / (storageQuotaBytes > 0n ? storageQuotaBytes : 1n));
 
   let storageWarningLevel = 'ok';

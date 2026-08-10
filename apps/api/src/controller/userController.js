@@ -473,7 +473,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     } else {
       await request.server.prisma.user.updateMany({
         where: { id: { in: userIds } },
-        data: { status: action === 'active' ? 'Active' : 'Pending' }
+        data: { status: action === 'active' ? 'active' : 'pending' }
       });
     }
 
