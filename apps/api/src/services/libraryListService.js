@@ -50,7 +50,16 @@ async function listItems(prisma, params) {
     )`
   ];
   const folderConditions = [Prisma.sql`"workspace_id" = ${workspaceId}`];
-  const projectConditions = [Prisma.sql`"workspace_id" = ${workspaceId}`];
+  const projectConditions = [
+    Prisma.sql`"workspace_id" = ${workspaceId}`,
+    Prisma.sql`(
+      "visibility" = 'public' 
+      OR ("visibility" = 'private' AND (
+        id IN (SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid)
+        OR id IN (SELECT "project_id" FROM "project_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
+      ))
+    )`
+  ];
 
   if (view === 'favorites' && params.userId) {
     assetConditions.push(Prisma.sql`id IN (SELECT "assetId" FROM "favorites" WHERE "userId" = ${params.userId}::uuid)`);

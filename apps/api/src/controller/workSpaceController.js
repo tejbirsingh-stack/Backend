@@ -1,5 +1,7 @@
 const prisma = require('../utils/prisma');
+const crypto = require('crypto');
 const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
+const emailService = require('../services/email-service');
 const { getAncestors } = require('../services/tagHierarchy');
 function formatWorkspaceNameWithSuffix(value) {
   if (!value || typeof value !== "string") return "Workspace-ARK";
@@ -192,9 +194,25 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
 
             allProjects = await prisma.project.findMany({
                 where: {
-                    OR: [
-                        { workspaceId: id },
-                        { folderId: { in: folderIds } }
+                    AND: [
+                        {
+                            OR: [
+                                { workspaceId: id },
+                                { folderId: { in: folderIds } }
+                            ]
+                        },
+                        {
+                            OR: [
+                                { visibility: 'public' },
+                                { 
+                                    visibility: 'private', 
+                                    OR: [
+                                        { users: { some: { userId: request.user.id } } },
+                                        { groups: { some: { group: { members: { some: { userId: request.user.id } } } } } }
+                                    ]
+                                }
+                            ]
+                        }
                     ]
                 },
                 orderBy: {
@@ -299,7 +317,7 @@ module.exports.createFolder = async (request, reply) => {
 module.exports.createProject = async (request, reply) => {
     try {
         const { workspaceId } = request.params;
-        const { name, folderId, defaultTagIds } = request.body;
+        const { name, folderId, defaultTagIds, visibility = 'public', inviteEmails = [], inviteGroupIds = [], inviteAccess = 'Full Access', inviteMemberType = 'Member' } = request.body;
         const { orgId, id: userId } = request.user;
 
         if (!name) {
@@ -364,8 +382,93 @@ module.exports.createProject = async (request, reply) => {
                 ownerType: finalOwnerType,
                 workspaceId,
                 folderId: finalFolderId || null,
+                visibility: visibility.toLowerCase(),
             },
         });
+
+        // If visibility is private, handle project invites
+        if (visibility.toLowerCase() === 'private') {
+            // Add the creator as Full Access
+            if (userId) {
+                await prisma.projectUser.create({
+                    data: {
+                        projectId: project.id,
+                        userId: userId,
+                        accessLevel: 'Full Access',
+                        memberType: 'Member',
+                    }
+                }).catch(() => {});
+            }
+
+            // Add invited emails
+            if (Array.isArray(inviteEmails) && inviteEmails.length > 0) {
+                const appUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
+                const inviterName = request.user?.name || request.user?.email || 'A team member';
+
+                for (const email of inviteEmails) {
+                    if (!email || typeof email !== 'string') continue;
+                    const cleanEmail = email.toLowerCase().trim();
+
+                    if (inviteMemberType === 'Guest') {
+                        // GUEST FLOW: Create ProjectGuestLink and send magic link email
+                        const token = crypto.randomBytes(32).toString('hex');
+                        await prisma.projectGuestLink.create({
+                            data: {
+                                projectId: project.id,
+                                email: cleanEmail,
+                                token,
+                                accessLevel: inviteAccess
+                            }
+                        });
+
+                        const guestUrl = `${appUrl.replace(/\/$/, '')}/pg/${token}`;
+                        // Fire non-blocking email
+                        emailService.sendProjectGuestInvite(cleanEmail, {
+                            projectName: project.name,
+                            inviterName,
+                            guestUrl
+                        }).catch(err => console.error('Failed to send guest invite:', err));
+
+                    } else {
+                        // MEMBER FLOW: Require user to exist in org, then create ProjectUser and send normal invite
+                        let invitedUser = await prisma.user.findFirst({
+                            where: { email: cleanEmail, orgId }
+                        });
+                        
+                        if (invitedUser && invitedUser.id !== userId) {
+                            await prisma.projectUser.create({
+                                data: {
+                                    projectId: project.id,
+                                    userId: invitedUser.id,
+                                    accessLevel: inviteAccess,
+                                    memberType: inviteMemberType,
+                                }
+                            }).catch(() => {});
+
+                            // Fire non-blocking email
+                            emailService.sendProjectMemberInvite(cleanEmail, {
+                                projectName: project.name,
+                                inviterName,
+                                appUrl: `${appUrl.replace(/\/$/, '')}/home`
+                            }).catch(err => console.error('Failed to send member invite:', err));
+                        }
+                    }
+                }
+            }
+
+            // Add invited groups
+            if (Array.isArray(inviteGroupIds) && inviteGroupIds.length > 0) {
+                for (const groupId of inviteGroupIds) {
+                    await prisma.projectGroup.create({
+                        data: {
+                            projectId: project.id,
+                            groupId: groupId,
+                            accessLevel: inviteAccess,
+                        }
+                    }).catch(() => {});
+                }
+            }
+        }
 
         const tagIds = Array.isArray(defaultTagIds) ? defaultTagIds : [];
         if (tagIds.length > 0) {
@@ -407,12 +510,22 @@ module.exports.createProject = async (request, reply) => {
 };
 module.exports.findAllProjects = async (request, reply) => {
     try {
-        const { orgId } = request.user;
+        const { orgId, id: userId } = request.user;
         const projects = await prisma.project.findMany({
             where: {
                 workspace: {
                     orgId
-                }
+                },
+                OR: [
+                    { visibility: 'public' },
+                    { 
+                        visibility: 'private', 
+                        OR: [
+                            { users: { some: { userId } } },
+                            { groups: { some: { group: { members: { some: { userId } } } } } }
+                        ]
+                    }
+                ]
             },
             include: {
                 workspace: {
@@ -458,6 +571,16 @@ module.exports.findFolderData = async (request, reply) => {
             where: {
                 ownerType: 'FOLDER',
                 folderId: id,
+                OR: [
+                    { visibility: 'public' },
+                    { 
+                        visibility: 'private', 
+                        OR: [
+                            { users: { some: { userId: request.user.id } } },
+                            { groups: { some: { group: { members: { some: { userId: request.user.id } } } } } }
+                        ]
+                    }
+                ]
             },
             orderBy: {
                 createdAt: 'desc',
@@ -962,7 +1085,7 @@ module.exports.moveFolder = async (request, reply) => {
 module.exports.updateProject = async (request, reply) => {
     try {
         const { id } = request.params;
-        const { name } = request.body;
+        const { name, workspaceId, visibility } = request.body;
 
         if (!name) {
             return reply.code(400).send({
@@ -978,9 +1101,13 @@ module.exports.updateProject = async (request, reply) => {
             });
         }
 
+        const dataToUpdate = { name };
+        if (workspaceId !== undefined) dataToUpdate.workspaceId = workspaceId;
+        if (visibility !== undefined) dataToUpdate.visibility = visibility;
+
         const project = await prisma.project.update({
             where: { id },
-            data: { name }
+            data: dataToUpdate
         });
 
         return reply.send({
@@ -1015,5 +1142,107 @@ module.exports.findTimezone = async (request, reply) => {
             message: 'Failed to fetch timezone',
             timezone: 'Europe/London'
         });
+    }
+};
+
+module.exports.deleteProject = async (request, reply) => {
+    try {
+        const { id } = request.params;
+
+        await prisma.project.delete({
+            where: { id }
+        });
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Project deleted successfully.'
+        });
+    } catch (error) {
+        console.error('Failed to delete project:', error);
+        if (error.code === 'P2025') {
+            return reply.code(404).send({ success: false, message: 'Project not found.' });
+        }
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.getProjectGuestView = async (request, reply) => {
+    try {
+        const { token } = request.params;
+        if (!token) {
+            return reply.code(400).send({ success: false, message: 'Token is required' });
+        }
+
+        const guestLink = await prisma.projectGuestLink.findUnique({
+            where: { token },
+            include: {
+                project: {
+                    include: {
+                        sources: {
+                            include: {
+                                asset: {
+                                    include: {
+                                        files: true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (!guestLink || guestLink.revokedAt) {
+            return reply.code(404).send({ success: false, expired: true, message: 'Invite not found or revoked' });
+        }
+
+        if (guestLink.expiresAt && new Date() > guestLink.expiresAt) {
+            return reply.code(404).send({ success: false, expired: true, message: 'Invite has expired' });
+        }
+
+        // Increment access count
+        await prisma.projectGuestLink.update({
+            where: { id: guestLink.id },
+            data: {
+                accessCount: { increment: 1 },
+                lastAccessedAt: new Date()
+            }
+        }).catch(() => {});
+
+        // Format project and assets for guest view
+        const projectData = {
+            id: guestLink.project.id,
+            name: guestLink.project.name,
+            visibility: guestLink.project.visibility,
+            guestAccessLevel: guestLink.accessLevel,
+            assets: guestLink.project.sources
+                .filter(source => source.sourceableType === 'ASSET' && source.asset)
+                .map(source => {
+                    const asset = source.asset;
+                    let cdnUrl = null;
+                    if (asset.files && asset.files.length > 0) {
+                        const originalFile = asset.files.find(f => f.fileClass === 'original') || asset.files[0];
+                        cdnUrl = originalFile.cdnUrl;
+                    }
+                    return {
+                        id: asset.id,
+                        title: asset.title,
+                        type: asset.type,
+                        status: asset.status,
+                        createdAt: asset.createdAt,
+                        cdnUrl: cdnUrl, // For thumbnails
+                    };
+                })
+        };
+
+        return reply.code(200).send({
+            success: true,
+            valid: true,
+            data: projectData
+        });
+
+    } catch (error) {
+        console.error('Error fetching project guest view:', error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };

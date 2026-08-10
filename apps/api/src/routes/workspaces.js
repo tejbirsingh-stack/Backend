@@ -11,8 +11,10 @@ const {
   updateProject,
   findProjectData,
   findAllProjects,
+  deleteProject,
   findTimezone,
-} = require('../controller');
+  getProjectGuestView,
+} = require('../controller/workSpaceController');
 const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
 module.exports = function (fastify, opts, done) {
@@ -29,10 +31,14 @@ module.exports = function (fastify, opts, done) {
   fastify.get('/folder/find-all-data/:id', canRead, findFolderData);
   fastify.post('/project/add/:workspaceId', canUpload, createProject);
   fastify.put('/project/update/:id', canUpload, updateProject);
+  fastify.delete('/project/delete/:id', canRead, deleteProject);
   fastify.post('/project/link-source/:projectId', canUpload, linkProjectSource);
   fastify.get('/project/find-all-data/:projectId', canRead, findProjectData);
   fastify.get('/project/find-all', canRead, findAllProjects);
   fastify.get('/timezone', canRead, findTimezone);
+
+  // Public Route
+  fastify.get('/project/guest/:token', getProjectGuestView);
 
   done();
 };
