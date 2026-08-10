@@ -2256,6 +2256,9 @@ module.exports.completeSignup = async (request, reply) => {
       token
     );
 
+    const authzContext = await loadUserAuthzContext(request.server.prisma, user.id);
+    const userPermissions = authzContext?.permissions || [];
+
     user.role = superAdminRole ? superAdminRole.name : "Super Admin";
 
     return reply.status(200).send({
@@ -2269,7 +2272,10 @@ module.exports.completeSignup = async (request, reply) => {
         name: user.name,
         email: user.email,
         orgId: user.orgId,
+        roleId: user.roleId,
         role: user.role,
+        roleRelation: superAdminRole || { id: user.roleId, name: user.role },
+        permissions: userPermissions,
         organization: organization,
         workspace: {
           id: workspace.id,
