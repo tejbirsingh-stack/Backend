@@ -1644,6 +1644,7 @@ module.exports.getMediaFile = async (request, reply) => {
         const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
 
         const fileSize = Number(originalFile?.sizeBytes || 0);
+        const proxySize = Number(proxyFile?.sizeBytes || 0);
         const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
         const normalizedType = determineAssetType(fetchedAsset, originalFile);
 
@@ -1667,6 +1668,8 @@ module.exports.getMediaFile = async (request, reply) => {
             name: fetchedAsset.title,
             type: normalizedType,
             size: fileSize,
+            proxySize,
+            hasProxy: Boolean(proxyFile),
             uploadDate: fetchedAsset.createdAt.toISOString(),
             url: fileUrl,
             thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
@@ -1680,6 +1683,8 @@ module.exports.getMediaFile = async (request, reply) => {
               transcodingProgress: transcodeJob?.status === 'processing'
                 ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
                 : null,
+              proxySize,
+              hasProxy: Boolean(proxyFile),
             },
             transcodingStatus: transcodeJob?.status || "completed",
             compressionStatus: transcodeJob?.status || "completed",
@@ -3344,6 +3349,73 @@ module.exports.updateAssetTags = async (request, reply) => {
     return reply.send({ success: true, tags });
   } catch (error) {
     console.error("Failed to update asset tags:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+const ALLOWED_REVIEW_STATUSES = [
+  'New',
+  'In-Progress',
+  'Request for Review',
+  'Under Review',
+  'Approved',
+  'Rejected',
+];
+
+module.exports.updateAssetReviewStatus = async (request, reply) => {
+  try {
+    const assetId = request.params.id || request.params.filename;
+    const { reviewStatus } = request.body || {};
+    const orgId = request.user?.orgId;
+
+    if (!orgId) {
+      return reply.status(403).send({ success: false, error: "No organization attached to user." });
+    }
+
+    if (!reviewStatus || !ALLOWED_REVIEW_STATUSES.includes(reviewStatus)) {
+      return reply.status(400).send({
+        success: false,
+        error: "Invalid review status",
+        allowed: ALLOWED_REVIEW_STATUSES,
+      });
+    }
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      include: { metadata: true },
+    });
+
+    if (!asset || asset.orgId !== orgId) {
+      return reply.status(404).send({ success: false, error: "Media asset not found" });
+    }
+
+    const currentCustomProps =
+      typeof asset.metadata?.customProperties === 'object' && asset.metadata.customProperties
+        ? asset.metadata.customProperties
+        : {};
+
+    const updatedCustomProps = {
+      ...currentCustomProps,
+      reviewStatus,
+    };
+
+    if (asset.metadata) {
+      await request.server.prisma.assetMetadata.update({
+        where: { assetId },
+        data: { customProperties: updatedCustomProps },
+      });
+    } else {
+      await request.server.prisma.assetMetadata.create({
+        data: {
+          assetId,
+          customProperties: updatedCustomProps,
+        },
+      });
+    }
+
+    return reply.send({ success: true, reviewStatus });
+  } catch (error) {
+    console.error("Failed to update asset review status:", error);
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
