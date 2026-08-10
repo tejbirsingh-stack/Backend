@@ -9,7 +9,7 @@ Noah is an enterprise-grade media asset management platform designed for efficie
 - **AI-Powered Processing**: Leverage AI for automatic metadata extraction and content analysiss
 - **Scalable Storage**: Handle large media libraries with multi-region storage support
 - **Collaborative Workflow**: Enable seamless ollaboration across teams
-- **Integration-Ready**: Connect with Adobe Premiere, Final Cut Pro, and other tools
+- **Integration-Ready**: Connect with Adobe Premiere, Final Cut Pro, and other tool
 
 ## Getting Started
 
