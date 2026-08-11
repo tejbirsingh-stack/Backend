@@ -1,10 +1,34 @@
 const prisma = require('../utils/prisma');
 const { writePlatformAudit } = require('../lib/platform-audit');
 
+const DEFAULT_SECTIONS = { plansEnabled: true };
+
+function parsePlansEnabled(sections) {
+  if (sections && typeof sections === 'object' && !Array.isArray(sections)) {
+    if (typeof sections.plansEnabled === 'boolean') return sections.plansEnabled;
+  }
+  return true;
+}
+
+function normalizeSections(sections, plansEnabled) {
+  if (typeof plansEnabled === 'boolean') {
+    return { plansEnabled };
+  }
+  if (sections && typeof sections === 'object' && !Array.isArray(sections)) {
+    return {
+      ...sections,
+      plansEnabled: parsePlansEnabled(sections),
+    };
+  }
+  return { ...DEFAULT_SECTIONS };
+}
+
 function serializeLanding(page) {
   if (!page) return null;
+  const plansEnabled = parsePlansEnabled(page.sections);
   return {
     ...page,
+    plansEnabled,
     // Aliases for UI convenience
     title: page.heroTitle || 'NOAH Cloud',
     heroHeadline: page.heroTitle,
@@ -27,13 +51,7 @@ async function getLandingPage(request, reply) {
           heroSubtitle: 'Enterprise media asset management for modern creative teams.',
           ctaLabel: 'Get started',
           ctaHref: '/signup',
-          sections: [
-            {
-              id: 'features',
-              title: 'Built for media teams',
-              body: 'Review, annotate, organize, and deliver — in one place.',
-            },
-          ],
+          sections: DEFAULT_SECTIONS,
         },
       });
     }
@@ -72,7 +90,9 @@ async function updateLandingPage(request, reply) {
     if (heroSubtitle !== undefined) data.heroSubtitle = heroSubtitle;
     if (ctaLabel !== undefined) data.ctaLabel = ctaLabel;
     if (ctaHref !== undefined) data.ctaHref = ctaHref;
-    if (body.sections !== undefined) data.sections = body.sections;
+    if (body.sections !== undefined || body.plansEnabled !== undefined) {
+      data.sections = normalizeSections(body.sections, body.plansEnabled);
+    }
     data.updatedById = request.platformAdmin?.id || null;
 
     const page = await prisma.landingPage.upsert({
@@ -83,7 +103,7 @@ async function updateLandingPage(request, reply) {
         heroSubtitle: heroSubtitle || null,
         ctaLabel: ctaLabel || 'Get started',
         ctaHref: ctaHref || '/signup',
-        sections: body.sections || [],
+        sections: normalizeSections(body.sections, body.plansEnabled),
         status: data.status || 'draft',
         publishedAt: data.publishedAt || null,
         updatedById: data.updatedById,

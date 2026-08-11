@@ -1,5 +1,15 @@
 const prisma = require('../utils/prisma');
 const { writePlatformAudit } = require('../lib/platform-audit');
+const {
+  slugify,
+  formatWorkspaceName,
+  ensureUniqueSlug,
+  resolveSuperAdminRole,
+  createDefaultWorkspace,
+  ensureDefaultOrganizationSettings,
+  sendUserInviteEmail,
+  authService,
+} = require('../lib/platform-provision');
 
 function serializeOrg(org) {
   if (!org) return null;
@@ -92,17 +102,26 @@ async function getOrganization(request, reply) {
           },
         },
         users: {
-          take: 50,
+          take: 100,
           orderBy: { createdAt: 'desc' },
           select: {
             id: true,
             email: true,
             name: true,
             status: true,
+            jobTitle: true,
+            mfaEnabled: true,
             roleRelation: { select: { id: true, name: true } },
             lastLoginAt: true,
+            lastActiveAt: true,
             createdAt: true,
           },
+        },
+        settings: true,
+        moderationFlags: {
+          where: { status: { in: ['open', 'quarantined'] } },
+          take: 20,
+          orderBy: { createdAt: 'desc' },
         },
       },
     });
@@ -121,6 +140,165 @@ async function getOrganization(request, reply) {
     return reply.status(500).send({
       error: 'InternalServerError',
       message: error.message || 'Failed to load organization',
+      statusCode: 500,
+    });
+  }
+}
+
+async function createOrganization(request, reply) {
+  try {
+    const body = request.body || {};
+    const name = String(body.name || '').trim();
+    if (!name) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'Organization name is required',
+        statusCode: 400,
+      });
+    }
+    if (name.length > 100) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'Organization name cannot exceed 100 characters',
+        statusCode: 400,
+      });
+    }
+
+    const adminEmail = body.adminEmail ? String(body.adminEmail).toLowerCase().trim() : '';
+    const adminName = body.adminName ? String(body.adminName).trim() : '';
+
+    if (adminEmail) {
+      const emailValidation = await authService.validateBusinessEmail(adminEmail);
+      if (!emailValidation.isValid) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          message: emailValidation.message,
+          statusCode: 400,
+        });
+      }
+      const existingUser = await authService.findUserByEmail(adminEmail);
+      if (existingUser) {
+        return reply.status(409).send({
+          error: 'Conflict',
+          message: 'Admin email is already registered',
+          statusCode: 409,
+        });
+      }
+    }
+
+    let plan = null;
+    if (body.planId) {
+      plan = await prisma.plan.findUnique({ where: { id: String(body.planId) } });
+      if (!plan) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          message: 'Plan not found',
+          statusCode: 400,
+        });
+      }
+    } else {
+      plan =
+        (await prisma.plan.findFirst({
+          where: {
+            OR: [{ id: 'free' }, { name: { equals: 'Free', mode: 'insensitive' } }],
+          },
+        })) || null;
+    }
+
+    const requestedSlug = body.slug ? slugify(body.slug) : slugify(name);
+    const slug = await ensureUniqueSlug(prisma, requestedSlug);
+
+    const org = await prisma.organization.create({
+      data: {
+        name,
+        slug,
+        planType: plan?.id || 'free',
+        currentPlanId: plan?.id || null,
+        status: 'active',
+        storageQuotaBytes: plan?.storageQuotaBytes ?? BigInt(5 * 1024 ** 3),
+        maxUsers: plan?.maxUsers ?? 5,
+        maxWorkspaces: plan?.maxWorkspaces ?? 3,
+        features: plan?.features ?? {},
+        subscriptionStatus: plan ? 'active' : 'trialing',
+      },
+    });
+
+    await ensureDefaultOrganizationSettings(prisma, org.id);
+
+    const workspaceName = formatWorkspaceName(name);
+    const workspace = await createDefaultWorkspace(prisma, {
+      name: workspaceName,
+      description: `Default workspace for ${name}`,
+      color: '#4f46e5',
+      orgId: org.id,
+      orgName: name,
+    });
+
+    let adminUser = null;
+    if (adminEmail) {
+      const superAdminRole = await resolveSuperAdminRole(prisma);
+      adminUser = await prisma.user.create({
+        data: {
+          email: adminEmail,
+          name: adminName || null,
+          orgId: org.id,
+          roleId: superAdminRole.id,
+          status: 'inactive',
+          mfaEnabled: true,
+        },
+      });
+
+      await prisma.workspaceUser.create({
+        data: {
+          workspaceId: workspace.id,
+          userId: adminUser.id,
+        },
+      });
+
+      try {
+        await sendUserInviteEmail({
+          request,
+          user: adminUser,
+          roleName: superAdminRole.name,
+        });
+      } catch (emailErr) {
+        console.warn('[platform] Failed to send admin invite email:', emailErr.message);
+      }
+    }
+
+    const full = await prisma.organization.findUnique({
+      where: { id: org.id },
+      include: {
+        currentPlan: true,
+        _count: { select: { users: true, workspaces: true, assets: true } },
+      },
+    });
+
+    await writePlatformAudit({
+      activityName: 'Organization created',
+      description: `Created org ${name} (${slug})${adminEmail ? ` with admin ${adminEmail}` : ''}`,
+      activityType: 'organization',
+      admin: request.platformAdmin,
+      orgId: org.id,
+    });
+
+    return reply.status(201).send({
+      success: true,
+      organization: serializeOrg(full),
+      adminUser: adminUser
+        ? {
+            id: adminUser.id,
+            email: adminUser.email,
+            name: adminUser.name,
+            status: adminUser.status,
+          }
+        : null,
+    });
+  } catch (error) {
+    console.error('createOrganization error:', error);
+    return reply.status(500).send({
+      error: 'InternalServerError',
+      message: error.message || 'Failed to create organization',
       statusCode: 500,
     });
   }
@@ -243,6 +421,7 @@ async function updateWorkspace(request, reply) {
 module.exports = {
   listOrganizations,
   getOrganization,
+  createOrganization,
   patchOrganization,
   updateWorkspace,
 };

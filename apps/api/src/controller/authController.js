@@ -1166,13 +1166,13 @@ module.exports.resetPassword = async (request, reply) => {
     //get first name from name
     const firstName = name.trim().split(/\s+/)[0];
     // Automatically create a default workspace for the new user and add them as a member
-    const defaultWorkspace = await request.server.prisma.workspace.create({
-      data: {
-        name: `${firstName}-Workspace`,
-        description: "Default workspace for " + name,
-        color: "#4f46e5",
-        orgId: updatedUser?.orgId,
-      }
+    const defaultWorkspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+      name: `${firstName}-Workspace`,
+      description: "Default workspace for " + name,
+      color: "#4f46e5",
+      orgId: updatedUser?.orgId,
+      orgName: updatedUser?.organization?.name || firstName,
+      uploadedByUserId: updatedUser?.id,
     });
     // Add the user as a WorkspaceUser so the workspace appears in their sidebar
     await request.server.prisma.workspaceUser.create({
@@ -2405,13 +2405,13 @@ module.exports.completeSignup = async (request, reply) => {
       });
     }
 
-    const workspace = await request.server.prisma.workspace.create({
-      data: {
-        name: formattedWorkspaceName,
-        description: `Workspace for ${formattedWorkspaceName}`,
-        color: "#4f46e5",
-        orgId: organization.id,
-      },
+    const workspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+      name: formattedWorkspaceName,
+      description: `Workspace for ${formattedWorkspaceName}`,
+      color: "#4f46e5",
+      orgId: organization.id,
+      orgName: organization.name,
+      uploadedByUserId: user.id,
     });
 
     // Assign Super Admins / Admins
