@@ -204,18 +204,33 @@ async function main() {
       plan = planMapByName.get(targetPlanName) || planMapByName.get('free');
     }
     if (plan) {
+      const planName = plan.name.toLowerCase();
+      const startDate = org.createdAt ? new Date(org.createdAt) : new Date();
+      let expiresAt = new Date(startDate);
+      if (planName === 'free') {
+        expiresAt.setDate(expiresAt.getDate() + 3);
+      } else {
+        const isMonthly = (org.metadata?.billingCycle || 'annual').toLowerCase() === 'monthly';
+        if (isMonthly) {
+          expiresAt.setMonth(expiresAt.getMonth() + 1);
+        } else {
+          expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+        }
+      }
+
       await prisma.organization.update({
         where: { id: org.id },
         data: {
           currentPlanId: plan.id,
-          planType: plan.name.toLowerCase(),
+          planType: planName,
           maxWorkspaces: plan.maxWorkspaces,
           maxProjects: plan.maxProjects,
           maxUsers: plan.maxUsers,
           storageQuotaBytes: plan.storageQuotaBytes,
+          planExpiresAt: expiresAt,
         },
       });
-      console.log(`Synced Org "${org.name}" (${org.id}) -> Plan "${plan.name}" (maxWorkspaces: ${plan.maxWorkspaces}, maxProjects: ${plan.maxProjects})`);
+      console.log(`Synced Org "${org.name}" (${org.id}) -> Plan "${plan.name}" (ExpiresAt: ${expiresAt.toISOString()})`);
     }
   }
 

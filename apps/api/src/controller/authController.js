@@ -932,6 +932,7 @@ module.exports.getMe = async (request, reply) => {
             maxUsers: true,
             features: true,
             metadata: true,
+            planExpiresAt: true,
           },
         },
         roleRelation: {
@@ -2247,6 +2248,7 @@ module.exports.completeSignup = async (request, reply) => {
       maxUsers: selectedMaxUsers,
       features: selectedFeatures,
       metadata: orgMetadata,
+      planExpiresAt: expiresAtDate,
     };
 
     if (user && user.orgId && user.status === "pending_signup") {
@@ -2485,6 +2487,125 @@ module.exports.logoutAll = async (request, reply) => {
       success: false,
       error: "Internal Server Error",
       message: "Failed to revoke all sessions",
+    });
+  }
+};
+
+module.exports.upgradePlan = async (request, reply) => {
+  try {
+    const userId = request.user.id;
+    const { planId = 'free', billingCycle = 'annual' } = request.body || {};
+
+    const user = await request.server.prisma.user.findUnique({
+      where: { id: userId },
+      include: { organization: true },
+    });
+
+    if (!user || !user.orgId) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Bad Request',
+        message: 'Organization not found for user',
+      });
+    }
+
+    const normalizedPlanId = String(planId).toLowerCase().trim();
+    const currentPlanType = String(user.organization?.planType || '').toLowerCase().trim();
+
+    if (normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd') {
+      return reply.status(403).send({
+        success: false,
+        error: 'Forbidden',
+        message: 'The Free plan trial can only be used once per organization. Please select a Basic, Premium, or Enterprise plan to upgrade.',
+      });
+    }
+
+    const dbPlan = await request.server.prisma.plan.findFirst({
+      where: {
+        OR: [
+          { id: normalizedPlanId },
+          { name: { equals: normalizedPlanId, mode: 'insensitive' } },
+        ],
+      },
+    }).catch(() => null);
+
+    const GB_BYTES = BigInt(1024 * 1024 * 1024);
+    const PLAN_LIMITS_MAP = {
+      free: {
+        storageQuotaBytes: BigInt(0),
+        maxUsers: 5,
+        maxWorkspaces: 1,
+        maxProjects: 1,
+      },
+      basic: {
+        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
+        maxUsers: 5,
+        maxWorkspaces: 2,
+        maxProjects: 2,
+      },
+      premium: {
+        storageQuotaBytes: BigInt(15) * GB_BYTES,
+        maxUsers: 10,
+        maxWorkspaces: 3,
+        maxProjects: 3,
+      },
+      enterprise: {
+        storageQuotaBytes: BigInt(20) * GB_BYTES,
+        maxUsers: 15,
+        maxWorkspaces: 4,
+        maxProjects: 4,
+      },
+    };
+
+    const resolvedPlanName = dbPlan ? dbPlan.name.toLowerCase() : (normalizedPlanId.length > 30 ? 'free' : normalizedPlanId);
+    const targetLimits = PLAN_LIMITS_MAP[resolvedPlanName] || PLAN_LIMITS_MAP[normalizedPlanId] || PLAN_LIMITS_MAP.free;
+    const isMonthly = String(billingCycle).toLowerCase() === 'monthly';
+
+    const now = new Date();
+    let expiresAtDate = new Date(now);
+    if (resolvedPlanName === 'free') {
+      expiresAtDate.setDate(expiresAtDate.getDate() + 3);
+    } else if (isMonthly) {
+      expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
+    } else {
+      expiresAtDate.setFullYear(expiresAtDate.getFullYear() + 1);
+    }
+
+    const updatedOrg = await request.server.prisma.organization.update({
+      where: { id: user.orgId },
+      data: {
+        planType: resolvedPlanName,
+        currentPlanId: dbPlan ? dbPlan.id : null,
+        maxWorkspaces: dbPlan?.maxWorkspaces ?? targetLimits.maxWorkspaces,
+        maxProjects: dbPlan?.maxProjects ?? targetLimits.maxProjects,
+        maxUsers: dbPlan?.maxUsers ?? targetLimits.maxUsers,
+        storageQuotaBytes: dbPlan?.storageQuotaBytes ?? targetLimits.storageQuotaBytes,
+        planExpiresAt: expiresAtDate,
+        metadata: {
+          ...(typeof user.organization?.metadata === 'object' ? user.organization.metadata : {}),
+          planId: normalizedPlanId,
+          billingCycle: normalizedPlanId === 'free' ? '3days' : (isMonthly ? 'monthly' : 'annual'),
+          planSelectedAt: now.toISOString(),
+          expiresAt: expiresAtDate.toISOString(),
+        },
+      },
+    });
+
+    return reply.send({
+      success: true,
+      message: `Plan updated to ${normalizedPlanId.toUpperCase()} successfully!`,
+      organization: {
+        ...updatedOrg,
+        storageQuotaBytes: updatedOrg.storageQuotaBytes?.toString?.() ?? '0',
+        storageUsedBytes: updatedOrg.storageUsedBytes?.toString?.() ?? '0',
+      },
+    });
+  } catch (error) {
+    console.error('Error upgrading plan:', error);
+    return reply.status(500).send({
+      success: false,
+      error: 'Internal Server Error',
+      message: error.message || 'Failed to upgrade plan',
     });
   }
 };

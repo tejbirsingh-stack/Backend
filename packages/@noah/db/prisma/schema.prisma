@@ -26,6 +26,7 @@ model Organization {
   maxProjects      Int      @default(10)
   stripeCustomerId String?  @db.VarChar(255)
   subscriptionStatus String? @db.VarChar(50)
+  planExpiresAt    DateTime? @map("plan_expires_at") @db.Timestamptz(6)
   usageWarningPercent Int    @default(80)
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
