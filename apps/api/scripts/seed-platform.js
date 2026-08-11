@@ -167,13 +167,7 @@ async function main() {
       heroSubtitle: 'Enterprise media asset management for modern creative teams.',
       ctaLabel: 'Get started',
       ctaHref: '/signup',
-      sections: [
-        {
-          id: 'features',
-          title: 'Built for media teams',
-          body: 'Review, annotate, organize, and deliver — in one place.',
-        },
-      ],
+      sections: { plansEnabled: true },
       publishedAt: new Date(),
     },
     update: {

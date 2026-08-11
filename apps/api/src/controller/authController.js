@@ -7,6 +7,31 @@ const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
+const { seedDefaultContentIntoWorkspace } = require("../lib/seed-default-content");
+
+async function createDefaultWorkspaceWithStarterContent(prisma, { name, description, color, orgId, orgName, uploadedByUserId = null }) {
+  const workspace = await prisma.workspace.create({
+    data: {
+      name,
+      description,
+      color: color || "#4f46e5",
+      orgId,
+    },
+  });
+
+  try {
+    await seedDefaultContentIntoWorkspace(prisma, {
+      orgId,
+      workspaceId: workspace.id,
+      orgName: orgName || name,
+      uploadedByUserId,
+    });
+  } catch (seedErr) {
+    console.warn("[signup] Failed to seed default content:", seedErr.message);
+  }
+
+  return workspace;
+}
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -416,13 +441,12 @@ module.exports.register = async (request, reply) => {
       finalOrgId = organization.id;
 
       // Automatically create a default workspace for the new organization
-      await request.server.prisma.workspace.create({
-        data: {
-          name: formattedWorkspaceName,
-          description: "Default workspace for " + name,
-          color: "#4f46e5",
-          orgId: finalOrgId,
-        }
+      await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+        name: formattedWorkspaceName,
+        description: "Default workspace for " + name,
+        color: "#4f46e5",
+        orgId: finalOrgId,
+        orgName: organization?.name || derivedOrgName,
       });
 
       // Automatically create default share settings for the new organization
@@ -1141,13 +1165,13 @@ module.exports.resetPassword = async (request, reply) => {
     //get first name from name
     const firstName = name.trim().split(/\s+/)[0];
     // Automatically create a default workspace for the new user and add them as a member
-    const defaultWorkspace = await request.server.prisma.workspace.create({
-      data: {
-        name: `${firstName}-Workspace`,
-        description: "Default workspace for " + name,
-        color: "#4f46e5",
-        orgId: updatedUser?.orgId,
-      }
+    const defaultWorkspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+      name: `${firstName}-Workspace`,
+      description: "Default workspace for " + name,
+      color: "#4f46e5",
+      orgId: updatedUser?.orgId,
+      orgName: updatedUser?.organization?.name || firstName,
+      uploadedByUserId: updatedUser?.id,
     });
     // Add the user as a WorkspaceUser so the workspace appears in their sidebar
     await request.server.prisma.workspaceUser.create({
@@ -1373,13 +1397,13 @@ module.exports.googleLogin = async (request, reply) => {
       const firstName = fullName.trim().split(/\s+/)[0];
 
       // Automatically create a default workspace for the new organization
-      await request.server.prisma.workspace.create({
-        data: {
-          name: formattedWorkspaceName,
-          description: "Default workspace for " + fullName,
-          color: "#4f46e5",
-          orgId: organization.id,
-        }
+      await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+        name: formattedWorkspaceName,
+        description: "Default workspace for " + fullName,
+        color: "#4f46e5",
+        orgId: organization.id,
+        orgName: organization.name,
+        uploadedByUserId: user.id,
       });
 
       // Automatically create default share settings for the new organization
@@ -1630,23 +1654,23 @@ module.exports.microsoftLogin = async (request, reply) => {
       const firstName = name.trim().split(/\s+/)[0];
 
       // Automatically create a default workspace for the new organization
-      await request.server.prisma.workspace.create({
-        data: {
-          name: formattedWorkspaceName,
-          description: "Default workspace for " + name,
-          color: "#4f46e5",
-          orgId: organization.id,
-        }
+      await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+        name: formattedWorkspaceName,
+        description: "Default workspace for " + name,
+        color: "#4f46e5",
+        orgId: organization.id,
+        orgName: organization.name || orgName,
+        uploadedByUserId: user.id,
       });
 
-      // Automatically create a default workspace for the new organization
-      await request.server.prisma.workspace.create({
-        data: {
-          name: orgName + " Workspace",
-          description: "Default workspace for " + orgName,
-          color: "#4f46e5",
-          orgId: organization.id,
-        }
+      // Automatically create a second default workspace for the organization
+      await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+        name: orgName + " Workspace",
+        description: "Default workspace for " + orgName,
+        color: "#4f46e5",
+        orgId: organization.id,
+        orgName: organization.name || orgName,
+        uploadedByUserId: user.id,
       });
 
       // Automatically create default share settings for the new organization
@@ -2339,13 +2363,13 @@ module.exports.completeSignup = async (request, reply) => {
       });
     }
 
-    const workspace = await request.server.prisma.workspace.create({
-      data: {
-        name: formattedWorkspaceName,
-        description: `Workspace for ${formattedWorkspaceName}`,
-        color: "#4f46e5",
-        orgId: organization.id,
-      },
+    const workspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+      name: formattedWorkspaceName,
+      description: `Workspace for ${formattedWorkspaceName}`,
+      color: "#4f46e5",
+      orgId: organization.id,
+      orgName: organization.name,
+      uploadedByUserId: user.id,
     });
 
     await request.server.prisma.workspaceUser.create({
