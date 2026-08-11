@@ -58,7 +58,7 @@ async function listItems(prisma, params) {
       OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
       OR id IN (
         SELECT "asset_id" FROM "project_sources" WHERE "project_id" IN (
-          SELECT id FROM "projects" WHERE "visibility" = 'public' AND "workspace_id" = ${workspaceId}
+          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" != 'inactive') AND "visibility" = 'public' AND "workspace_id" = ${workspaceId}
           UNION
           SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid
           UNION
@@ -71,6 +71,7 @@ async function listItems(prisma, params) {
       folderConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
       projectConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
     }
+    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" != 'inactive')`);
     projectConditions.push(Prisma.sql`(
       "visibility" = 'public' 
       OR ("visibility" = 'private' AND (
@@ -102,16 +103,13 @@ async function listItems(prisma, params) {
       ))
     )`);
     folderConditions.push(Prisma.sql`false`);
+    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" != 'inactive')`);
     projectConditions.push(Prisma.sql`(
-      ("workspace_id" != ${workspaceId} AND (
+      ("created_by_id" IS NULL OR "created_by_id" != ${params.userId}::uuid)
+      AND (
         id IN (SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid)
         OR id IN (SELECT "project_id" FROM "project_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
-      ))
-      OR
-      ("workspace_id" = ${workspaceId} AND (
-        EXISTS (SELECT 1 FROM "project_users" WHERE "project_id" = "projects".id AND "user_id" != ${params.userId}::uuid)
-        OR EXISTS (SELECT 1 FROM "project_groups" WHERE "project_id" = "projects".id)
-      ))
+      )
     )`);
   } else if (view === 'folder' && params.folderId) {
     assetConditions.push(Prisma.sql`"ownerType" = 'FOLDER' AND "ownerId" = ${params.folderId}::uuid`);
@@ -403,7 +401,7 @@ async function listItems(prisma, params) {
         isProject: true,
         createdAt: p.createdAt.toISOString(),
         workspaceId: p.workspaceId,
-        isSharedByMe: p.workspaceId === params.workspaceId,
+        isSharedByMe: Boolean(p.createdById && p.createdById === params.userId),
         itemCount: p._count?.sources || 0
       };
     }

@@ -47,8 +47,17 @@ async function verifyProjectAccess(projectId, userId, requiredLevel, localPrisma
 
   let highestLevelValue = 0;
 
-  // 0. Check project creator & workspace admin
-  if (project.createdByUserId === userId) {
+  // 0. Check system role, project creator & workspace admin
+  const requestingUser = await localPrisma.user.findUnique({
+    where: { id: userId },
+    select: { systemRole: true }
+  }).catch(() => null);
+
+  if (requestingUser && (requestingUser.systemRole === 'SUPER_ADMIN' || requestingUser.systemRole === 'ADMIN')) {
+    highestLevelValue = Math.max(highestLevelValue, ACCESS_LEVELS['Full Access']);
+  }
+
+  if (project.createdById === userId || project.createdByUserId === userId) {
     highestLevelValue = Math.max(highestLevelValue, ACCESS_LEVELS['Full Access']);
   }
 
@@ -56,8 +65,10 @@ async function verifyProjectAccess(projectId, userId, requiredLevel, localPrisma
     const wsUser = await localPrisma.workspaceUser.findFirst({
       where: { workspaceId: project.workspaceId, userId },
     });
-    if (wsUser && (wsUser.role === 'ADMIN' || wsUser.role === 'OWNER' || wsUser.role === 'SUPER_ADMIN')) {
-      highestLevelValue = Math.max(highestLevelValue, ACCESS_LEVELS['Full Access']);
+    if (wsUser) {
+      if (wsUser.role === 'ADMIN' || wsUser.role === 'OWNER' || wsUser.role === 'SUPER_ADMIN') {
+        highestLevelValue = Math.max(highestLevelValue, ACCESS_LEVELS['Full Access']);
+      }
     }
   }
 
