@@ -1140,9 +1140,8 @@ module.exports.resetPassword = async (request, reply) => {
 
     //get first name from name
     const firstName = name.trim().split(/\s+/)[0];
-
-    // Automatically create a default workspace for the new organization
-    await request.server.prisma.workspace.create({
+    // Automatically create a default workspace for the new user and add them as a member
+    const defaultWorkspace = await request.server.prisma.workspace.create({
       data: {
         name: `${firstName}-Workspace`,
         description: "Default workspace for " + name,
@@ -1150,7 +1149,13 @@ module.exports.resetPassword = async (request, reply) => {
         orgId: updatedUser?.orgId,
       }
     });
-
+    // Add the user as a WorkspaceUser so the workspace appears in their sidebar
+    await request.server.prisma.workspaceUser.create({
+      data: {
+        workspaceId: defaultWorkspace.id,
+        userId: updatedUser.id,
+      }
+    }).catch((err) => console.warn('Could not create WorkspaceUser for default workspace:', err));
     if (portalId && formId) {
       const userName = updatedUser.name || updatedUser.email.split('@')[0];
       const [firstname, ...lastnameParts] = userName.split(" ");
