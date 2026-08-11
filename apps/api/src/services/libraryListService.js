@@ -14,7 +14,8 @@ async function listItems(prisma, params) {
     dateRange = 'all',
     dateFrom,
     dateTo,
-    tagIds = ''
+    tagIds = '',
+    reviewStatus = 'all',
   } = params;
 
   const fp = fingerprint(params);
@@ -155,6 +156,32 @@ async function listItems(prisma, params) {
     }
   }
 
+  if (reviewStatus && reviewStatus !== 'all') {
+    if (reviewStatus === 'New') {
+      // Default status: missing metadata, empty value, or explicitly "New"
+      assetConditions.push(Prisma.sql`(
+        NOT EXISTS (SELECT 1 FROM "asset_metadata" am WHERE am."assetId" = "assets".id)
+        OR EXISTS (
+          SELECT 1 FROM "asset_metadata" am
+          WHERE am."assetId" = "assets".id
+          AND (
+            am."customProperties"->>'reviewStatus' IS NULL
+            OR am."customProperties"->>'reviewStatus' = ''
+            OR am."customProperties"->>'reviewStatus' = 'New'
+          )
+        )
+      )`);
+    } else {
+      assetConditions.push(Prisma.sql`EXISTS (
+        SELECT 1 FROM "asset_metadata" am
+        WHERE am."assetId" = "assets".id
+        AND am."customProperties"->>'reviewStatus' = ${reviewStatus}
+      )`);
+    }
+    folderConditions.push(Prisma.sql`false`);
+    projectConditions.push(Prisma.sql`false`);
+  }
+
   const assetWhere = assetConditions.length ? Prisma.sql`WHERE ${Prisma.join(assetConditions, ' AND ')}` : Prisma.empty;
   const folderWhere = folderConditions.length ? Prisma.sql`WHERE ${Prisma.join(folderConditions, ' AND ')}` : Prisma.empty;
   const projectWhere = projectConditions.length ? Prisma.sql`WHERE ${Prisma.join(projectConditions, ' AND ')}` : Prisma.empty;
@@ -275,6 +302,14 @@ async function listItems(prisma, params) {
         ? a.assetTags.map(at => at.tag?.name).filter(Boolean)
         : [];
 
+      let customMetadata = {};
+      if (a.metadata?.customProperties) {
+        customMetadata =
+          typeof a.metadata.customProperties === 'string'
+            ? JSON.parse(a.metadata.customProperties)
+            : a.metadata.customProperties;
+      }
+
       return {
         id: a.id,
         title: a.title,
@@ -288,6 +323,8 @@ async function listItems(prisma, params) {
         tags: dbTags,
         status: a.status,
         workspaceId: a.workspaceId,
+        customMetadata,
+        reviewStatus: customMetadata.reviewStatus || 'New',
         ...(a.shareLinks ? (() => {
           const nowTs = Date.now();
           const active = a.shareLinks.filter(sl => new Date(sl.expiresAt).getTime() > nowTs);

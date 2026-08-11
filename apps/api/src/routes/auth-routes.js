@@ -1,63 +1,69 @@
 // Authentication routes for login, registration, and session management
 const { authenticate } = require("../middleware/auth-middleware");
-
-const { login, register, logout, setupMfa, enableMfa, disableMfa, getMe, forgotPassword, resetPassword, googleLogin, microsoftLogin, registerRole, getRoles, getUsers, verifyEmail, sendSignupOtp, verifySignupOtp, completeSignup, checkEmail } = require("../controller");
+const authController = require("../controller/authController");
+const userController = require("../controller/userController");
 
 async function routes(fastify, options) {
   // New Onboarding Signup routes
-  fastify.post("/check-email", checkEmail);
-  fastify.post("/send-signup-otp", sendSignupOtp);
-  fastify.post("/verify-signup-otp", verifySignupOtp);
-  fastify.post("/complete-signup", completeSignup);
+  if (authController.checkEmail) fastify.post("/check-email", authController.checkEmail);
+  if (authController.sendSignupOtp) fastify.post("/send-signup-otp", authController.sendSignupOtp);
+  if (authController.verifySignupOtp) fastify.post("/verify-signup-otp", authController.verifySignupOtp);
+  if (authController.completeSignup) fastify.post("/complete-signup", authController.completeSignup);
 
   //1. Login route
-  fastify.post("/login", login);
+  if (authController.login) fastify.post("/login", authController.login);
 
   //2. Register route
-  fastify.post("/register", register);
+  if (authController.register) fastify.post("/register", authController.register);
 
   //3. Logout route
-  fastify.post("/logout", logout);
+  if (authController.logout) fastify.post("/logout", authController.logout);
 
   // Logout All Sessions
-  fastify.post("/logout-all", { preHandler: authenticate }, require('../controller/authController').logoutAll);
+  if (authController.logoutAll) fastify.post("/logout-all", { preHandler: authenticate }, authController.logoutAll);
 
-  fastify.post("/registerrole", { preHandler: authenticate }, registerRole);
+  if (authController.registerRole) fastify.post("/registerrole", { preHandler: authenticate }, authController.registerRole);
 
-  fastify.get("/roles", { preHandler: authenticate }, getRoles);
+  if (userController.getRoles) fastify.get("/roles", { preHandler: authenticate }, userController.getRoles);
 
-  fastify.get("/users", { preHandler: authenticate }, getUsers);
+  if (userController.getUsers) fastify.get("/users", { preHandler: authenticate }, userController.getUsers);
 
   //4. Setup MFA route (requires authentication)
-  fastify.post("/mfa/setup",{ preHandler: authenticate }, setupMfa);
+  if (authController.setupMfa) fastify.post("/mfa/setup", { preHandler: authenticate }, authController.setupMfa);
 
   //5. Verify and enable MFA route (requires authentication)
-  fastify.post("/mfa/enable",{ preHandler: authenticate }, enableMfa);
+  if (authController.enableMfa) fastify.post("/mfa/enable", { preHandler: authenticate }, authController.enableMfa);
 
   //6. Disable MFA route (requires authentication)
-  fastify.post("/mfa/disable", { preHandler: authenticate }, disableMfa);
+  if (authController.disableMfa) fastify.post("/mfa/disable", { preHandler: authenticate }, authController.disableMfa);
 
   //7. Get current user info (requires authentication)
-  fastify.get("/me", { preHandler: authenticate }, getMe);
+  if (authController.getMe) fastify.get("/me", { preHandler: authenticate }, authController.getMe);
 
   //8. Forgot password route
-  fastify.post("/forgot-password", forgotPassword);
+  if (authController.forgotPassword) fastify.post("/forgot-password", authController.forgotPassword);
 
   //9. Reset password route
-  fastify.post("/reset-password",resetPassword);
+  if (authController.resetPassword) fastify.post("/reset-password", authController.resetPassword);
 
   //10 Google login route
-  fastify.post("/loging-google", googleLogin);
-  fastify.post("/login-google", googleLogin);
-  fastify.post("/google-login", googleLogin);
+  if (authController.googleLogin) {
+    fastify.post("/loging-google", authController.googleLogin);
+    fastify.post("/login-google", authController.googleLogin);
+    fastify.post("/google-login", authController.googleLogin);
+  }
 
   //11. Microsoft login route
-  fastify.post("/login-microsoft", microsoftLogin);
-  fastify.post("/microsoft-login", microsoftLogin);
+  if (authController.microsoftLogin) {
+    fastify.post("/login-microsoft", authController.microsoftLogin);
+    fastify.post("/microsoft-login", authController.microsoftLogin);
+  }
 
   //12. Verify email routes
-  fastify.post("/verify-email", verifyEmail);
-  fastify.get("/verify-email", verifyEmail);
+  if (authController.verifyEmail) {
+    fastify.post("/verify-email", authController.verifyEmail);
+    fastify.get("/verify-email", authController.verifyEmail);
+  }
 }
 
 module.exports = routes;

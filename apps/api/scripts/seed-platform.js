@@ -20,21 +20,22 @@ const PLATFORM_ADMIN = {
   name: 'NOAH Platform Admin',
 };
 
+const MB = 1024 ** 2;
 const GB = 1024 ** 3;
 const TB = 1024 ** 4;
 
 const DEFAULT_PLANS = [
   {
-    id: 'free',
     name: 'Free',
     description: 'For individuals exploring Noah with core library tools.',
     monthlyPriceCents: 0,
     yearlyPriceCents: 0,
-    storageQuotaBytes: BigInt(5 * GB),
-    maxUsers: 2,
+    storageQuotaBytes: BigInt(0 * GB),
+    maxUsers: 5,
     maxWorkspaces: 1,
     features: [
-      'Up to 5 GB media storage',
+      '0 Storage',
+      '5 Members',
       'Basic media library & folders',
       'Share links with view access',
       'Mobile & desktop access',
@@ -47,15 +48,16 @@ const DEFAULT_PLANS = [
     isActive: true,
   },
   {
-    id: 'basic',
     name: 'Basic',
     description: 'For individuals and small teams getting started.',
     monthlyPriceCents: 1000,
     yearlyPriceCents: 10800,
-    storageQuotaBytes: BigInt(100 * GB),
+    storageQuotaBytes: BigInt(300 * MB),
     maxUsers: 5,
     maxWorkspaces: 3,
     features: [
+      '300 MB Storage',
+      '5 Members',
       'Media library essentials',
       'Share links & file comments',
       'Activity feed & project overview',
@@ -69,15 +71,16 @@ const DEFAULT_PLANS = [
     isActive: true,
   },
   {
-    id: 'premium',
     name: 'Premium',
     description: 'For growing teams that need smarter workflows.',
     monthlyPriceCents: 2500,
     yearlyPriceCents: 27000,
-    storageQuotaBytes: BigInt(1 * TB),
-    maxUsers: 25,
+    storageQuotaBytes: BigInt(15 * GB),
+    maxUsers: 10,
     maxWorkspaces: 20,
     features: [
+      '15 GB Storage',
+      '10 Members',
       'Review & annotate video/audio',
       'Advanced filters & reporting',
       'Custom labels, priorities & checklists',
@@ -92,19 +95,19 @@ const DEFAULT_PLANS = [
     isActive: true,
   },
   {
-    id: 'enterprise',
     name: 'Enterprise',
     description: 'For large organizations with advanced needs.',
     monthlyPriceCents: 5000,
     yearlyPriceCents: 54000,
-    storageQuotaBytes: BigInt(10 * TB),
-    maxUsers: 500,
+    storageQuotaBytes: BigInt(20 * GB),
+    maxUsers: 15,
     maxWorkspaces: 1000,
     features: [
+      '20 GB Storage',
+      '15 Members',
       'Dedicated account manager',
       'Custom integrations & automation',
       'SSO & role-based access control',
-      'Unlimited projects & users',
       'KPI dashboards & reporting tools',
       'Onboarding support',
     ],
@@ -137,26 +140,22 @@ async function main() {
   console.log('Platform admin ready:', admin.email);
 
   for (const plan of DEFAULT_PLANS) {
-    await prisma.plan.upsert({
-      where: { id: plan.id },
-      create: plan,
-      update: {
-        name: plan.name,
-        description: plan.description,
-        monthlyPriceCents: plan.monthlyPriceCents,
-        yearlyPriceCents: plan.yearlyPriceCents,
-        storageQuotaBytes: plan.storageQuotaBytes,
-        maxUsers: plan.maxUsers,
-        maxWorkspaces: plan.maxWorkspaces,
-        features: plan.features,
-        isPublic: plan.isPublic,
-        isFeatured: plan.isFeatured,
-        sortOrder: plan.sortOrder,
-        ctaLabel: plan.ctaLabel,
-        isActive: plan.isActive,
-      },
+    const existing = await prisma.plan.findFirst({
+      where: { name: { equals: plan.name, mode: 'insensitive' } },
     });
-    console.log('Plan ready:', plan.id);
+
+    if (existing) {
+      const updated = await prisma.plan.update({
+        where: { id: existing.id },
+        data: plan,
+      });
+      console.log(`Plan ready: ${updated.name} (${updated.id})`);
+    } else {
+      const created = await prisma.plan.create({
+        data: plan,
+      });
+      console.log(`Plan ready: ${created.name} (${created.id})`);
+    }
   }
 
   await prisma.landingPage.upsert({
