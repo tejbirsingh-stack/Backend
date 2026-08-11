@@ -14,6 +14,7 @@ const {
   deleteProject,
   findTimezone,
   validateGuestUser,
+  searchGuestUsers
 } = require('../controller');
 const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
