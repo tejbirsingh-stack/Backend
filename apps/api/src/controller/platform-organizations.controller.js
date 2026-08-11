@@ -145,6 +145,8 @@ async function patchOrganization(request, reply) {
     }
     if (body.planType !== undefined) data.planType = String(body.planType);
     if (body.maxUsers !== undefined) data.maxUsers = parseInt(body.maxUsers, 10);
+    if (body.maxWorkspaces !== undefined) data.maxWorkspaces = parseInt(body.maxWorkspaces, 10);
+    if (body.maxProjects !== undefined) data.maxProjects = parseInt(body.maxProjects, 10);
     if (body.storageQuotaBytes !== undefined) {
       data.storageQuotaBytes = BigInt(body.storageQuotaBytes);
     }
@@ -159,9 +161,11 @@ async function patchOrganization(request, reply) {
             statusCode: 400,
           });
         }
-        data.planType = plan.id;
+        data.planType = plan.name.toLowerCase();
         data.storageQuotaBytes = plan.storageQuotaBytes;
         data.maxUsers = plan.maxUsers;
+        data.maxWorkspaces = plan.maxWorkspaces;
+        data.maxProjects = plan.maxProjects;
       }
     }
     if (body.subscriptionStatus !== undefined) {

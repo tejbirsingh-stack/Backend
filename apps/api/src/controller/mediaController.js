@@ -2533,7 +2533,13 @@ module.exports.initiateResumableUpload = async (request, reply) => {
 
   } catch (error) {
     console.error("Failed to initiate resumable upload:", error);
-    return reply.status(500).send({ message: "Failed to initiate upload session", error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "UPLOAD_FAILED",
+      message: error.message || "Failed to initiate upload session",
+      details: error.details || null,
+    });
   }
 }
 
@@ -2548,6 +2554,10 @@ module.exports.uploadChunk = async (request, reply) => {
   }
 
   try {
+    if (request.user && request.user.orgId) {
+      await assertQuotaAvailable(request.user.orgId, 0);
+    }
+
     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
     if (!sessionRaw) {
       return reply.status(404).send({ message: "Upload session not found or expired" });
@@ -2584,7 +2594,13 @@ module.exports.uploadChunk = async (request, reply) => {
 
   } catch (error) {
     console.error(`Failed to upload chunk ${partNumber}:`, error);
-    return reply.status(500).send({ message: `Failed to upload chunk ${partNumber}`, error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "CHUNK_UPLOAD_FAILED",
+      message: error.message || `Failed to upload chunk ${partNumber}`,
+      details: error.details || null,
+    });
   }
 }
 
@@ -2598,6 +2614,10 @@ module.exports.getChunkUploadUrl = async (request, reply) => {
   }
 
   try {
+    if (request.user && request.user.orgId) {
+      await assertQuotaAvailable(request.user.orgId, 0);
+    }
+
     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
     if (!sessionRaw) {
       return reply.status(404).send({ message: "Upload session not found or expired" });
@@ -2610,7 +2630,13 @@ module.exports.getChunkUploadUrl = async (request, reply) => {
     return { success: true, partNumber, presignedUrl };
   } catch (error) {
     console.error(`Failed to generate upload URL for chunk ${partNumber}:`, error);
-    return reply.status(500).send({ message: `Failed to generate upload URL for chunk ${partNumber}`, error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "CHUNK_URL_FAILED",
+      message: error.message || `Failed to generate upload URL for chunk ${partNumber}`,
+      details: error.details || null,
+    });
   }
 }
 
@@ -2949,7 +2975,13 @@ module.exports.completeResumableUpload = async (request, reply) => {
 
   } catch (error) {
     console.error("❌ Failed to complete resumable upload:", error);
-    return reply.status(500).send({ message: "Failed to complete upload session", error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "COMPLETION_FAILED",
+      message: error.message || "Failed to complete upload session",
+      details: error.details || null,
+    });
   }
 }
 

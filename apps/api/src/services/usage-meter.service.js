@@ -434,6 +434,8 @@ async function getUsageSummary(orgId) {
   // 6. Counts for Projects & Workspaces
   const projectsCount = await prisma.project.count({ where: { workspace: { orgId } } });
   const workspacesCount = await prisma.workspace.count({ where: { orgId } });
+  const projectsTotal = org.currentPlan?.maxProjects ?? org.maxProjects ?? 1;
+  const workspacesTotal = org.currentPlan?.maxWorkspaces ?? org.maxWorkspaces ?? 1;
 
   return {
     membersUsed,
@@ -459,7 +461,9 @@ async function getUsageSummary(orgId) {
       classB: Number(classBEvent._sum.delta || 0n),
     },
     projectsCount,
+    projectsTotal,
     workspacesCount,
+    workspacesTotal,
     seatGuardrailMax: membersTotal + 1,
   };
 }

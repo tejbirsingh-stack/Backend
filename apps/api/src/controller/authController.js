@@ -406,11 +406,19 @@ module.exports.register = async (request, reply) => {
       const derivedOrgName = formatDomainToOrgName(email, orgName || name);
       const rawOrgName = orgName || name || email.split('@')[0];
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
           planType: "free",
+          currentPlanId: freePlan ? freePlan.id : null,
+          maxWorkspaces: freePlan ? freePlan.maxWorkspaces : 1,
+          maxProjects: freePlan ? freePlan.maxProjects : 1,
+          storageQuotaBytes: freePlan ? freePlan.storageQuotaBytes : BigInt(0),
+          maxUsers: freePlan ? freePlan.maxUsers : 5,
         },
       });
       finalOrgId = organization.id;

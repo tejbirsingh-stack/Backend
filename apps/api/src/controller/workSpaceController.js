@@ -43,6 +43,19 @@ module.exports.storeWorkplace = async (request, reply) => {
             });
         }
 
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            include: { currentPlan: true }
+        });
+        const maxWorkspaces = org?.currentPlan?.maxWorkspaces ?? org?.maxWorkspaces ?? 1;
+        const currentWorkspaceCount = await prisma.workspace.count({ where: { orgId } });
+        if (currentWorkspaceCount >= maxWorkspaces) {
+            return reply.code(403).send({
+                success: false,
+                message: `Workspace limit (${maxWorkspaces}) reached for your current plan. Please upgrade to create more workspaces.`
+            });
+        }
+
         const formattedWorkspaceName = formatWorkspaceNameWithSuffix(name);
 
         const existing = await prisma.workspace.findFirst({
@@ -359,6 +372,21 @@ module.exports.createProject = async (request, reply) => {
             return reply.code(400).send({
                 success: false,
                 message: 'Project name cannot exceed 100 characters.'
+            });
+        }
+
+        const org = await prisma.organization.findUnique({
+            where: { id: orgId },
+            include: { currentPlan: true }
+        });
+        const maxProjects = org?.currentPlan?.maxProjects ?? org?.maxProjects ?? 1;
+        const currentProjectCount = await prisma.project.count({
+            where: { workspace: { orgId } }
+        });
+        if (currentProjectCount >= maxProjects) {
+            return reply.code(403).send({
+                success: false,
+                message: `Project limit (${maxProjects}) reached for your current plan. Please upgrade to create more projects.`
             });
         }
 
