@@ -12,6 +12,7 @@ const {
   findProjectData,
   findAllProjects,
   findTimezone,
+  validateGuestUser,
 } = require('../controller');
 const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
@@ -33,6 +34,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get('/project/find-all-data/:projectId', canRead, findProjectData);
   fastify.get('/project/find-all', canRead, findAllProjects);
   fastify.get('/timezone', canRead, findTimezone);
+  fastify.get('/validate-guest', canRead, validateGuestUser);
 
   done();
 };

@@ -1,6 +1,8 @@
 const prisma = require('../utils/prisma');
 const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
 const { getAncestors } = require('../services/tagHierarchy');
+const { autoAssignAdminsToWorkspace, assertWorkspaceAccess } = require('../services/workspace.service');
+
 function formatWorkspaceNameWithSuffix(value) {
   if (!value || typeof value !== "string") return "Workspace-ARK";
   let trimmed = value.trim();
@@ -13,7 +15,12 @@ function formatWorkspaceNameWithSuffix(value) {
 
 module.exports.storeWorkplace = async (request, reply) => {
     try {
-        const { name, description, color, inviteEmails, inviteGroupIds } = request.body;
+        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel } = request.body;
+        
+        // Default values for granular permissions if not provided
+        const mType = memberType || 'MEMBER';
+        const aLevel = accessLevel || 'FULL_ACCESS';
+        
         const { orgId } = request.user;
         const userId = request.user?.id || request.user?.userId || request.user?.sub;
 
@@ -81,37 +88,67 @@ module.exports.storeWorkplace = async (request, reply) => {
         if (Array.isArray(inviteEmails) && inviteEmails.length > 0) {
             for (const email of inviteEmails) {
                 if (!email || typeof email !== 'string') continue;
-                const invitedUser = await prisma.user.findFirst({
-                    where: { email: email.toLowerCase().trim(), orgId }
-                });
-                if (invitedUser && invitedUser.id !== userId) {
+
+                if (mType === 'GUEST') {
+                    // Guest: must exist in DB, belong to a different org, and be active
+                    const guestUser = await prisma.user.findFirst({
+                        where: { email: email.toLowerCase().trim() }
+                    });
+                    if (
+                        !guestUser ||
+                        guestUser.status !== 'active' ||
+                        !guestUser.orgId ||
+                        guestUser.orgId === orgId
+                    ) {
+                        // Skip invalid guest: not found, inactive, no org, or same org
+                        continue;
+                    }
                     await prisma.workspaceUser.create({
                         data: {
                             workspaceId: workspace.id,
-                            userId: invitedUser.id
+                            userId: guestUser.id,
+                            memberType: 'GUEST',
+                            accessLevel: aLevel
                         }
                     }).catch(() => {});
+                } else {
+                    // Member: must belong to the same org
+                    const invitedUser = await prisma.user.findFirst({
+                        where: { email: email.toLowerCase().trim(), orgId }
+                    });
+                    if (invitedUser && invitedUser.id !== userId) {
+                        await prisma.workspaceUser.create({
+                            data: {
+                                workspaceId: workspace.id,
+                                userId: invitedUser.id,
+                                memberType: mType,
+                                accessLevel: aLevel
+                            }
+                        }).catch(() => {});
+                    }
                 }
             }
         }
 
         // 3. Link members of invited groups if inviteGroupIds supplied
         if (Array.isArray(inviteGroupIds) && inviteGroupIds.length > 0) {
-            const groupMembers = await prisma.userGroupMember.findMany({
-                where: { groupId: { in: inviteGroupIds } },
-                select: { userId: true }
-            });
-            for (const gm of groupMembers) {
-                if (gm.userId && gm.userId !== userId) {
-                    await prisma.workspaceUser.create({
+            for (const groupId of inviteGroupIds) {
+                if (typeof groupId === 'string') {
+                    // Create the WorkspaceGroup link directly to give everyone in the group access
+                    await prisma.workspaceGroup.create({
                         data: {
                             workspaceId: workspace.id,
-                            userId: gm.userId
+                            groupId: groupId,
+                            accessLevel: aLevel
                         }
                     }).catch(() => {});
                 }
             }
         }
+
+        // 4. Automatically grant access to all Super Admins and Admins in the organization
+        await autoAssignAdminsToWorkspace(prisma, orgId, workspace.id);
+
 
         logSuccess(ACTIVITY_NAME.WORKSPACE_CREATED, "Workspace created successfully.", request);
         return reply.code(201).send({
@@ -130,12 +167,77 @@ module.exports.storeWorkplace = async (request, reply) => {
     }
 };
 
+// Validate a guest user email: must exist, be active, have an org, and NOT be from the requester's org
+module.exports.validateGuestUser = async (request, reply) => {
+    try {
+        const { email } = request.query || {};
+        const { orgId } = request.user;
+
+        if (!email || typeof email !== 'string') {
+            return reply.code(400).send({ valid: false, reason: 'Email is required.' });
+        }
+
+        const user = await prisma.user.findFirst({
+            where: { email: email.toLowerCase().trim() }
+        });
+
+        if (!user) {
+            return reply.code(200).send({ valid: false, reason: 'User not found in the system.' });
+        }
+        if (user.status !== 'active') {
+            return reply.code(200).send({ valid: false, reason: 'User account is not active.' });
+        }
+        if (!user.orgId) {
+            return reply.code(200).send({ valid: false, reason: 'User does not belong to any organization.' });
+        }
+        if (user.orgId === orgId) {
+            return reply.code(200).send({ valid: false, reason: 'User is already a member of your organization. Use the Member type instead.' });
+        }
+
+        return reply.code(200).send({
+            valid: true,
+            user: { id: user.id, name: user.name, email: user.email }
+        });
+    } catch (error) {
+        console.error(error);
+        return reply.code(500).send({ valid: false, reason: 'Internal Server Error' });
+    }
+};
+
 module.exports.findAllWorkspaces = async (request, reply) => {
     try {
         const { orgId } = request.user;
+        const userId = request.user?.id || request.user?.userId || request.user?.sub;
+
         const workspaces = await prisma.workspace.findMany({
             where: {
-                orgId
+                // No orgId filter here — guests can be in workspaces from other orgs.
+                // The OR below ensures a user only sees workspaces they explicitly belong to.
+                OR: [
+                    {
+                        // Directly added via workspace_users (members AND guests)
+                        users: {
+                            some: {
+                                userId: userId
+                            }
+                        }
+                    },
+                    {
+                        // Added via a user-group linked to the workspace (same-org groups only)
+                        groups: {
+                            some: {
+                                group: {
+                                    orgId,   // groups are always org-scoped
+                                    members: {
+                                        some: {
+                                            userId: userId
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
             },
             orderBy: {
                 createdAt: 'desc'
@@ -162,6 +264,16 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
     try {
         const { id } = request.params;  //workspace Id
         const { tagIds } = request.query || {};
+
+        // ── Access gate ───────────────────────────────────────────────────────
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, id);
+        if (!hasAccess) {
+            return reply.code(403).send({
+                success: false,
+                message: 'You do not have access to this workspace.'
+            });
+        }
+        // ──────────────────────────────────────────────────────────────────────
 
         let tagsArray = [];
         if (tagIds) {

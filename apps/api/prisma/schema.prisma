@@ -193,6 +193,7 @@ model Workspace {
   projects Project[]
   assets   Asset[]
   users  WorkspaceUser[]
+  groups WorkspaceGroup[]
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
 
@@ -207,6 +208,8 @@ model WorkspaceUser {
   id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId String @map("workspace_id")
   userId      String @map("user_id") @db.Uuid
+  memberType  String @default("MEMBER") @map("member_type") @db.VarChar(50)
+  accessLevel String @default("FULL_ACCESS") @map("access_level") @db.VarChar(50)
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -218,6 +221,24 @@ model WorkspaceUser {
   @@index([workspaceId])
   @@index([userId])
   @@map("workspace_users")
+}
+
+model WorkspaceGroup {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId String    @map("workspace_id")
+  groupId     String    @map("group_id") @db.Uuid
+  accessLevel String    @default("FULL_ACCESS") @map("access_level") @db.VarChar(50)
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  group       UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([workspaceId, groupId])
+  @@index([workspaceId])
+  @@index([groupId])
+  @@map("workspace_groups")
 }
 
 model Folder {
@@ -699,6 +720,7 @@ model UserGroup {
 
   members      UserGroupMember[]
   assetGroups  AssetGroup[]
+  workspaceGroups WorkspaceGroup[]
 
   @@unique([orgId, name])
   @@index([orgId])

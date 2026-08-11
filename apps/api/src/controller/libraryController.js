@@ -9,7 +9,7 @@ module.exports.listLibraryItems = async (request, reply) => {
       view: request.query.view || 'all',
       pageSize: request.query.pageSize ? parseInt(request.query.pageSize, 10) : 48,
     };
-    
+
     const result = await listItems(request.server.prisma, params);
     return reply.code(200).send({ success: true, data: result });
   } catch (err) {
@@ -22,6 +22,6 @@ module.exports.listLibraryItems = async (request, reply) => {
     }
     request.log.error(err);
     console.error("listLibraryItems Error:", err);
-    return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    return reply.code(500).send({ success: false, message: 'Internal Server Error', err: err?.message });
   }
 };
