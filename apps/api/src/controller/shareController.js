@@ -114,7 +114,9 @@ async function createShareLink(req, reply) {
     let passwordHash = null;
     let finalPassword = password;
     
-    if (orgSettings.requirePasswordDefault !== undefined) {
+    if (visibility === 'public') {
+      finalPassword = null;
+    } else if (orgSettings.requirePasswordDefault !== undefined) {
       if (orgSettings.requirePasswordDefault) {
         if (!finalPassword || finalPassword.trim().length === 0) {
           finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing
@@ -326,7 +328,10 @@ async function updateShareLink(req, reply) {
       where: { id: shareLinkId },
       data: {
         ...(name !== undefined && { name }),
-        ...(visibility !== undefined && { visibility }),
+        ...(visibility !== undefined && { 
+             visibility, 
+             ...(visibility === 'public' ? { passwordHash: null } : {}) 
+           }),
         ...(finalPermissions !== undefined && { permissions: finalPermissions }),
       }
     });
@@ -472,7 +477,10 @@ async function resolveShareToken(prisma, token) {
     where: { token, revokedAt: null },
     include: {
       shareLink: {
-        include: { asset: true, organization: true },
+        include: { 
+          asset: { include: { files: true, metadata: true } }, 
+          organization: true 
+        },
       },
     },
   });
@@ -488,7 +496,10 @@ async function resolveShareToken(prisma, token) {
   // Check main share link token
   const shareLink = await prisma.shareLink.findFirst({
     where: { token, revokedAt: null },
-    include: { asset: true, organization: true },
+    include: { 
+      asset: { include: { files: true, metadata: true } }, 
+      organization: true 
+    },
   });
 
   if (shareLink) {

@@ -382,6 +382,7 @@ model Project {
   id        String              @id @default(uuid())
   name      String  @db.VarChar(100)
   ownerType MediaAssetOwnerType @map("owner_type")
+  visibility String @default("public") @db.VarChar(20)
 
   workspaceId String? @map("workspace_id") // set when ownerType = WORKSPACE
   folderId    String? @map("folder_id") // set when ownerType = FOLDER
@@ -391,6 +392,7 @@ model Project {
 
   sources     ProjectSource[]
   users       ProjectUser[]
+  groups      ProjectGroup[]
   defaultTags ProjectTag[]
 
   favorites Favorite[]
@@ -407,6 +409,8 @@ model ProjectUser {
   id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId String @map("project_id")
   userId    String @map("user_id") @db.Uuid
+  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
+  memberType  String @default("Member") @map("member_type") @db.VarChar(50)
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -418,6 +422,24 @@ model ProjectUser {
   @@index([projectId])
   @@index([userId])
   @@map("project_users")
+}
+
+model ProjectGroup {
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId   String @map("project_id")
+  groupId     String @map("group_id") @db.Uuid
+  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
+
+  project Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  group   UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([projectId, groupId])
+  @@index([projectId])
+  @@index([groupId])
+  @@map("project_groups")
 }
 
 
@@ -721,6 +743,7 @@ model UserGroup {
   members      UserGroupMember[]
   assetGroups  AssetGroup[]
   workspaceGroups WorkspaceGroup[]
+  projects     ProjectGroup[]
 
   @@unique([orgId, name])
   @@index([orgId])
@@ -955,7 +978,7 @@ model PlatformSession {
 
 /// Sellable plan/package catalog managed by Platform Admins
 model Plan {
-  id                 String   @id @db.VarChar(255) // slug-style id: free, basic, premium, enterprise
+  id                 String   @id @default(uuid()) @db.VarChar(255)
   name               String   @db.VarChar(100)
   description        String?  @db.Text
   monthlyPriceCents  Int      @default(0)

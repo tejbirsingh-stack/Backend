@@ -17,10 +17,12 @@ function formatBytes(bytes) {
   const b = Number(bytes);
   if (isNaN(b) || b <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-  const i = Math.min(Math.floor(Math.log10(b) / 3), units.length - 1);
+  const k = 1024;
+  const i = Math.min(Math.floor(Math.log(b) / Math.log(k)), units.length - 1);
   if (i === 0) return `${b} B`;
-  const val = b / Math.pow(1000, i);
-  return `${val.toFixed(val >= 10 ? 1 : 2)} ${units[i]}`;
+  const val = b / Math.pow(k, i);
+  const formattedVal = Math.abs(val - Math.round(val)) < 0.05 ? Math.round(val) : val.toFixed(1);
+  return `${formattedVal} ${units[i]}`;
 }
 
 /**
@@ -29,7 +31,7 @@ function formatBytes(bytes) {
 async function assertQuotaAvailable(orgId, additionalBytes = 0) {
   if (!orgId) return;
 
-  const org = await prisma.organization.findUnique({
+  let org = await prisma.organization.findUnique({
     where: { id: orgId },
     include: { currentPlan: true },
   });
@@ -40,13 +42,34 @@ async function assertQuotaAvailable(orgId, additionalBytes = 0) {
     throw err;
   }
 
-  const quota = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 1099511627776);
+  if (!org.currentPlan && org.planType) {
+    try {
+      const matchedPlan = await prisma.plan.findFirst({
+        where: {
+          OR: [
+            { id: org.planType.toLowerCase().trim() },
+            { name: { equals: org.planType.trim(), mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (matchedPlan) {
+        org.currentPlanId = matchedPlan.id;
+        org.currentPlan = matchedPlan;
+        await prisma.organization.update({
+          where: { id: orgId },
+          data: { currentPlanId: matchedPlan.id, storageQuotaBytes: matchedPlan.storageQuotaBytes },
+        }).catch(() => {});
+      }
+    } catch {}
+  }
+
+  const quota = BigInt(org.currentPlan?.storageQuotaBytes ?? 314572800n);
   const used = BigInt(org.storageUsedBytes || 0);
   const add = BigInt(additionalBytes);
 
-  if (used + add > quota) {
-    const err = new Error('Storage quota exceeded. Free space or upgrade your plan.');
-    err.statusCode = 413;
+  if (used + add >= quota) {
+    const err = new Error('Storage limit reached. Please upgrade your plan to upload more files.');
+    err.statusCode = 403;
     err.code = 'QUOTA_EXCEEDED';
     err.details = {
       storageUsedBytes: Number(used),
@@ -177,23 +200,45 @@ async function getUsageSummary(orgId) {
     if (org) org.storageSystems = [];
   }
 
-  if (!org) {
-    const err = new Error('Organization not found');
-    err.statusCode = 404;
-    throw err;
+  if (!org.currentPlan && org.planType) {
+    try {
+      const matchedPlan = await prisma.plan.findFirst({
+        where: {
+          OR: [
+            { id: org.planType.toLowerCase().trim() },
+            { name: { equals: org.planType.trim(), mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (matchedPlan) {
+        org.currentPlanId = matchedPlan.id;
+        org.currentPlan = matchedPlan;
+        prisma.organization.update({
+          where: { id: orgId },
+          data: { currentPlanId: matchedPlan.id },
+        }).catch(() => {});
+      }
+    } catch {}
   }
 
   // 1. Members / Seats
-  const membersTotal = org.currentPlan?.maxUsers ?? org.maxUsers ?? 10;
-  const membersActive = await prisma.user.count({
-    where: { orgId, status: 'active' },
+  const membersTotal = org.currentPlan?.maxUsers ?? org.maxUsers ?? 5;
+  const orgUsers = await prisma.user.findMany({
+    where: { orgId },
+    select: { status: true },
   });
-  const membersPending = await prisma.user.count({
-    where: { orgId, status: 'pending' },
-  });
-  const membersUsed = await prisma.user.count({
-    where: { orgId, status: { in: ['active', 'pending', 'invited'] } },
-  });
+
+  let membersActive = 0;
+  let membersPending = 0;
+  for (const u of orgUsers) {
+    const s = (u.status || '').toLowerCase().trim();
+    if (s === 'active') {
+      membersActive++;
+    } else {
+      membersPending++;
+    }
+  }
+  const membersUsed = orgUsers.length;
 
   const seatsPercent = (membersUsed / Math.max(membersTotal, 1)) * 100;
   let seatsWarningLevel = 'ok';
@@ -287,8 +332,8 @@ async function getUsageSummary(orgId) {
       data: { storageUsedBytes: actualTotalBytes },
     }).catch((e) => console.warn('Background storageUsedBytes sync error:', e.message));
   }
+  const storageQuotaBytes = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 314572800n);
 
-  const storageQuotaBytes = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 1099511627776);
   const storagePercent = Number((storageUsedBytes * BigInt(100)) / (storageQuotaBytes > 0n ? storageQuotaBytes : 1n));
 
   let storageWarningLevel = 'ok';

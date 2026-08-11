@@ -425,7 +425,7 @@ module.exports.register = async (request, reply) => {
           orgId: finalOrgId,
         }
       });
-      
+
       // Store the new workspace ID to auto-assign the user later
       request.newWorkspaceId = newWorkspace.id;
 
@@ -669,12 +669,27 @@ module.exports.registerRole = async (request, reply) => {
     // Validate that the organization exists in database
     const organization = await request.server.prisma.organization.findUnique({
       where: { id: finalOrgId },
+      include: { currentPlan: true },
     });
     if (!organization) {
       return reply.status(400).send({
         success: false,
         error: "Bad Request",
         message: "Invalid organization ID: Organization not found",
+      });
+    }
+
+    // Check organization seat limit (capacity)
+    const maxUsers = organization.currentPlan?.maxUsers ?? organization.maxUsers ?? 10;
+    const currentUsersCount = await request.server.prisma.user.count({
+      where: { orgId: finalOrgId },
+    });
+
+    if (currentUsersCount >= maxUsers) {
+      return reply.status(403).send({
+        success: false,
+        error: "SeatLimitReached",
+        message: "Member seat limit reached. Please upgrade your plan to add more members.",
       });
     }
 
@@ -928,6 +943,12 @@ module.exports.getMe = async (request, reply) => {
             name: true,
             slug: true,
             planType: true,
+            currentPlanId: true,
+            storageQuotaBytes: true,
+            storageUsedBytes: true,
+            maxUsers: true,
+            features: true,
+            metadata: true,
           },
         },
         roleRelation: {
@@ -994,7 +1015,10 @@ module.exports.getMe = async (request, reply) => {
       where: { userId: user.id },
       select: { projectId: true },
     });
-    user.allowedProjectIds = projectUsers.map((pu) => pu.projectId);
+    if (user?.organization) {
+      user.organization.storageQuotaBytes = user.organization.storageQuotaBytes?.toString?.() ?? '0';
+      user.organization.storageUsedBytes = user.organization.storageUsedBytes?.toString?.() ?? '0';
+    }
 
     return {
       success: true,
@@ -1141,9 +1165,8 @@ module.exports.resetPassword = async (request, reply) => {
 
     //get first name from name
     const firstName = name.trim().split(/\s+/)[0];
-
-    // Automatically create a default workspace for the new organization
-    const newWorkspace = await request.server.prisma.workspace.create({
+    // Automatically create a default workspace for the new user and add them as a member
+    const defaultWorkspace = await request.server.prisma.workspace.create({
       data: {
         name: `${firstName}-Workspace`,
         description: "Default workspace for " + name,
@@ -1151,27 +1174,13 @@ module.exports.resetPassword = async (request, reply) => {
         orgId: updatedUser?.orgId,
       }
     });
-
-    // Assign Super Admins / Admins
-    await autoAssignAdminsToWorkspace(request.server.prisma, updatedUser?.orgId, newWorkspace.id);
-
-    // Ensure the user gets access to this new workspace
-    await request.server.prisma.workspaceUser.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: newWorkspace.id,
-          userId: updatedUser.id
-        }
-      },
-      update: {},
-      create: {
-        workspaceId: newWorkspace.id,
+    // Add the user as a WorkspaceUser so the workspace appears in their sidebar
+    await request.server.prisma.workspaceUser.create({
+      data: {
+        workspaceId: defaultWorkspace.id,
         userId: updatedUser.id,
-        memberType: 'MEMBER',
-        accessLevel: 'FULL_ACCESS'
       }
-    });
-
+    }).catch((err) => console.warn('Could not create WorkspaceUser for default workspace:', err));
     if (portalId && formId) {
       const userName = updatedUser.name || updatedUser.email.split('@')[0];
       const [firstname, ...lastnameParts] = userName.split(" ");
@@ -2185,31 +2194,127 @@ module.exports.completeSignup = async (request, reply) => {
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
+    const dbPlan = await request.server.prisma.plan.findUnique({
+      where: { id: planId },
+    }).catch(() => null);
+
+    const GB_BYTES = BigInt(1024 * 1024 * 1024);
+    const PLAN_LIMITS_MAP = {
+      free: {
+        storageQuotaBytes: BigInt(5) * GB_BYTES,
+        maxUsers: 5,
+        features: [
+          '5 GB Storage',
+          '5 Members',
+          'Basic media library & folders',
+          'Share links with view access',
+          'Mobile & desktop access',
+          'Community support',
+        ],
+      },
+      basic: {
+        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
+        maxUsers: 5,
+        features: [
+          '300 MB Storage',
+          '5 Members',
+          'Media library essentials',
+          'Share links & file comments',
+          'Activity feed & project overview',
+          'Mobile & desktop access',
+          'Email support',
+        ],
+      },
+      premium: {
+        storageQuotaBytes: BigInt(15) * GB_BYTES,
+        maxUsers: 10,
+        features: [
+          '15 GB Storage',
+          '10 Members',
+          'Review & annotate video/audio',
+          'Advanced filters & reporting',
+          'Custom labels, priorities & checklists',
+          'Project insights & team analytics',
+          'Billing & usage tracking',
+          'Priority support',
+        ],
+      },
+      enterprise: {
+        storageQuotaBytes: BigInt(20) * GB_BYTES,
+        maxUsers: 15,
+        features: [
+          '20 GB Storage',
+          '15 Members',
+          'Dedicated account manager',
+          'Custom integrations & automation',
+          'SSO & role-based access control',
+          'KPI dashboards & reporting tools',
+          'Onboarding support',
+        ],
+      },
+    };
+
+    const targetPlanLimits = PLAN_LIMITS_MAP[planId] || PLAN_LIMITS_MAP.free;
+
+    const selectedStorageQuotaBytes = dbPlan ? dbPlan.storageQuotaBytes : targetPlanLimits.storageQuotaBytes;
+    const selectedMaxUsers = dbPlan ? dbPlan.maxUsers : targetPlanLimits.maxUsers;
+    const selectedFeatures = dbPlan ? dbPlan.features : targetPlanLimits.features;
+
+    const isMonthly = (billingCycle || "annual").toLowerCase() === "monthly";
+    const now = new Date();
+    const expiresAtDate = new Date(now);
+    if (planId === "free") {
+      expiresAtDate.setDate(expiresAtDate.getDate() + 3);
+    } else if (isMonthly) {
+      expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
+    } else {
+      expiresAtDate.setFullYear(expiresAtDate.getFullYear() + 1);
+    }
+
+    const PRICE_TABLE = {
+      free: { monthlyCents: 0, yearlyMonthlyCents: 0, yearlyTotalCents: 0 },
+      basic: { monthlyCents: 1000, yearlyMonthlyCents: 900, yearlyTotalCents: 10800 },
+      premium: { monthlyCents: 2500, yearlyMonthlyCents: 2300, yearlyTotalCents: 27000 },
+      enterprise: { monthlyCents: 5000, yearlyMonthlyCents: 4500, yearlyTotalCents: 54000 },
+    };
+
+    const priceInfo = PRICE_TABLE[planId] || PRICE_TABLE.free;
+    const subtotalCents = isMonthly ? priceInfo.monthlyCents : priceInfo.yearlyTotalCents;
+    const taxCents = Math.round(subtotalCents * 0.06);
+    const totalCents = subtotalCents + taxCents;
+
     const orgMetadata = {
       website: companyWebsite || null,
       teamSize: teamSize || null,
       primaryFocus: firstFocus || null,
-      billingCycle: billingCycle || "annual",
+      planId: planId,
+      billingCycle: planId === "free" ? "3days" : (isMonthly ? "monthly" : "annual"),
+      planSelectedAt: now.toISOString(),
+      expiresAt: expiresAtDate.toISOString(),
+      subtotalCents,
+      taxCents,
+      totalCents,
+    };
+
+    const orgData = {
+      name: derivedOrgName,
+      slug: uniqueSlug,
+      planType: planId,
+      currentPlanId: dbPlan ? dbPlan.id : null,
+      storageQuotaBytes: selectedStorageQuotaBytes,
+      maxUsers: selectedMaxUsers,
+      features: selectedFeatures,
+      metadata: orgMetadata,
     };
 
     if (user && user.orgId && user.status === "pending_signup") {
       organization = await request.server.prisma.organization.update({
         where: { id: user.orgId },
-        data: {
-          name: derivedOrgName,
-          slug: uniqueSlug,
-          planType: planId,
-          metadata: orgMetadata,
-        },
+        data: orgData,
       });
     } else {
       organization = await request.server.prisma.organization.create({
-        data: {
-          name: derivedOrgName,
-          slug: uniqueSlug,
-          planType: planId,
-          metadata: orgMetadata,
-        },
+        data: orgData,
       });
     }
 
@@ -2308,7 +2413,7 @@ module.exports.completeSignup = async (request, reply) => {
         orgId: organization.id,
       },
     });
-    
+
     // Assign Super Admins / Admins
     await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, workspace.id);
 
@@ -2365,6 +2470,9 @@ module.exports.completeSignup = async (request, reply) => {
       token
     );
 
+    const authzContext = await loadUserAuthzContext(request.server.prisma, user.id);
+    const userPermissions = authzContext?.permissions || [];
+
     user.role = superAdminRole ? superAdminRole.name : "Super Admin";
 
     return reply.status(200).send({
@@ -2378,8 +2486,15 @@ module.exports.completeSignup = async (request, reply) => {
         name: user.name,
         email: user.email,
         orgId: user.orgId,
+        roleId: user.roleId,
         role: user.role,
-        organization: organization,
+        roleRelation: superAdminRole || { id: user.roleId, name: user.role },
+        permissions: userPermissions,
+        organization: {
+          ...organization,
+          storageQuotaBytes: organization.storageQuotaBytes?.toString?.() ?? '0',
+          storageUsedBytes: organization.storageUsedBytes?.toString?.() ?? '0',
+        },
         workspace: {
           id: workspace.id,
           name: workspace.name,

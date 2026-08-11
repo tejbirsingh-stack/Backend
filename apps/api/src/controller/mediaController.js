@@ -6,6 +6,7 @@ const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
+const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -1644,6 +1645,7 @@ module.exports.getMediaFile = async (request, reply) => {
         const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
 
         const fileSize = Number(originalFile?.sizeBytes || 0);
+        const proxySize = Number(proxyFile?.sizeBytes || 0);
         const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
         const normalizedType = determineAssetType(fetchedAsset, originalFile);
 
@@ -1667,6 +1669,8 @@ module.exports.getMediaFile = async (request, reply) => {
             name: fetchedAsset.title,
             type: normalizedType,
             size: fileSize,
+            proxySize,
+            hasProxy: Boolean(proxyFile),
             uploadDate: fetchedAsset.createdAt.toISOString(),
             url: fileUrl,
             thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
@@ -1680,6 +1684,8 @@ module.exports.getMediaFile = async (request, reply) => {
               transcodingProgress: transcodeJob?.status === 'processing'
                 ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
                 : null,
+              proxySize,
+              hasProxy: Boolean(proxyFile),
             },
             transcodingStatus: transcodeJob?.status || "completed",
             compressionStatus: transcodeJob?.status || "completed",
@@ -1732,6 +1738,20 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
     const totalFileSize = Number(request.query.fileSize) || Number(request.headers['x-file-size']) || 0;
     const durationSeconds = request.query.durationSeconds ? Number(request.query.durationSeconds) : null;
+
+    if (request.user && request.user.orgId) {
+      try {
+        await assertQuotaAvailable(request.user.orgId, totalFileSize);
+      } catch (quotaErr) {
+        return reply.code(quotaErr.statusCode || 403).send({
+          success: false,
+          error: "Forbidden",
+          code: quotaErr.code || "QUOTA_EXCEEDED",
+          message: quotaErr.message || "Storage limit reached. Please upgrade your plan to upload more files.",
+          details: quotaErr.details || null,
+        });
+      }
+    }
 
     // Write headers for NDJSON streaming immediately to flush them to the browser
     reply.raw.writeHead(200, {
@@ -2043,7 +2063,28 @@ module.exports.deleteMediaFile = async (request, reply) => {
           include: { roleRelation: true }
         });
         const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
-        const userRole = rawRoleName.trim().toLowerCase();
+        let userRole = rawRoleName.trim().toLowerCase();
+
+        // Check if asset is linked to any project
+        const projectSource = await request.server.prisma.projectSource.findFirst({
+          where: { assetId: assetToUpdate.id }
+        });
+
+        if (projectSource) {
+          try {
+            const level = await verifyProjectAccess(projectSource.projectId, request.user.id, 'Can edit', request.server.prisma);
+            if (level === 'Full Access' || (level === 'Can edit' && assetToUpdate.uploadedByUserId === request.user.id)) {
+              // Project access overrides global role to allow deletion
+              userRole = 'editor'; 
+            } else {
+              // Block if they don't meet project deletion rules (even if they are a global admin/editor)
+              return reply.code(403).send({ success: false, error: "Access Denied: You do not have permission to delete this project asset." });
+            }
+          } catch (e) {
+            // If verifyProjectAccess throws 403, it means they are 'Can view' or have no access
+            return reply.code(403).send({ success: false, error: "Access Denied: You do not have permission to delete this project asset." });
+          }
+        }
 
         // 1. Super Admin: Permanent Delete Directly
         if (userRole === 'super admin' || userRole === 'superadmin') {
@@ -2417,6 +2458,9 @@ module.exports.initiateResumableUpload = async (request, reply) => {
   }
 
   try {
+    if (linkedProjectId) {
+      await verifyProjectAccess(linkedProjectId, request.user?.id, 'Can edit', request.server.prisma);
+    }
     if (request.user && request.user.orgId) {
       await assertQuotaAvailable(request.user.orgId, fileSize);
     }
@@ -3330,6 +3374,73 @@ module.exports.updateAssetTags = async (request, reply) => {
     return reply.send({ success: true, tags });
   } catch (error) {
     console.error("Failed to update asset tags:", error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+const ALLOWED_REVIEW_STATUSES = [
+  'New',
+  'In-Progress',
+  'Request for Review',
+  'Under Review',
+  'Approved',
+  'Rejected',
+];
+
+module.exports.updateAssetReviewStatus = async (request, reply) => {
+  try {
+    const assetId = request.params.id || request.params.filename;
+    const { reviewStatus } = request.body || {};
+    const orgId = request.user?.orgId;
+
+    if (!orgId) {
+      return reply.status(403).send({ success: false, error: "No organization attached to user." });
+    }
+
+    if (!reviewStatus || !ALLOWED_REVIEW_STATUSES.includes(reviewStatus)) {
+      return reply.status(400).send({
+        success: false,
+        error: "Invalid review status",
+        allowed: ALLOWED_REVIEW_STATUSES,
+      });
+    }
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      include: { metadata: true },
+    });
+
+    if (!asset || asset.orgId !== orgId) {
+      return reply.status(404).send({ success: false, error: "Media asset not found" });
+    }
+
+    const currentCustomProps =
+      typeof asset.metadata?.customProperties === 'object' && asset.metadata.customProperties
+        ? asset.metadata.customProperties
+        : {};
+
+    const updatedCustomProps = {
+      ...currentCustomProps,
+      reviewStatus,
+    };
+
+    if (asset.metadata) {
+      await request.server.prisma.assetMetadata.update({
+        where: { assetId },
+        data: { customProperties: updatedCustomProps },
+      });
+    } else {
+      await request.server.prisma.assetMetadata.create({
+        data: {
+          assetId,
+          customProperties: updatedCustomProps,
+        },
+      });
+    }
+
+    return reply.send({ success: true, reviewStatus });
+  } catch (error) {
+    console.error("Failed to update asset review status:", error);
     return reply.status(500).send({ success: false, error: error.message });
   }
 };

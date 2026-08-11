@@ -18,6 +18,7 @@ const {
   completeResumableUpload,
   abortResumableUpload,
   retryTranscode,
+  updateAssetReviewStatus,
   handleCoconutWebhook,
   requestPermanentDelete,
   adminApproveDelete,
@@ -82,6 +83,9 @@ module.exports = function (fastify, opts, done) {
   //9.1 POST and PATCH /api/media/:filename/tags — update asset tags
   fastify.post("/:filename/tags", canTags, updateAssetTags);
   fastify.patch("/:filename/tags", canTags, updateAssetTags);
+
+  //9.1b PATCH /api/media/:id/review-status — update review workflow status
+  fastify.patch("/:id/review-status", canTags, updateAssetReviewStatus);
 
   //9.2 PUT /api/media/:id/move - move asset to another folder/workspace
   fastify.put("/:id/move", canTags, moveMediaFile);

@@ -11,6 +11,7 @@ const {
   updateProject,
   findProjectData,
   findAllProjects,
+  deleteProject,
   findTimezone,
   validateGuestUser,
 } = require('../controller');
@@ -30,11 +31,12 @@ module.exports = function (fastify, opts, done) {
   fastify.get('/folder/find-all-data/:id', canRead, findFolderData);
   fastify.post('/project/add/:workspaceId', canUpload, createProject);
   fastify.put('/project/update/:id', canUpload, updateProject);
+  fastify.delete('/project/delete/:id', canRead, deleteProject);
   fastify.post('/project/link-source/:projectId', canUpload, linkProjectSource);
   fastify.get('/project/find-all-data/:projectId', canRead, findProjectData);
   fastify.get('/project/find-all', canRead, findAllProjects);
   fastify.get('/timezone', canRead, findTimezone);
-  fastify.get('/validate-guest', canRead, validateGuestUser);
+  fastify.get('/search-guests', canRead, searchGuestUsers);
 
   done();
 };
