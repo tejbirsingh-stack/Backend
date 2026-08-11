@@ -223,57 +223,50 @@ module.exports.validateGuestUser = async (request, reply) => {
 
 module.exports.findAllWorkspaces = async (request, reply) => {
     try {
-        const { orgId } = request.user;
+        const { orgId } = request.user || {};
         const userId = request.user?.id || request.user?.userId || request.user?.sub;
 
-        const workspaces = await prisma.workspace.findMany({
-            where: {
-                // No orgId filter here — guests can be in workspaces from other orgs.
-                // The OR below ensures a user only sees workspaces they explicitly belong to.
-                OR: [
-                    {
-                        // Directly added via workspace_users (members AND guests)
-                        users: {
-                            some: {
-                                userId: userId
-                            }
-                        }
-                    },
-                    {
-                        // Added via a user-group linked to the workspace (same-org groups only)
-                        groups: {
-                            some: {
-                                group: {
-                                    orgId,   // groups are always org-scoped
-                                    members: {
-                                        some: {
-                                            userId: userId
-                                        }
-                                    }
-                                }
-                            }
-                        }
+        if (!userId) {
+            return reply.code(401).send({
+                success: false,
+                message: 'Unauthorized'
+            });
+        }
+
+        const orConditions = [
+            {
+                users: {
+                    some: {
+                        userId: userId
                     }
-                ]
+                }
+            }
+        ];
+
+        if (orgId) {
+            orConditions.push({ orgId: orgId });
+        }
+
+        let workspaces = await prisma.workspace.findMany({
+            where: {
+                OR: orConditions
             },
             orderBy: {
                 createdAt: 'desc'
             }
         });
 
-        // Fallback: if no workspaces found (e.g. auto-created workspace missing WorkspaceUser),
-        // check if the user's name-based workspace exists in their org and add them to it
-        if (workspaces.length === 0 && !isOrgWideRole(role || roleId)) {
+        // Fallback: if no workspaces found, check if workspace exists in their org and add user to it
+        if (workspaces.length === 0 && orgId) {
             const orgWorkspaces = await prisma.workspace.findMany({
                 where: { orgId },
                 orderBy: { createdAt: 'asc' }
             });
             if (orgWorkspaces.length > 0) {
-                // Auto-enroll user in existing org workspaces they're not yet a member of
                 for (const ws of orgWorkspaces) {
                     await prisma.workspaceUser.upsert({
-                        where: { workspaceId_userId: { workspaceId: ws.id, userId: id } },
-                        create: { workspaceId: ws.id, userId: id },
+                        where: { workspaceId_userId: { workspaceId: ws.id, userId: userId } },
+                        create: { workspaceId: ws.id, userId: userId },
                         update: {}
                     }).catch(() => { });
                 }
@@ -288,7 +281,7 @@ module.exports.findAllWorkspaces = async (request, reply) => {
         });
 
     } catch (error) {
-        console.error(error);
+        console.error('Error in findAllWorkspaces:', error);
 
         return reply.code(500).send({
             success: false,
