@@ -33,7 +33,9 @@ const DEFAULT_PLANS = [
     storageQuotaBytes: BigInt(0 * GB),
     maxUsers: 5,
     maxWorkspaces: 1,
+    maxProjects: 1,
     features: [
+      '1 Project & 1 Workspace',
       '0 Storage',
       '5 Members',
       'Basic media library & folders',
@@ -54,8 +56,10 @@ const DEFAULT_PLANS = [
     yearlyPriceCents: 10800,
     storageQuotaBytes: BigInt(300 * MB),
     maxUsers: 5,
-    maxWorkspaces: 3,
+    maxWorkspaces: 2,
+    maxProjects: 2,
     features: [
+      '2 Projects & 2 Workspaces',
       '300 MB Storage',
       '5 Members',
       'Media library essentials',
@@ -77,8 +81,10 @@ const DEFAULT_PLANS = [
     yearlyPriceCents: 27000,
     storageQuotaBytes: BigInt(15 * GB),
     maxUsers: 10,
-    maxWorkspaces: 20,
+    maxWorkspaces: 3,
+    maxProjects: 3,
     features: [
+      '3 Projects & 3 Workspaces',
       '15 GB Storage',
       '10 Members',
       'Review & annotate video/audio',
@@ -101,8 +107,10 @@ const DEFAULT_PLANS = [
     yearlyPriceCents: 54000,
     storageQuotaBytes: BigInt(20 * GB),
     maxUsers: 15,
-    maxWorkspaces: 1000,
+    maxWorkspaces: 4,
+    maxProjects: 4,
     features: [
+      '4 Projects & 4 Workspaces',
       '20 GB Storage',
       '15 Members',
       'Dedicated account manager',
@@ -182,6 +190,49 @@ async function main() {
     },
   });
   console.log('Landing page ready: main');
+
+  // Sync all existing organizations with their active plan's maxWorkspaces & maxProjects
+  const allPlans = await prisma.plan.findMany();
+  const planMapByName = new Map(allPlans.map(p => [p.name.toLowerCase(), p]));
+  const planMapById = new Map(allPlans.map(p => [p.id, p]));
+
+  const orgs = await prisma.organization.findMany();
+  for (const org of orgs) {
+    let plan = org.currentPlanId ? planMapById.get(org.currentPlanId) : null;
+    if (!plan) {
+      const targetPlanName = (org.metadata?.planId || org.planType || 'free').toLowerCase();
+      plan = planMapByName.get(targetPlanName) || planMapByName.get('free');
+    }
+    if (plan) {
+      const planName = plan.name.toLowerCase();
+      const startDate = org.createdAt ? new Date(org.createdAt) : new Date();
+      let expiresAt = new Date(startDate);
+      if (planName === 'free') {
+        expiresAt.setDate(expiresAt.getDate() + 3);
+      } else {
+        const isMonthly = (org.metadata?.billingCycle || 'annual').toLowerCase() === 'monthly';
+        if (isMonthly) {
+          expiresAt.setMonth(expiresAt.getMonth() + 1);
+        } else {
+          expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+        }
+      }
+
+      await prisma.organization.update({
+        where: { id: org.id },
+        data: {
+          currentPlanId: plan.id,
+          planType: planName,
+          maxWorkspaces: plan.maxWorkspaces,
+          maxProjects: plan.maxProjects,
+          maxUsers: plan.maxUsers,
+          storageQuotaBytes: plan.storageQuotaBytes,
+          planExpiresAt: expiresAt,
+        },
+      });
+      console.log(`Synced Org "${org.name}" (${org.id}) -> Plan "${plan.name}" (ExpiresAt: ${expiresAt.toISOString()})`);
+    }
+  }
 
   console.log('\nLogin at /platform/login');
   console.log(`  email: ${PLATFORM_ADMIN.email}`);

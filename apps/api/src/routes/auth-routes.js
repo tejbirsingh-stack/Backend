@@ -22,6 +22,8 @@ async function routes(fastify, options) {
   // Logout All Sessions
   if (authController.logoutAll) fastify.post("/logout-all", { preHandler: authenticate }, authController.logoutAll);
 
+  if (authController.upgradePlan) fastify.post("/upgrade-plan", { preHandler: authenticate }, authController.upgradePlan);
+
   if (authController.registerRole) fastify.post("/registerrole", { preHandler: authenticate }, authController.registerRole);
 
   if (userController.getRoles) fastify.get("/roles", { preHandler: authenticate }, userController.getRoles);

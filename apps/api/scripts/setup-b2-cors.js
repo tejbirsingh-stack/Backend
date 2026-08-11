@@ -1,5 +1,6 @@
 const { S3Client, PutBucketCorsCommand } = require('@aws-sdk/client-s3');
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 async function setCors() {
   console.log("Configuring CORS for Backblaze B2 Bucket...");

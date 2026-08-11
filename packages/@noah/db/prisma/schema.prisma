@@ -23,8 +23,10 @@ model Organization {
   currentPlanId    String?  @db.VarChar(255)
   currentPlan      Plan?    @relation(fields: [currentPlanId], references: [id], onDelete: SetNull)
   maxWorkspaces    Int      @default(10)
+  maxProjects      Int      @default(10)
   stripeCustomerId String?  @db.VarChar(255)
   subscriptionStatus String? @db.VarChar(50)
+  planExpiresAt    DateTime? @map("plan_expires_at") @db.Timestamptz(6)
   usageWarningPercent Int    @default(80)
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
@@ -986,6 +988,7 @@ model Plan {
   storageQuotaBytes  BigInt   @default(5368709120) // 5GB
   maxUsers           Int      @default(2)
   maxWorkspaces      Int      @default(1)
+  maxProjects        Int      @default(1)
   features           Json     @default("[]") @db.JsonB
   monthlyPriceId     String?  @db.VarChar(255) // Stripe monthly price id
   yearlyPriceId      String?  @db.VarChar(255) // Stripe yearly price id
