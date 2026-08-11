@@ -117,7 +117,6 @@ async function getOrganization(request, reply) {
             createdAt: true,
           },
         },
-        settings: true,
         moderationFlags: {
           where: { status: { in: ['open', 'quarantined'] } },
           take: 20,
@@ -134,7 +133,17 @@ async function getOrganization(request, reply) {
       });
     }
 
-    return { success: true, organization: serializeOrg(org) };
+    // Load settings separately so a missing relation/table does not break the detail page.
+    let settings = null;
+    try {
+      if (prisma.organizationSettings?.findUnique) {
+        settings = await prisma.organizationSettings.findUnique({ where: { orgId } });
+      }
+    } catch (settingsError) {
+      console.warn('getOrganization settings lookup skipped:', settingsError.message);
+    }
+
+    return { success: true, organization: serializeOrg({ ...org, settings }) };
   } catch (error) {
     console.error('getOrganization error:', error);
     return reply.status(500).send({
