@@ -386,6 +386,7 @@ model Project {
   name      String  @db.VarChar(100)
   ownerType MediaAssetOwnerType @map("owner_type")
   visibility String @default("public") @db.VarChar(20)
+  status     String @default("active") @db.VarChar(50) // active, inactive
 
   workspaceId String? @map("workspace_id") // set when ownerType = WORKSPACE
   folderId    String? @map("folder_id") // set when ownerType = FOLDER
@@ -888,7 +889,7 @@ model VideoFrameHash {
   @@index([assetId])
   @@map("video_frame_hashes")
 }
-
+ 
 model Notification {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId          String   @db.Uuid
