@@ -12,6 +12,9 @@ const {
   findProjectData,
   findAllProjects,
   deleteProject,
+  removeProjectMember,
+  addProjectMember,
+  updateProjectMemberAccess,
   findTimezone,
   searchGuestUsers,
 } = require('../controller/workSpaceController');
@@ -32,6 +35,9 @@ module.exports = function (fastify, opts, done) {
   fastify.post('/project/add/:workspaceId', canUpload, createProject);
   fastify.put('/project/update/:id', canUpload, updateProject);
   fastify.delete('/project/delete/:id', canRead, deleteProject);
+  fastify.post('/project/:projectId/member', canUpload, addProjectMember);
+  fastify.put('/project/:projectId/member/:memberId', canUpload, updateProjectMemberAccess);
+  fastify.delete('/project/:projectId/member/:memberId', canUpload, removeProjectMember);
   fastify.post('/project/link-source/:projectId', canUpload, linkProjectSource);
   fastify.get('/project/find-all-data/:projectId', canRead, findProjectData);
   fastify.get('/project/find-all', canRead, findAllProjects);

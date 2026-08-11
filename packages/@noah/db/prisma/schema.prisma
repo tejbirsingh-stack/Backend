@@ -121,6 +121,7 @@ model User {
   addedProjectTags     ProjectTag[] @relation("ProjectTagAddedBy")
   userGroupMembers     UserGroupMember[]
   createdUserGroups    UserGroup[]  @relation("GroupCreatedBy")
+  createdProjects      Project[]  @relation("ProjectCreatedBy")
 
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
@@ -379,8 +380,12 @@ model Project {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  createdById String? @map("created_by_id") @db.Uuid
+  createdBy User? @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
   @@index([workspaceId])
   @@index([folderId])
+  @@index([createdById])
   @@map("projects")
 }
 
