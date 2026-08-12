@@ -119,6 +119,7 @@ model User {
   userGroupMembers     UserGroupMember[]
   createdUserGroups    UserGroup[]  @relation("GroupCreatedBy")
   createdProjects      Project[]  @relation("ProjectCreatedBy")
+  deletedProjects      Project[]  @relation("ProjectDeletedBy")
 
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
@@ -404,6 +405,11 @@ model Project {
 
   createdById String? @map("created_by_id") @db.Uuid
   createdBy User? @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedByUserId String? @map("deleted_by_user_id") @db.Uuid
+  deletedBy User? @relation("ProjectDeletedBy", fields: [deletedByUserId], references: [id], onDelete: SetNull)
+  deletionReason String? @map("deletion_reason") @db.VarChar(500)
 
   @@index([workspaceId])
   @@index([folderId])

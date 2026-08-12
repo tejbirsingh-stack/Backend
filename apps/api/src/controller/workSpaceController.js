@@ -367,7 +367,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
             allProjects = await prisma.project.findMany({
                 where: {
                     AND: [
-                        { NOT: { status: 'inactive' } },
+                        { status: { notIn: ['inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] } },
                         {
                             OR: [
                                 { workspaceId: id },
@@ -1034,14 +1034,22 @@ module.exports.createProject = async (request, reply) => {
 };
 module.exports.findAllProjects = async (request, reply) => {
     try {
-        const { orgId, id: userId, role } = request.user;
-        const isAdmin = role === 'Super Admin' || role === 'Admin';
+        const liveUser = await prisma.user.findUnique({
+            where: { id: request.user.id },
+            include: { roleRelation: true }
+        });
+        const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || request.user.role || 'Viewer';
+        const userRole = rawRoleName.trim().toLowerCase();
+        const isAdmin = userRole === 'super admin' || userRole === 'superadmin' || userRole === 'admin';
+        const orgId = liveUser?.orgId || request.user?.orgId;
+        const userId = request.user.id;
 
         const projects = await prisma.project.findMany({
             where: {
                 workspace: {
                     orgId
                 },
+                status: { notIn: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] },
                 ...(isAdmin ? {} : {
                     status: 'active',
                     OR: [
@@ -1115,7 +1123,7 @@ module.exports.findFolderData = async (request, reply) => {
 
         const projects = await prisma.project.findMany({
             where: {
-                NOT: { status: 'inactive' },
+                status: { notIn: ['inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] },
                 ownerType: 'FOLDER',
                 folderId: id,
                 OR: [
@@ -1159,6 +1167,107 @@ module.exports.findFolderData = async (request, reply) => {
     }
 };
 
+async function getAllProjectAssetIdsAndObjects(prismaClient, projectId) {
+    try {
+        const project = await prismaClient.project.findUnique({
+            where: { id: projectId },
+            include: { sources: true }
+        });
+        if (!project) return { assetIds: [], assets: [] };
+
+        // 1. Direct assets where ownerType = 'PROJECT' and ownerId = projectId
+        const directOwnedAssets = await prismaClient.asset.findMany({
+            where: {
+                ownerType: 'PROJECT',
+                ownerId: projectId,
+                status: { notIn: ['trash', 'deleted'] }
+            },
+            include: { files: true, metadata: true }
+        }).catch(() => []);
+
+        // 2. Direct assets from ProjectSource (sourceableType = 'ASSET')
+        const assetSourceIds = (project.sources || [])
+            .filter(s => s.sourceableType === 'ASSET' && s.assetId)
+            .map(s => s.assetId);
+
+        const sourceAssets = assetSourceIds.length > 0
+            ? await prismaClient.asset.findMany({
+                where: {
+                    id: { in: assetSourceIds },
+                    status: { notIn: ['trash', 'deleted'] }
+                },
+                include: { files: true, metadata: true }
+            }).catch(() => [])
+            : [];
+
+        // 3. Folder IDs linked to this project via ProjectSource
+        const folderIdsFromSources = (project.sources || [])
+            .filter(s => s.sourceableType === 'FOLDER' && s.folderId)
+            .map(s => s.folderId);
+
+        const uniqueFolderIds = Array.from(new Set(folderIdsFromSources.filter(Boolean)));
+
+        // Recursively fetch all assets inside linked folders & subfolders
+        let folderAssets = [];
+        if (uniqueFolderIds.length > 0) {
+            const allFolderIds = new Set(uniqueFolderIds);
+            let currentLevel = [...uniqueFolderIds];
+            while (currentLevel.length > 0) {
+                const childFolders = await prismaClient.folder.findMany({
+                    where: { parentId: { in: currentLevel } },
+                    select: { id: true }
+                }).catch(() => []);
+                const childIds = childFolders.map(f => f.id).filter(id => !allFolderIds.has(id));
+                if (childIds.length === 0) break;
+                childIds.forEach(id => allFolderIds.add(id));
+                currentLevel = childIds;
+            }
+
+            const folderIdList = Array.from(allFolderIds);
+            folderAssets = await prismaClient.asset.findMany({
+                where: {
+                    ownerType: 'FOLDER',
+                    ownerId: { in: folderIdList },
+                    status: { notIn: ['trash', 'deleted'] }
+                },
+                include: { files: true, metadata: true }
+            }).catch(() => []);
+        }
+
+        // Combine and deduplicate all assets by ID
+        const assetMap = new Map();
+        [...directOwnedAssets, ...sourceAssets, ...folderAssets].forEach(asset => {
+            if (asset && asset.id && !assetMap.has(asset.id)) {
+                assetMap.set(asset.id, asset);
+            }
+        });
+
+        const allAssets = Array.from(assetMap.values());
+        const allAssetIds = Array.from(assetMap.keys());
+
+        return { assetIds: allAssetIds, assets: allAssets };
+    } catch (err) {
+        console.error("Error in getAllProjectAssetIdsAndObjects:", err);
+        return { assetIds: [], assets: [] };
+    }
+}
+
+module.exports.getProjectSources = async (request, reply) => {
+    try {
+        const { projectId } = request.params;
+        const { assets } = await getAllProjectAssetIdsAndObjects(prisma, projectId);
+        return reply.code(200).send({
+            success: true,
+            data: {
+                media: assets
+            }
+        });
+    } catch (error) {
+        console.error("Failed to fetch project sources:", error);
+        return reply.code(500).send({ success: false, message: "Internal Server Error" });
+    }
+};
+
 module.exports.findProjectData = async (request, reply) => {
     try {
         const { projectId } = request.params;
@@ -1168,29 +1277,24 @@ module.exports.findProjectData = async (request, reply) => {
             await verifyProjectAccess(projectId, userId, 'Can view');
         }
 
+        const { assets } = await getAllProjectAssetIdsAndObjects(prisma, projectId);
+
         const projectSources = await prisma.projectSource.findMany({
             where: {
                 projectId: projectId
             },
             include: {
-                asset: {
-                    include: {
-                        files: true,
-                        metadata: true
-                    }
-                },
                 folder: true
             }
         });
 
-        const projectAssets = projectSources.filter(ps => ps.sourceableType === 'ASSET' && ps.asset).map(ps => ps.asset);
         const projectFolders = projectSources.filter(ps => ps.sourceableType === 'FOLDER' && ps.folder).map(ps => ps.folder);
 
         return reply.code(200).send({
             success: true,
             message: 'Project contents fetched successfully.',
             data: {
-                media: projectAssets,
+                media: assets,
                 folders: projectFolders
             }
         });
@@ -1719,22 +1823,142 @@ module.exports.findTimezone = async (request, reply) => {
 module.exports.deleteProject = async (request, reply) => {
     try {
         const { id } = request.params;
+        const { deleteFileIds = [], deletionReason = 'Project deletion requested' } = request.body || {};
 
         await verifyProjectAccess(id, request.user.id, 'Full Access');
 
-        await prisma.project.delete({
-            where: { id }
+        const liveUser = await prisma.user.findUnique({
+            where: { id: request.user.id },
+            include: { roleRelation: true }
         });
+        const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+        const userRole = rawRoleName.trim().toLowerCase();
+        const isSuperAdmin = userRole === 'super admin' || userRole === 'superadmin';
 
-        return reply.code(200).send({
-            success: true,
-            message: 'Project deleted successfully.'
-        });
+        // 1. Fetch all linked asset IDs for this project (including project folders!)
+        const { assetIds: allLinkedAssetIds } = await getAllProjectAssetIdsAndObjects(prisma, id);
+
+        const selectedAssetIds = Array.isArray(deleteFileIds)
+            ? deleteFileIds.filter(fId => allLinkedAssetIds.includes(fId))
+            : [];
+
+        // If specific files were checked for deletion: mark those assets based on role
+        if (selectedAssetIds.length > 0) {
+            const assetStatusUpdate = isSuperAdmin ? 'trash' : 'pending_super_admin';
+            await prisma.asset.updateMany({
+                where: { id: { in: selectedAssetIds } },
+                data: {
+                    status: assetStatusUpdate,
+                    deletedAt: new Date(),
+                    deletedByUserId: request.user.id,
+                    deletionReason: `Deleted with project (${id})`
+                }
+            });
+        }
+
+        // Unselected files: remove ProjectSource links & project tags so files remain active without project tags
+        const unselectedAssetIds = allLinkedAssetIds.filter(aId => !selectedAssetIds.includes(aId));
+        if (unselectedAssetIds.length > 0) {
+            await prisma.projectSource.deleteMany({
+                where: {
+                    projectId: id,
+                    assetId: { in: unselectedAssetIds }
+                }
+            });
+            await prisma.assetTag.deleteMany({
+                where: {
+                    assetId: { in: unselectedAssetIds },
+                    tag: { name: { equals: id, mode: 'insensitive' } }
+                }
+            }).catch(() => null);
+        }
+
+        // Cleanup projectSource links for selected assets as well
+        if (selectedAssetIds.length > 0) {
+            await prisma.projectSource.deleteMany({
+                where: {
+                    projectId: id,
+                    assetId: { in: selectedAssetIds }
+                }
+            });
+        }
+
+        // 2. Process Project Deletion
+        if (isSuperAdmin) {
+            await prisma.project.delete({
+                where: { id }
+            });
+
+            return reply.code(200).send({
+                success: true,
+                message: 'Project permanently deleted.'
+            });
+        } else {
+            // Admin role: mark project as pending_super_admin for Super Admin deletion dashboard
+            await prisma.project.update({
+                where: { id },
+                data: {
+                    status: 'pending_super_admin',
+                    deletedAt: new Date(),
+                    deletedByUserId: request.user.id,
+                    deletionReason: deletionReason
+                }
+            });
+
+            return reply.code(200).send({
+                success: true,
+                message: 'Project deletion request submitted for Super Admin review.'
+            });
+        }
     } catch (error) {
         console.error('Failed to delete project:', error);
         if (error.code === 'P2025') {
             return reply.code(404).send({ success: false, message: 'Project not found.' });
         }
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.restoreProject = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        await verifyProjectAccess(id, request.user.id, 'Full Access');
+
+        const { assetIds: allLinkedAssetIds } = await getAllProjectAssetIdsAndObjects(prisma, id);
+
+        await prisma.project.update({
+            where: { id },
+            data: {
+                status: 'active',
+                deletedAt: null,
+                deletedByUserId: null,
+                deletionReason: null
+            }
+        });
+
+        // Also restore any pending assets associated with this project back to active
+        await prisma.asset.updateMany({
+            where: {
+                OR: [
+                    { id: { in: allLinkedAssetIds } },
+                    { deletionReason: { contains: id } }
+                ],
+                status: 'pending_super_admin'
+            },
+            data: {
+                status: 'active',
+                deletedAt: null,
+                deletedByUserId: null,
+                deletionReason: null
+            }
+        }).catch(() => null);
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Project restored successfully.'
+        });
+    } catch (error) {
+        console.error('Failed to restore project:', error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
