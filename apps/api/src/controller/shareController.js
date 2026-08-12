@@ -304,18 +304,18 @@ async function updateShareLink(req, reply) {
     if (permissions) {
       const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
       const orgSettings = await ensureDefaultOrganizationSettings(prisma, existingLink.orgId);
-      finalPermissions = { ...permissions };
+      finalPermissions = { ...(existingLink.permissions || {}), ...permissions };
       
-      if (orgSettings.allowCommentsDefault !== undefined) {
+      if (orgSettings.lockAllowComments && orgSettings.allowCommentsDefault !== undefined) {
         finalPermissions.comment = orgSettings.allowCommentsDefault;
       }
-      if (orgSettings.allowDownloadOriginalDefault !== undefined) {
+      if (orgSettings.lockAllowDownloadOriginal && orgSettings.allowDownloadOriginalDefault !== undefined) {
         finalPermissions.download = orgSettings.allowDownloadOriginalDefault;
       }
-      if (orgSettings.allowDownloadProxyDefault !== undefined) {
+      if (orgSettings.lockAllowDownloadProxy && orgSettings.allowDownloadProxyDefault !== undefined) {
         finalPermissions.downloadProxy = orgSettings.allowDownloadProxyDefault;
       }
-      if (orgSettings.showCompanyWatermarkDefault !== undefined) {
+      if (orgSettings.lockShowCompanyWatermark && orgSettings.showCompanyWatermarkDefault !== undefined) {
         finalPermissions.watermark = orgSettings.showCompanyWatermarkDefault;
       }
     }
