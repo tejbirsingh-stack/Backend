@@ -13,20 +13,15 @@ model Organization {
   id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name              String   @db.VarChar(100)
   slug              String   @unique @db.VarChar(255)
-  planType          String   @db.VarChar(50)
-  storageQuotaBytes BigInt   @default(1099511627776) // 1TB default
   storageUsedBytes BigInt   @default(0)
-  maxUsers         Int      @default(10)
-  features         Json     @default("{}") @db.JsonB
   metadata         Json     @default("{}") @db.JsonB
   status           String   @default("active") @db.VarChar(50) // active | suspended
   currentPlanId    String?  @db.VarChar(255)
   currentPlan      Plan?    @relation(fields: [currentPlanId], references: [id], onDelete: SetNull)
-  maxWorkspaces    Int      @default(10)
-  maxProjects      Int      @default(10)
   stripeCustomerId String?  @db.VarChar(255)
   subscriptionStatus String? @db.VarChar(50)
   planExpiresAt    DateTime? @map("plan_expires_at") @db.Timestamptz(6)
+  isFreeTrialUsed  Boolean   @default(false) @map("is_free_trial_used")
   usageWarningPercent Int    @default(80)
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
@@ -124,6 +119,7 @@ model User {
   userGroupMembers     UserGroupMember[]
   createdUserGroups    UserGroup[]  @relation("GroupCreatedBy")
   createdProjects      Project[]  @relation("ProjectCreatedBy")
+  deletedProjects      Project[]  @relation("ProjectDeletedBy")
 
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
@@ -409,6 +405,11 @@ model Project {
 
   createdById String? @map("created_by_id") @db.Uuid
   createdBy User? @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedByUserId String? @map("deleted_by_user_id") @db.Uuid
+  deletedBy User? @relation("ProjectDeletedBy", fields: [deletedByUserId], references: [id], onDelete: SetNull)
+  deletionReason String? @map("deletion_reason") @db.VarChar(500)
 
   @@index([workspaceId])
   @@index([folderId])

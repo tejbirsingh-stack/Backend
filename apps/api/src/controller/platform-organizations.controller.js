@@ -3,9 +3,15 @@ const { writePlatformAudit } = require('../lib/platform-audit');
 
 function serializeOrg(org) {
   if (!org) return null;
+  const currentPlan = org.currentPlan || {};
   return {
     ...org,
-    storageQuotaBytes: org.storageQuotaBytes?.toString?.() ?? String(org.storageQuotaBytes ?? 0),
+    planType: currentPlan.name ? currentPlan.name.toLowerCase() : (org.metadata?.planId || 'free'),
+    storageQuotaBytes: (currentPlan.storageQuotaBytes || 0n).toString(),
+    maxUsers: currentPlan.maxUsers ?? 5,
+    maxWorkspaces: currentPlan.maxWorkspaces ?? 1,
+    maxProjects: currentPlan.maxProjects ?? 1,
+    features: currentPlan.features ?? [],
     storageUsedBytes: org.storageUsedBytes?.toString?.() ?? String(org.storageUsedBytes ?? 0),
     currentPlan: org.currentPlan
       ? {
@@ -27,7 +33,7 @@ async function listOrganizations(request, reply) {
 
     const where = {
       ...(status ? { status } : {}),
-      ...(planType ? { planType } : {}),
+      ...(planType ? { currentPlan: { name: { equals: planType, mode: 'insensitive' } } } : {}),
       ...(q
         ? {
             OR: [
@@ -143,12 +149,18 @@ async function patchOrganization(request, reply) {
       }
       data.status = body.status;
     }
-    if (body.planType !== undefined) data.planType = String(body.planType);
-    if (body.maxUsers !== undefined) data.maxUsers = parseInt(body.maxUsers, 10);
-    if (body.maxWorkspaces !== undefined) data.maxWorkspaces = parseInt(body.maxWorkspaces, 10);
-    if (body.maxProjects !== undefined) data.maxProjects = parseInt(body.maxProjects, 10);
-    if (body.storageQuotaBytes !== undefined) {
-      data.storageQuotaBytes = BigInt(body.storageQuotaBytes);
+    if (body.planType !== undefined && !body.currentPlanId) {
+      const plan = await prisma.plan.findFirst({
+        where: {
+          OR: [
+            { id: String(body.planType).toLowerCase() },
+            { name: { equals: String(body.planType), mode: 'insensitive' } },
+          ],
+        },
+      });
+      if (plan) {
+        data.currentPlanId = plan.id;
+      }
     }
     if (body.currentPlanId !== undefined) {
       data.currentPlanId = body.currentPlanId || null;
@@ -161,11 +173,6 @@ async function patchOrganization(request, reply) {
             statusCode: 400,
           });
         }
-        data.planType = plan.name.toLowerCase();
-        data.storageQuotaBytes = plan.storageQuotaBytes;
-        data.maxUsers = plan.maxUsers;
-        data.maxWorkspaces = plan.maxWorkspaces;
-        data.maxProjects = plan.maxProjects;
       }
     }
     if (body.subscriptionStatus !== undefined) {
