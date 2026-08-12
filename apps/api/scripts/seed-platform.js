@@ -20,21 +20,24 @@ const PLATFORM_ADMIN = {
   name: 'NOAH Platform Admin',
 };
 
+const MB = 1024 ** 2;
 const GB = 1024 ** 3;
 const TB = 1024 ** 4;
 
 const DEFAULT_PLANS = [
   {
-    id: 'free',
     name: 'Free',
     description: 'For individuals exploring Noah with core library tools.',
     monthlyPriceCents: 0,
     yearlyPriceCents: 0,
-    storageQuotaBytes: BigInt(5 * GB),
-    maxUsers: 2,
+    storageQuotaBytes: BigInt(0 * GB),
+    maxUsers: 5,
     maxWorkspaces: 1,
+    maxProjects: 1,
     features: [
-      'Up to 5 GB media storage',
+      '1 Project & 1 Workspace',
+      '0 Storage',
+      '5 Members',
       'Basic media library & folders',
       'Share links with view access',
       'Mobile & desktop access',
@@ -47,15 +50,18 @@ const DEFAULT_PLANS = [
     isActive: true,
   },
   {
-    id: 'basic',
     name: 'Basic',
     description: 'For individuals and small teams getting started.',
     monthlyPriceCents: 1000,
     yearlyPriceCents: 10800,
-    storageQuotaBytes: BigInt(100 * GB),
+    storageQuotaBytes: BigInt(300 * MB),
     maxUsers: 5,
-    maxWorkspaces: 3,
+    maxWorkspaces: 2,
+    maxProjects: 2,
     features: [
+      '2 Projects & 2 Workspaces',
+      '300 MB Storage',
+      '5 Members',
       'Media library essentials',
       'Share links & file comments',
       'Activity feed & project overview',
@@ -69,15 +75,18 @@ const DEFAULT_PLANS = [
     isActive: true,
   },
   {
-    id: 'premium',
     name: 'Premium',
     description: 'For growing teams that need smarter workflows.',
     monthlyPriceCents: 2500,
     yearlyPriceCents: 27000,
-    storageQuotaBytes: BigInt(1 * TB),
-    maxUsers: 25,
-    maxWorkspaces: 20,
+    storageQuotaBytes: BigInt(15 * GB),
+    maxUsers: 10,
+    maxWorkspaces: 3,
+    maxProjects: 3,
     features: [
+      '3 Projects & 3 Workspaces',
+      '15 GB Storage',
+      '10 Members',
       'Review & annotate video/audio',
       'Advanced filters & reporting',
       'Custom labels, priorities & checklists',
@@ -92,19 +101,21 @@ const DEFAULT_PLANS = [
     isActive: true,
   },
   {
-    id: 'enterprise',
     name: 'Enterprise',
     description: 'For large organizations with advanced needs.',
     monthlyPriceCents: 5000,
     yearlyPriceCents: 54000,
-    storageQuotaBytes: BigInt(10 * TB),
-    maxUsers: 500,
-    maxWorkspaces: 1000,
+    storageQuotaBytes: BigInt(20 * GB),
+    maxUsers: 15,
+    maxWorkspaces: 4,
+    maxProjects: 4,
     features: [
+      '4 Projects & 4 Workspaces',
+      '20 GB Storage',
+      '15 Members',
       'Dedicated account manager',
       'Custom integrations & automation',
       'SSO & role-based access control',
-      'Unlimited projects & users',
       'KPI dashboards & reporting tools',
       'Onboarding support',
     ],
@@ -137,26 +148,22 @@ async function main() {
   console.log('Platform admin ready:', admin.email);
 
   for (const plan of DEFAULT_PLANS) {
-    await prisma.plan.upsert({
-      where: { id: plan.id },
-      create: plan,
-      update: {
-        name: plan.name,
-        description: plan.description,
-        monthlyPriceCents: plan.monthlyPriceCents,
-        yearlyPriceCents: plan.yearlyPriceCents,
-        storageQuotaBytes: plan.storageQuotaBytes,
-        maxUsers: plan.maxUsers,
-        maxWorkspaces: plan.maxWorkspaces,
-        features: plan.features,
-        isPublic: plan.isPublic,
-        isFeatured: plan.isFeatured,
-        sortOrder: plan.sortOrder,
-        ctaLabel: plan.ctaLabel,
-        isActive: plan.isActive,
-      },
+    const existing = await prisma.plan.findFirst({
+      where: { name: { equals: plan.name, mode: 'insensitive' } },
     });
-    console.log('Plan ready:', plan.id);
+
+    if (existing) {
+      const updated = await prisma.plan.update({
+        where: { id: existing.id },
+        data: plan,
+      });
+      console.log(`Plan ready: ${updated.name} (${updated.id})`);
+    } else {
+      const created = await prisma.plan.create({
+        data: plan,
+      });
+      console.log(`Plan ready: ${created.name} (${created.id})`);
+    }
   }
 
   await prisma.landingPage.upsert({
@@ -183,6 +190,49 @@ async function main() {
     },
   });
   console.log('Landing page ready: main');
+
+  // Sync all existing organizations with their active plan's maxWorkspaces & maxProjects
+  const allPlans = await prisma.plan.findMany();
+  const planMapByName = new Map(allPlans.map(p => [p.name.toLowerCase(), p]));
+  const planMapById = new Map(allPlans.map(p => [p.id, p]));
+
+  const orgs = await prisma.organization.findMany();
+  for (const org of orgs) {
+    let plan = org.currentPlanId ? planMapById.get(org.currentPlanId) : null;
+    if (!plan) {
+      const targetPlanName = (org.metadata?.planId || org.planType || 'free').toLowerCase();
+      plan = planMapByName.get(targetPlanName) || planMapByName.get('free');
+    }
+    if (plan) {
+      const planName = plan.name.toLowerCase();
+      const startDate = org.createdAt ? new Date(org.createdAt) : new Date();
+      let expiresAt = new Date(startDate);
+      if (planName === 'free') {
+        expiresAt.setDate(expiresAt.getDate() + 3);
+      } else {
+        const isMonthly = (org.metadata?.billingCycle || 'annual').toLowerCase() === 'monthly';
+        if (isMonthly) {
+          expiresAt.setMonth(expiresAt.getMonth() + 1);
+        } else {
+          expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+        }
+      }
+
+      await prisma.organization.update({
+        where: { id: org.id },
+        data: {
+          currentPlanId: plan.id,
+          planType: planName,
+          maxWorkspaces: plan.maxWorkspaces,
+          maxProjects: plan.maxProjects,
+          maxUsers: plan.maxUsers,
+          storageQuotaBytes: plan.storageQuotaBytes,
+          planExpiresAt: expiresAt,
+        },
+      });
+      console.log(`Synced Org "${org.name}" (${org.id}) -> Plan "${plan.name}" (ExpiresAt: ${expiresAt.toISOString()})`);
+    }
+  }
 
   console.log('\nLogin at /platform/login');
   console.log(`  email: ${PLATFORM_ADMIN.email}`);

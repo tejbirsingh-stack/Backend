@@ -13,6 +13,7 @@ function fingerprint(params) {
     dateTo: params.dateTo || '',
     tagIds: params.tagIds || '',
     aiTags: params.aiTags || '',
+    reviewStatus: params.reviewStatus || 'all',
     sortBy: params.sortBy || 'date',
     sortOrder: params.sortOrder || 'desc',
   });

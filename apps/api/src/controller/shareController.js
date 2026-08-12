@@ -49,9 +49,9 @@ async function createShareLink(req, reply) {
     password,
     name,
     visibility = 'public',
-    expiresInDays = 7,
+    expiresInDays,
     expiresAt: customExpiresAt,
-    permissions = { view: true, comment: false, download: false, downloadProxy: false },
+    permissions,
   } = req.body || {};
 
   try {
@@ -65,12 +65,67 @@ async function createShareLink(req, reply) {
     }
 
     const orgId = user.orgId || asset.orgId;
-    const expiresAt = calculateExpiry(expiresInDays, customExpiresAt);
 
-    // 2. Hash password if provided
+    // Fetch org settings to apply defaults
+    const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
+    const orgSettings = await ensureDefaultOrganizationSettings(prisma, orgId);
+
+    // 1. strictly enforce Expiry Days from orgSettings
+    let finalExpiresInDays = expiresInDays;
+    let finalCustomExpiresAt = customExpiresAt;
+    
+    if (orgSettings.defaultExpiryDays) {
+      finalExpiresInDays = orgSettings.defaultExpiryDays;
+      finalCustomExpiresAt = undefined; // Force use of days if org setting exists
+    } else if (finalExpiresInDays === undefined && !finalCustomExpiresAt) {
+      finalExpiresInDays = 30; // ultimate fallback
+    }
+    const expiresAt = calculateExpiry(finalExpiresInDays, finalCustomExpiresAt);
+
+    // 2. strictly enforce permissions from orgSettings
+    let defaultComment = false;
+    let defaultDownload = true;
+    let defaultDownloadProxy = true;
+    let defaultWatermark = true;
+
+    if (orgSettings.allowCommentsDefault !== undefined) {
+      defaultComment = orgSettings.allowCommentsDefault;
+    }
+    if (orgSettings.allowDownloadOriginalDefault !== undefined) {
+      defaultDownload = orgSettings.allowDownloadOriginalDefault;
+    }
+    if (orgSettings.allowDownloadProxyDefault !== undefined) {
+      defaultDownloadProxy = orgSettings.allowDownloadProxyDefault;
+    }
+    if (orgSettings.showCompanyWatermarkDefault !== undefined) {
+      defaultWatermark = orgSettings.showCompanyWatermarkDefault;
+    }
+
+    // Merge: user-provided permissions take priority; org defaults are used as fallback only
+    const finalPermissions = {
+      view: true,
+      comment: permissions?.comment !== undefined ? Boolean(permissions.comment) : defaultComment,
+      download: permissions?.download !== undefined ? Boolean(permissions.download) : defaultDownload,
+      downloadProxy: permissions?.downloadProxy !== undefined ? Boolean(permissions.downloadProxy) : defaultDownloadProxy,
+      watermark: permissions?.watermark !== undefined ? Boolean(permissions.watermark) : defaultWatermark,
+    };
+
+    // 3. Password requirement handling
     let passwordHash = null;
-    if (password && password.trim().length > 0) {
-      passwordHash = await argon2.hash(password.trim());
+    let finalPassword = password;
+    
+    if (finalPassword && typeof finalPassword === 'string' && finalPassword.trim().length > 0) {
+      finalPassword = finalPassword.trim();
+    } else if (orgSettings.requirePasswordDefault) {
+      finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing and org requires password
+    } else {
+      finalPassword = null;
+    }
+
+    if (finalPassword) {
+      passwordHash = await argon2.hash(finalPassword);
+    } else {
+      passwordHash = null;
     }
 
     const mainToken = generateToken();
@@ -91,7 +146,7 @@ async function createShareLink(req, reply) {
         mode,
         passwordHash,
         expiresAt,
-        permissions,
+        permissions: finalPermissions,
         createdById: existingUser ? existingUser.id : null,
       },
     });
@@ -117,9 +172,9 @@ async function createShareLink(req, reply) {
         assetTitle: asset.originalName || asset.title || 'Media File',
         shareUrl,
         expiresAt,
-        permissions,
+        permissions: finalPermissions,
         hasPassword: Boolean(passwordHash),
-        password: password ? password.trim() : null,
+        password: finalPassword ? finalPassword.trim() : null,
         senderName: user.name || user.email || 'NOAH Team Member',
       });
     }
@@ -162,6 +217,7 @@ async function createShareLink(req, reply) {
         expiresAt: shareLink.expiresAt,
         permissions: shareLink.permissions,
         hasPassword: Boolean(passwordHash),
+        password: finalPassword || undefined, // Include generated password so frontend can display it
         url: publicUrl,
         recipient: recipient ? { id: recipient.id, email: recipient.email } : null,
       },
@@ -241,12 +297,38 @@ async function updateShareLink(req, reply) {
   const { name, visibility, permissions } = req.body || {};
 
   try {
+    const existingLink = await prisma.shareLink.findUnique({ where: { id: shareLinkId } });
+    if (!existingLink) return reply.code(404).send({ error: 'Share link not found' });
+
+    let finalPermissions = permissions;
+    if (permissions) {
+      const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
+      const orgSettings = await ensureDefaultOrganizationSettings(prisma, existingLink.orgId);
+      finalPermissions = { ...(existingLink.permissions || {}), ...permissions };
+      
+      if (orgSettings.lockAllowComments && orgSettings.allowCommentsDefault !== undefined) {
+        finalPermissions.comment = orgSettings.allowCommentsDefault;
+      }
+      if (orgSettings.lockAllowDownloadOriginal && orgSettings.allowDownloadOriginalDefault !== undefined) {
+        finalPermissions.download = orgSettings.allowDownloadOriginalDefault;
+      }
+      if (orgSettings.lockAllowDownloadProxy && orgSettings.allowDownloadProxyDefault !== undefined) {
+        finalPermissions.downloadProxy = orgSettings.allowDownloadProxyDefault;
+      }
+      if (orgSettings.lockShowCompanyWatermark && orgSettings.showCompanyWatermarkDefault !== undefined) {
+        finalPermissions.watermark = orgSettings.showCompanyWatermarkDefault;
+      }
+    }
+
     const updated = await prisma.shareLink.update({
       where: { id: shareLinkId },
       data: {
         ...(name !== undefined && { name }),
-        ...(visibility !== undefined && { visibility }),
-        ...(permissions !== undefined && { permissions }),
+        ...(visibility !== undefined && { 
+             visibility, 
+             ...(visibility === 'public' ? { passwordHash: null } : {}) 
+           }),
+        ...(finalPermissions !== undefined && { permissions: finalPermissions }),
       }
     });
 
@@ -391,7 +473,10 @@ async function resolveShareToken(prisma, token) {
     where: { token, revokedAt: null },
     include: {
       shareLink: {
-        include: { asset: true, organization: true },
+        include: { 
+          asset: { include: { files: true, metadata: true } }, 
+          organization: true 
+        },
       },
     },
   });
@@ -407,7 +492,10 @@ async function resolveShareToken(prisma, token) {
   // Check main share link token
   const shareLink = await prisma.shareLink.findFirst({
     where: { token, revokedAt: null },
-    include: { asset: true, organization: true },
+    include: { 
+      asset: { include: { files: true, metadata: true } }, 
+      organization: true 
+    },
   });
 
   if (shareLink) {

@@ -14,7 +14,8 @@ async function listItems(prisma, params) {
     dateRange = 'all',
     dateFrom,
     dateTo,
-    tagIds = ''
+    tagIds = '',
+    reviewStatus = 'all',
   } = params;
 
   const fp = fingerprint(params);
@@ -40,17 +41,45 @@ async function listItems(prisma, params) {
   }
 
   const assetConditions = [
-    Prisma.sql`"deletedAt" IS NULL`,
-    Prisma.sql`"workspace_id" = ${workspaceId}`,
-    Prisma.sql`(
+    Prisma.sql`"deletedAt" IS NULL`
+  ];
+  const folderConditions = [];
+  const projectConditions = [];
+
+  if (view !== 'shared') {
+    if (view !== 'project') {
+      assetConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
+    }
+    
+    assetConditions.push(Prisma.sql`(
       "visibility" = 'public' 
       OR ("visibility" = 'private' AND "uploadedByUserId" = ${params.userId}::uuid)
       OR id IN (SELECT "asset_id" FROM "asset_users" WHERE "user_id" = ${params.userId}::uuid)
       OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
-    )`
-  ];
-  const folderConditions = [Prisma.sql`"workspace_id" = ${workspaceId}`];
-  const projectConditions = [Prisma.sql`"workspace_id" = ${workspaceId}`];
+      OR id IN (
+        SELECT "asset_id" FROM "project_sources" WHERE "project_id" IN (
+          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" != 'inactive') AND "visibility" = 'public' AND "workspace_id" = ${workspaceId}
+          UNION
+          SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid
+          UNION
+          SELECT "project_id" FROM "project_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid)
+        )
+      )
+    )`);
+
+    if (view !== 'project') {
+      folderConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
+      projectConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
+    }
+    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" != 'inactive')`);
+    projectConditions.push(Prisma.sql`(
+      "visibility" = 'public' 
+      OR ("visibility" = 'private' AND (
+        id IN (SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid)
+        OR id IN (SELECT "project_id" FROM "project_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
+      ))
+    )`);
+  }
 
   if (view === 'favorites' && params.userId) {
     assetConditions.push(Prisma.sql`id IN (SELECT "assetId" FROM "favorites" WHERE "userId" = ${params.userId}::uuid)`);
@@ -61,12 +90,27 @@ async function listItems(prisma, params) {
     folderConditions.push(Prisma.sql`false`);
     projectConditions.push(Prisma.sql`false`);
   } else if (view === 'shared') {
-    assetConditions.push(Prisma.sql`"uploadedByUserId" != ${params.userId}::uuid AND (
-      id IN (SELECT "asset_id" FROM "asset_users" WHERE "user_id" = ${params.userId}::uuid)
-      OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
+    assetConditions.push(Prisma.sql`(
+      ("uploadedByUserId" != ${params.userId}::uuid AND (
+        id IN (SELECT "asset_id" FROM "asset_users" WHERE "user_id" = ${params.userId}::uuid)
+        OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
+      ))
+      OR
+      ("uploadedByUserId" = ${params.userId}::uuid AND (
+        EXISTS (SELECT 1 FROM "asset_users" WHERE "asset_id" = "assets".id AND "user_id" != ${params.userId}::uuid)
+        OR EXISTS (SELECT 1 FROM "asset_groups" WHERE "asset_id" = "assets".id)
+        OR EXISTS (SELECT 1 FROM "share_links" WHERE "assetId" = "assets".id)
+      ))
     )`);
     folderConditions.push(Prisma.sql`false`);
-    projectConditions.push(Prisma.sql`false`);
+    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" != 'inactive')`);
+    projectConditions.push(Prisma.sql`(
+      ("created_by_id" IS NULL OR "created_by_id" != ${params.userId}::uuid)
+      AND (
+        id IN (SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid)
+        OR id IN (SELECT "project_id" FROM "project_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
+      )
+    )`);
   } else if (view === 'folder' && params.folderId) {
     assetConditions.push(Prisma.sql`"ownerType" = 'FOLDER' AND "ownerId" = ${params.folderId}::uuid`);
     folderConditions.push(Prisma.sql`"parent_folder_id" = ${params.folderId}`);
@@ -144,6 +188,32 @@ async function listItems(prisma, params) {
       folderConditions.push(Prisma.sql`false`);
       projectConditions.push(Prisma.sql`false`);
     }
+  }
+
+  if (reviewStatus && reviewStatus !== 'all') {
+    if (reviewStatus === 'New') {
+      // Default status: missing metadata, empty value, or explicitly "New"
+      assetConditions.push(Prisma.sql`(
+        NOT EXISTS (SELECT 1 FROM "asset_metadata" am WHERE am."assetId" = "assets".id)
+        OR EXISTS (
+          SELECT 1 FROM "asset_metadata" am
+          WHERE am."assetId" = "assets".id
+          AND (
+            am."customProperties"->>'reviewStatus' IS NULL
+            OR am."customProperties"->>'reviewStatus' = ''
+            OR am."customProperties"->>'reviewStatus' = 'New'
+          )
+        )
+      )`);
+    } else {
+      assetConditions.push(Prisma.sql`EXISTS (
+        SELECT 1 FROM "asset_metadata" am
+        WHERE am."assetId" = "assets".id
+        AND am."customProperties"->>'reviewStatus' = ${reviewStatus}
+      )`);
+    }
+    folderConditions.push(Prisma.sql`false`);
+    projectConditions.push(Prisma.sql`false`);
   }
 
   const assetWhere = assetConditions.length ? Prisma.sql`WHERE ${Prisma.join(assetConditions, ' AND ')}` : Prisma.empty;
@@ -266,6 +336,14 @@ async function listItems(prisma, params) {
         ? a.assetTags.map(at => at.tag?.name).filter(Boolean)
         : [];
 
+      let customMetadata = {};
+      if (a.metadata?.customProperties) {
+        customMetadata =
+          typeof a.metadata.customProperties === 'string'
+            ? JSON.parse(a.metadata.customProperties)
+            : a.metadata.customProperties;
+      }
+
       return {
         id: a.id,
         title: a.title,
@@ -279,6 +357,9 @@ async function listItems(prisma, params) {
         tags: dbTags,
         status: a.status,
         workspaceId: a.workspaceId,
+        customMetadata,
+        reviewStatus: customMetadata.reviewStatus || 'New',
+        isSharedByMe: a.uploadedByUserId === params.userId,
         ...(a.shareLinks ? (() => {
           const nowTs = Date.now();
           const active = a.shareLinks.filter(sl => new Date(sl.expiresAt).getTime() > nowTs);
@@ -320,6 +401,7 @@ async function listItems(prisma, params) {
         isProject: true,
         createdAt: p.createdAt.toISOString(),
         workspaceId: p.workspaceId,
+        isSharedByMe: Boolean(p.createdById && p.createdById === params.userId),
         itemCount: p._count?.sources || 0
       };
     }

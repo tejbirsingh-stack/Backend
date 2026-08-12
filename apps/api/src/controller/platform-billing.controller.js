@@ -92,9 +92,11 @@ async function overrideSubscription(request, reply) {
       if (currentPlanId) {
         const plan = await prisma.plan.findUnique({ where: { id: currentPlanId } });
         if (plan) {
-          data.planType = plan.id;
+          data.planType = plan.name.toLowerCase();
           data.storageQuotaBytes = plan.storageQuotaBytes;
           data.maxUsers = plan.maxUsers;
+          data.maxWorkspaces = plan.maxWorkspaces;
+          data.maxProjects = plan.maxProjects;
         }
       }
     }

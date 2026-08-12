@@ -23,8 +23,11 @@ model Organization {
   currentPlanId    String?  @db.VarChar(255)
   currentPlan      Plan?    @relation(fields: [currentPlanId], references: [id], onDelete: SetNull)
   maxWorkspaces    Int      @default(10)
+  maxProjects      Int      @default(10)
   stripeCustomerId String?  @db.VarChar(255)
   subscriptionStatus String? @db.VarChar(50)
+  planExpiresAt    DateTime? @map("plan_expires_at") @db.Timestamptz(6)
+  usageWarningPercent Int    @default(80)
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
@@ -39,9 +42,33 @@ model Organization {
   annotationGroups AnnotationGroup[]
   userGroups       UserGroup[]
   moderationFlags  PlatformModerationFlag[]
+  storageSystems   StorageSystem[]
+  usageEvents      UsageEvent[]
+  usageDailyRollups UsageDailyRollup[]
 
   workspaces Workspace[]
+  settings   OrganizationSettings?
+
   @@map("organizations")
+}
+
+model OrganizationSettings {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId             String   @unique @db.Uuid
+  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  
+  // Share Settings
+  requirePasswordDefault Boolean @default(false) @map("require_password_default")
+  allowCommentsDefault   Boolean @default(false) @map("allow_comments_default")
+  allowDownloadOriginalDefault Boolean @default(true) @map("allow_download_original_default")
+  allowDownloadProxyDefault    Boolean @default(true) @map("allow_download_proxy_default")
+  showCompanyWatermarkDefault  Boolean @default(true) @map("show_company_watermark_default")
+  defaultExpiryDays      Int     @default(30) @map("default_expiry_days")
+
+  createdAt         DateTime @default(now()) @db.Timestamptz(6) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @db.Timestamptz(6) @map("updated_at")
+
+  @@map("organization_settings")
 }
 
 model User {
@@ -96,6 +123,7 @@ model User {
   addedProjectTags     ProjectTag[] @relation("ProjectTagAddedBy")
   userGroupMembers     UserGroupMember[]
   createdUserGroups    UserGroup[]  @relation("GroupCreatedBy")
+  createdProjects      Project[]  @relation("ProjectCreatedBy")
 
   // Password reset tokens
   passwordResetTokens PasswordResetToken[]
@@ -160,6 +188,7 @@ model Workspace {
   name        String  @db.VarChar(100)
   description String? @db.VarChar(500)
   color       String? @db.VarChar(50)
+  visibility  String  @default("private") @db.VarChar(50)
 
   orgId        String       @map("org_id") @db.Uuid
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -168,6 +197,7 @@ model Workspace {
   projects Project[]
   assets   Asset[]
   users  WorkspaceUser[]
+  groups WorkspaceGroup[]
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
 
@@ -182,9 +212,12 @@ model WorkspaceUser {
   id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId String @map("workspace_id")
   userId      String @map("user_id") @db.Uuid
+  memberType  String @default("MEMBER") @map("member_type") @db.VarChar(50)
+  accessLevelId String? @map("access_level_id") @db.Uuid
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessLevelRef AccessLevel? @relation("WorkspaceUserAccess", fields: [accessLevelId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -193,6 +226,25 @@ model WorkspaceUser {
   @@index([workspaceId])
   @@index([userId])
   @@map("workspace_users")
+}
+
+model WorkspaceGroup {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workspaceId String    @map("workspace_id")
+  groupId     String    @map("group_id") @db.Uuid
+  accessLevelId String? @map("access_level_id") @db.Uuid
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  group       UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  accessLevelRef AccessLevel? @relation("WorkspaceGroupAccess", fields: [accessLevelId], references: [id])
+
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([workspaceId, groupId])
+  @@index([workspaceId])
+  @@index([groupId])
+  @@map("workspace_groups")
 }
 
 model Folder {
@@ -336,6 +388,8 @@ model Project {
   id        String              @id @default(uuid())
   name      String  @db.VarChar(100)
   ownerType MediaAssetOwnerType @map("owner_type")
+  visibility String @default("public") @db.VarChar(20)
+  status     String @default("active") @db.VarChar(50) // active, inactive
 
   workspaceId String? @map("workspace_id") // set when ownerType = WORKSPACE
   folderId    String? @map("folder_id") // set when ownerType = FOLDER
@@ -345,6 +399,7 @@ model Project {
 
   sources     ProjectSource[]
   users       ProjectUser[]
+  groups      ProjectGroup[]
   defaultTags ProjectTag[]
 
   favorites Favorite[]
@@ -352,8 +407,12 @@ model Project {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  createdById String? @map("created_by_id") @db.Uuid
+  createdBy User? @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
   @@index([workspaceId])
   @@index([folderId])
+  @@index([createdById])
   @@map("projects")
 }
 
@@ -361,9 +420,12 @@ model ProjectUser {
   id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId String @map("project_id")
   userId    String @map("user_id") @db.Uuid
+  accessLevelId String? @map("access_level_id") @db.Uuid
+  memberType  String @default("Member") @map("member_type") @db.VarChar(50)
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessLevelObj AccessLevel? @relation("ProjectUserAccess", fields: [accessLevelId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -372,6 +434,25 @@ model ProjectUser {
   @@index([projectId])
   @@index([userId])
   @@map("project_users")
+}
+
+model ProjectGroup {
+  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId   String @map("project_id")
+  groupId     String @map("group_id") @db.Uuid
+  accessLevelId String? @map("access_level_id") @db.Uuid
+
+  project Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  group   UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  accessLevelObj AccessLevel? @relation("ProjectGroupAccess", fields: [accessLevelId], references: [id])
+
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([projectId, groupId])
+  @@index([projectId])
+  @@index([groupId])
+  @@map("project_groups")
 }
 
 
@@ -674,6 +755,8 @@ model UserGroup {
 
   members      UserGroupMember[]
   assetGroups  AssetGroup[]
+  workspaceGroups WorkspaceGroup[]
+  projects     ProjectGroup[]
 
   @@unique([orgId, name])
   @@index([orgId])
@@ -739,6 +822,7 @@ model Permission {
   description String?
   createdAt   DateTime         @default(now()) @db.Timestamptz(6)
   roles       RolePermission[]
+  accessLevels AccessLevelPermission[]
 
   @@map("permissions")
 }
@@ -811,7 +895,7 @@ model VideoFrameHash {
   @@index([assetId])
   @@map("video_frame_hashes")
 }
-
+ 
 model Notification {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId          String   @db.Uuid
@@ -908,7 +992,7 @@ model PlatformSession {
 
 /// Sellable plan/package catalog managed by Platform Admins
 model Plan {
-  id                 String   @id @db.VarChar(255) // slug-style id: free, basic, premium, enterprise
+  id                 String   @id @default(uuid()) @db.VarChar(255)
   name               String   @db.VarChar(100)
   description        String?  @db.Text
   monthlyPriceCents  Int      @default(0)
@@ -916,6 +1000,7 @@ model Plan {
   storageQuotaBytes  BigInt   @default(5368709120) // 5GB
   maxUsers           Int      @default(2)
   maxWorkspaces      Int      @default(1)
+  maxProjects        Int      @default(1)
   features           Json     @default("[]") @db.JsonB
   monthlyPriceId     String?  @db.VarChar(255) // Stripe monthly price id
   yearlyPriceId      String?  @db.VarChar(255) // Stripe yearly price id
@@ -970,4 +1055,107 @@ model PlatformModerationFlag {
   @@index([orgId])
   @@index([assetId])
   @@map("platform_moderation_flags")
+}
+
+enum StorageProvider {
+  BACKBLAZE_B2
+  AWS_S3
+  MINIO
+  ON_PREM
+}
+
+enum UsageMetric {
+  STORAGE_BYTES_DELTA
+  BANDWIDTH_BYTES
+  CLASS_A
+  CLASS_B
+  SEAT_CHANGE
+}
+
+model StorageSystem {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId        String          @db.Uuid
+  organization Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  provider     StorageProvider @default(BACKBLAZE_B2)
+  name         String          @db.VarChar(100)
+  config       Json            @default("{}") @db.JsonB
+  isPrimary    Boolean         @default(true)
+  status       String          @default("active") @db.VarChar(50)
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+
+  usageEvents       UsageEvent[]
+  usageDailyRollups UsageDailyRollup[]
+
+  @@unique([orgId, provider, name])
+  @@index([orgId, provider])
+  @@map("storage_systems")
+}
+
+model UsageEvent {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String         @db.Uuid
+  organization    Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  storageSystemId String?        @db.Uuid
+  storageSystem   StorageSystem? @relation(fields: [storageSystemId], references: [id], onDelete: SetNull)
+  userId          String?        @db.Uuid
+  assetId         String?        @db.Uuid
+  assetFileId     String?        @db.Uuid
+  metric          UsageMetric
+  delta           BigInt         @default(0)
+  metadata        Json           @default("{}") @db.JsonB
+  occurredAt      DateTime       @default(now()) @db.Timestamptz(6)
+
+  @@index([orgId, occurredAt])
+  @@index([orgId, metric, occurredAt])
+  @@index([storageSystemId, occurredAt])
+  @@map("usage_events")
+}
+
+model UsageDailyRollup {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId           String         @db.Uuid
+  organization    Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  storageSystemId String?        @db.Uuid
+  storageSystem   StorageSystem? @relation(fields: [storageSystemId], references: [id], onDelete: SetNull)
+  date            DateTime       @db.Date
+  storageBytesEnd BigInt         @default(0)
+  bandwidthBytes  BigInt         @default(0)
+  classACount     BigInt         @default(0)
+  classBCount     BigInt         @default(0)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([orgId, storageSystemId, date])
+  @@index([orgId, date])
+  @@map("usage_daily_rollups")
+}
+
+model AccessLevel {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String   @unique @db.VarChar(50)
+  title       String?  @db.VarChar(50)
+  description String?  @db.VarChar(255)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  workspaceUsers  WorkspaceUser[] @relation("WorkspaceUserAccess")
+  workspaceGroups WorkspaceGroup[] @relation("WorkspaceGroupAccess")
+  projectUsers    ProjectUser[]   @relation("ProjectUserAccess")
+  projectGroups   ProjectGroup[]  @relation("ProjectGroupAccess")
+  permissions     AccessLevelPermission[]
+
+  @@map("access_levels")
+}
+
+model AccessLevelPermission {
+  accessLevelId String      @db.Uuid
+  permissionId  String      @db.Uuid
+  accessLevel   AccessLevel @relation(fields: [accessLevelId], references: [id], onDelete: Cascade)
+  permission    Permission  @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now()) @db.Timestamptz(6)
+
+  @@id([accessLevelId, permissionId])
+  @@index([accessLevelId])
+  @@index([permissionId])
+  @@map("access_level_permissions")
 }

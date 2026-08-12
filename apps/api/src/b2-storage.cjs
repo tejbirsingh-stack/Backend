@@ -62,6 +62,38 @@ class B2StorageService {
   }
 
   /**
+   * Calculate exact physical storage bytes for a folder/prefix directly from B2 API
+   */
+  async getFolderSize(prefix = '') {
+    if (!this.enabled) return 0;
+    try {
+      let totalSize = 0;
+      let continuationToken = undefined;
+
+      do {
+        const command = new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        });
+
+        const response = await this.s3Client.send(command);
+        if (response.Contents) {
+          for (const item of response.Contents) {
+            totalSize += item.Size || 0;
+          }
+        }
+        continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+      } while (continuationToken);
+
+      return totalSize;
+    } catch (error) {
+      console.warn('Error fetching B2 folder size for prefix:', prefix, error.message);
+      return 0;
+    }
+  }
+
+  /**
    * List files from B2 bucket with proper folder structure
    */
   async listFiles(prefix = '', maxKeys = 1000, includeFolders = false) {

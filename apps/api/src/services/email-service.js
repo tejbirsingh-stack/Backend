@@ -247,6 +247,53 @@ class EmailService {
 
     return this.sendEmail({ to, subject, text, html });
   }
+  // Send Project Guest Invite (standard login required)
+  async sendProjectGuestInvite(to, { projectName, organizationName, appUrl }) {
+    const orgName = organizationName || 'An organization';
+    const subject = `${orgName} shared project "${projectName}" with you`;
+    const text = `Hi,\n\n${projectName}, ${orgName} has shared a project with you. Please login and view in your Shared with me option.\n\n${appUrl}\n\nThanks,\nNoah Platform`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #4f46e5; margin: 0;">Project Shared With You</h2>
+        </div>
+        <p style="font-size: 15px; color: #1e293b;">Hi,</p>
+        <p style="font-size: 15px; color: #334155; line-height: 1.5;">
+          <strong>${projectName}</strong>, ${orgName} has shared a project with you. Please login and view in your <strong>Shared with me</strong> option.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${appUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 15px;">Login to View</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">You received this invite because your email was shared with a project on Noah Platform.</p>
+      </div>
+    `;
+    return this.sendEmail({ to, subject, text, html });
+  }
+
+  // Send Project Member Invite (org member — directs to login + project)
+  async sendProjectMemberInvite(to, { projectName, inviterName, appUrl }) {
+    const subject = `${inviterName || 'Someone'} added you to project "${projectName}" on Noah`;
+    const text = `Hi,\n\n${inviterName || 'A team member'} has added you to the project "${projectName}" on Noah. Log in to access it:\n\n${appUrl}\n\nThanks,\nNoah Platform`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #4f46e5; margin: 0;">You've Been Added to a Project</h2>
+        </div>
+        <p style="font-size: 15px; color: #1e293b;">Hi,</p>
+        <p style="font-size: 15px; color: #334155; line-height: 1.5;">
+          <strong>${inviterName || 'A team member'}</strong> has added you to the project
+          <strong>"${projectName}"</strong> on Noah Platform.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${appUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 15px;">View Project</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">Log in to your Noah account to access this project.</p>
+      </div>
+    `;
+    return this.sendEmail({ to, subject, text, html });
+  }
 }
 
 module.exports = new EmailService();
