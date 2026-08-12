@@ -48,16 +48,17 @@ async function getReportingSummary(_request, reply) {
   try {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    const [orgsByPlan, newOrgs, storageAgg, loginEvents] = await Promise.all([
+    const [orgsByPlan, allPlans, newOrgs, storageAgg, loginEvents] = await Promise.all([
       prisma.organization.groupBy({
-        by: ['planType'],
+        by: ['currentPlanId'],
         _count: { _all: true },
       }),
+      prisma.plan.findMany(),
       prisma.organization.count({
         where: { createdAt: { gte: thirtyDaysAgo } },
       }),
       prisma.organization.aggregate({
-        _sum: { storageUsedBytes: true, storageQuotaBytes: true },
+        _sum: { storageUsedBytes: true },
       }),
       prisma.auditLog.count({
         where: {
@@ -68,6 +69,8 @@ async function getReportingSummary(_request, reply) {
       }),
     ]);
 
+    const planMap = new Map(allPlans.map((p) => [p.id, p.name.toLowerCase()]));
+
     return {
       success: true,
       report: {
@@ -75,11 +78,10 @@ async function getReportingSummary(_request, reply) {
         newOrganizations: newOrgs,
         loginEvents,
         planConversion: orgsByPlan.map((row) => ({
-          planType: row.planType,
+          planType: row.currentPlanId ? (planMap.get(row.currentPlanId) || 'free') : 'free',
           count: row._count._all,
         })),
         storageUsedBytes: (storageAgg._sum.storageUsedBytes || 0n).toString(),
-        storageQuotaBytes: (storageAgg._sum.storageQuotaBytes || 0n).toString(),
       },
     };
   } catch (error) {

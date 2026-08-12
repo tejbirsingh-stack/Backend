@@ -13,12 +13,9 @@ model Organization {
   id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name             String    @db.VarChar(255)
   slug             String    @unique @db.VarChar(255)
-  planType         String    @db.VarChar(50)
-  storageQuotaBytes BigInt   @default(1099511627776) // 1TB default
   storageUsedBytes BigInt   @default(0)
-  maxUsers         Int      @default(10)
-  features         Json     @default("{}") @db.JsonB
   metadata         Json     @default("{}") @db.JsonB
+  isFreeTrialUsed  Boolean   @default(false) @map("is_free_trial_used")
   createdAt        DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 

@@ -19,6 +19,36 @@ function slugifyWorkspaceName(value) {
     .slice(0, 48);
 }
 
+function formatOrganization(org) {
+  if (!org) return null;
+  const currentPlan = org.currentPlan || {};
+  const planType = currentPlan.name
+    ? currentPlan.name.toLowerCase()
+    : (org.metadata?.planId || 'free');
+  const storageQuotaBytes = (
+    currentPlan.storageQuotaBytes !== undefined && currentPlan.storageQuotaBytes !== null
+      ? currentPlan.storageQuotaBytes
+      : BigInt(0)
+  ).toString();
+  const maxUsers = currentPlan.maxUsers ?? 5;
+  const maxWorkspaces = currentPlan.maxWorkspaces ?? 1;
+  const maxProjects = currentPlan.maxProjects ?? 1;
+  const features = currentPlan.features ?? [];
+  const isFreeTrialUsed = Boolean(org.isFreeTrialUsed);
+
+  return {
+    ...org,
+    planType,
+    isFreeTrialUsed,
+    storageQuotaBytes,
+    storageUsedBytes: org.storageUsedBytes?.toString?.() ?? '0',
+    maxUsers,
+    maxWorkspaces,
+    maxProjects,
+    features,
+  };
+}
+
 function formatDomainToOrgName(email, defaultName) {
   try {
     if (email && typeof email === "string" && email.includes("@")) {
@@ -414,13 +444,10 @@ module.exports.register = async (request, reply) => {
         data: {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
-          planType: "free",
           currentPlanId: freePlan ? freePlan.id : null,
-          maxWorkspaces: freePlan ? freePlan.maxWorkspaces : 1,
-          maxProjects: freePlan ? freePlan.maxProjects : 1,
-          storageQuotaBytes: freePlan ? freePlan.storageQuotaBytes : BigInt(0),
-          maxUsers: freePlan ? freePlan.maxUsers : 5,
+          isFreeTrialUsed: true,
         },
+        include: { currentPlan: true },
       });
       finalOrgId = organization.id;
 
@@ -950,14 +977,12 @@ module.exports.getMe = async (request, reply) => {
             id: true,
             name: true,
             slug: true,
-            planType: true,
             currentPlanId: true,
-            storageQuotaBytes: true,
+            currentPlan: true,
             storageUsedBytes: true,
-            maxUsers: true,
-            features: true,
             metadata: true,
             planExpiresAt: true,
+            isFreeTrialUsed: true,
           },
         },
         roleRelation: {
@@ -1025,8 +1050,7 @@ module.exports.getMe = async (request, reply) => {
       select: { projectId: true },
     });
     if (user?.organization) {
-      user.organization.storageQuotaBytes = user.organization.storageQuotaBytes?.toString?.() ?? '0';
-      user.organization.storageUsedBytes = user.organization.storageUsedBytes?.toString?.() ?? '0';
+      user.organization = formatOrganization(user.organization);
     }
 
     return {
@@ -1350,13 +1374,17 @@ module.exports.googleLogin = async (request, reply) => {
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
       const orgSlug = `workspace-${crypto.randomBytes(4).toString("hex")}`;
 
-      // Create Organization
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       const organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: orgSlug,
-          planType: "free"
-        }
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: true,
+        },
+        include: { currentPlan: true },
       });
       let defaultRole = await request.server.prisma.role.findFirst({
         where: {
@@ -1627,12 +1655,17 @@ module.exports.microsoftLogin = async (request, reply) => {
       const rawOrgName = name || email.split("@")[0];
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
 
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       const organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
-          planType: "free",
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: true,
         },
+        include: { currentPlan: true },
       });
 
       let defaultRole = await request.server.prisma.role.findFirst({
@@ -2039,12 +2072,17 @@ module.exports.sendSignupOtp = async (request, reply) => {
     } else {
       // Create a new organization for pending registration using email domain
       const derivedOrgName = formatDomainToOrgName(normalizedEmail);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       const pendingOrg = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `pending-${Date.now()}`,
-          planType: "free",
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: true,
         },
+        include: { currentPlan: true },
       });
       await request.server.prisma.user.create({
         data: {
@@ -2308,11 +2346,8 @@ module.exports.completeSignup = async (request, reply) => {
     const orgData = {
       name: derivedOrgName,
       slug: uniqueSlug,
-      planType: planId,
       currentPlanId: dbPlan ? dbPlan.id : null,
-      storageQuotaBytes: selectedStorageQuotaBytes,
-      maxUsers: selectedMaxUsers,
-      features: selectedFeatures,
+      isFreeTrialUsed: true,
       metadata: orgMetadata,
       planExpiresAt: expiresAtDate,
     };
@@ -2321,10 +2356,12 @@ module.exports.completeSignup = async (request, reply) => {
       organization = await request.server.prisma.organization.update({
         where: { id: user.orgId },
         data: orgData,
+        include: { currentPlan: true },
       });
     } else {
       organization = await request.server.prisma.organization.create({
         data: orgData,
+        include: { currentPlan: true },
       });
     }
 
@@ -2500,11 +2537,7 @@ module.exports.completeSignup = async (request, reply) => {
         role: user.role,
         roleRelation: superAdminRole || { id: user.roleId, name: user.role },
         permissions: userPermissions,
-        organization: {
-          ...organization,
-          storageQuotaBytes: organization.storageQuotaBytes?.toString?.() ?? '0',
-          storageUsedBytes: organization.storageUsedBytes?.toString?.() ?? '0',
-        },
+        organization: formatOrganization(organization),
         workspace: {
           id: workspace.id,
           name: workspace.name,
@@ -2586,7 +2619,7 @@ module.exports.upgradePlan = async (request, reply) => {
     }
 
     const normalizedPlanId = String(planId).toLowerCase().trim();
-    const currentPlanType = String(user.organization?.planType || '').toLowerCase().trim();
+    const currentPlanType = String(user.organization?.currentPlan?.name || user.organization?.metadata?.planId || '').toLowerCase().trim();
 
     if (normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd') {
       return reply.status(403).send({
@@ -2605,36 +2638,7 @@ module.exports.upgradePlan = async (request, reply) => {
       },
     }).catch(() => null);
 
-    const GB_BYTES = BigInt(1024 * 1024 * 1024);
-    const PLAN_LIMITS_MAP = {
-      free: {
-        storageQuotaBytes: BigInt(0),
-        maxUsers: 5,
-        maxWorkspaces: 1,
-        maxProjects: 1,
-      },
-      basic: {
-        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
-        maxUsers: 5,
-        maxWorkspaces: 2,
-        maxProjects: 2,
-      },
-      premium: {
-        storageQuotaBytes: BigInt(15) * GB_BYTES,
-        maxUsers: 10,
-        maxWorkspaces: 3,
-        maxProjects: 3,
-      },
-      enterprise: {
-        storageQuotaBytes: BigInt(20) * GB_BYTES,
-        maxUsers: 15,
-        maxWorkspaces: 4,
-        maxProjects: 4,
-      },
-    };
-
     const resolvedPlanName = dbPlan ? dbPlan.name.toLowerCase() : (normalizedPlanId.length > 30 ? 'free' : normalizedPlanId);
-    const targetLimits = PLAN_LIMITS_MAP[resolvedPlanName] || PLAN_LIMITS_MAP[normalizedPlanId] || PLAN_LIMITS_MAP.free;
     const isMonthly = String(billingCycle).toLowerCase() === 'monthly';
 
     const now = new Date();
@@ -2650,12 +2654,8 @@ module.exports.upgradePlan = async (request, reply) => {
     const updatedOrg = await request.server.prisma.organization.update({
       where: { id: user.orgId },
       data: {
-        planType: resolvedPlanName,
         currentPlanId: dbPlan ? dbPlan.id : null,
-        maxWorkspaces: dbPlan?.maxWorkspaces ?? targetLimits.maxWorkspaces,
-        maxProjects: dbPlan?.maxProjects ?? targetLimits.maxProjects,
-        maxUsers: dbPlan?.maxUsers ?? targetLimits.maxUsers,
-        storageQuotaBytes: dbPlan?.storageQuotaBytes ?? targetLimits.storageQuotaBytes,
+        isFreeTrialUsed: true,
         planExpiresAt: expiresAtDate,
         metadata: {
           ...(typeof user.organization?.metadata === 'object' ? user.organization.metadata : {}),
@@ -2665,16 +2665,13 @@ module.exports.upgradePlan = async (request, reply) => {
           expiresAt: expiresAtDate.toISOString(),
         },
       },
+      include: { currentPlan: true },
     });
 
     return reply.send({
       success: true,
       message: `Plan updated to ${normalizedPlanId.toUpperCase()} successfully!`,
-      organization: {
-        ...updatedOrg,
-        storageQuotaBytes: updatedOrg.storageQuotaBytes?.toString?.() ?? '0',
-        storageUsedBytes: updatedOrg.storageUsedBytes?.toString?.() ?? '0',
-      },
+      organization: formatOrganization(updatedOrg),
     });
   } catch (error) {
     console.error('Error upgrading plan:', error);
