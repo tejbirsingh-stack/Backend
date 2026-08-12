@@ -6,7 +6,7 @@ const { getAncestors } = require('../services/tagHierarchy');
 const { autoAssignAdminsToWorkspace, autoAssignAdminsToProject, assertWorkspaceAccess } = require('../services/workspace.service');
 const { isOrgWideRole, resolveUserWorkspacePermissions } = require('../lib/rbac-policy');
 const { verifyProjectAccess } = require('../utils/projectAccessUtils');
-const { createNotification } = require('./notificationController');
+const { createNotification, notifyRole } = require('./notificationController');
 const { ACCESS_LEVEL } = require('../lib/rolesPermissions');
 
 function formatWorkspaceNameWithSuffix(value) {
@@ -1835,12 +1835,31 @@ module.exports.deleteProject = async (request, reply) => {
         const userRole = rawRoleName.trim().toLowerCase();
         const isSuperAdmin = userRole === 'super admin' || userRole === 'superadmin';
 
+        // Fetch project details for notification
+        const targetProject = await prisma.project.findUnique({
+            where: { id },
+            include: { workspace: true }
+        });
+        const projectName = targetProject?.name || 'Project';
+        const orgId = liveUser?.orgId || targetProject?.workspace?.orgId || request.user?.orgId;
+        const userName = liveUser?.name || liveUser?.email || 'User';
+
         // 1. Fetch all linked asset IDs for this project (including project folders!)
         const { assetIds: allLinkedAssetIds } = await getAllProjectAssetIdsAndObjects(prisma, id);
 
         const selectedAssetIds = Array.isArray(deleteFileIds)
             ? deleteFileIds.filter(fId => allLinkedAssetIds.includes(fId))
             : [];
+
+        // Fetch names/titles of files being deleted with the project
+        let deletedFileNames = [];
+        if (selectedAssetIds.length > 0) {
+            const assetsToDelete = await prisma.asset.findMany({
+                where: { id: { in: selectedAssetIds } },
+                select: { id: true, title: true, fileName: true }
+            });
+            deletedFileNames = assetsToDelete.map(a => a.title || a.fileName || 'Untitled file');
+        }
 
         // If specific files were checked for deletion: mark those assets based on role
         if (selectedAssetIds.length > 0) {
@@ -1851,7 +1870,7 @@ module.exports.deleteProject = async (request, reply) => {
                     status: assetStatusUpdate,
                     deletedAt: new Date(),
                     deletedByUserId: request.user.id,
-                    deletionReason: `Deleted with project (${id})`
+                    deletionReason: `Deleted with project (${projectName})`
                 }
             });
         }
@@ -1882,6 +1901,28 @@ module.exports.deleteProject = async (request, reply) => {
                 }
             });
         }
+
+        // Generate Notification for Super Admin
+        const notifTitle = isSuperAdmin ? 'Project Deleted' : 'Project Deletion Request';
+        const notifType = isSuperAdmin ? 'deletion_alert' : 'approval_request';
+        let notifMessage = '';
+
+        if (deletedFileNames.length > 0) {
+            const filesText = deletedFileNames.join(', ');
+            if (isSuperAdmin) {
+                notifMessage = `${userName} (Super Admin) deleted project '${projectName}' along with ${deletedFileNames.length} file(s): ${filesText}.`;
+            } else {
+                notifMessage = `${userName} (${rawRoleName}) requested deletion for project '${projectName}' along with ${deletedFileNames.length} file(s): ${filesText}.`;
+            }
+        } else {
+            if (isSuperAdmin) {
+                notifMessage = `${userName} (Super Admin) deleted project '${projectName}'.`;
+            } else {
+                notifMessage = `${userName} (${rawRoleName}) requested deletion for project '${projectName}'.`;
+            }
+        }
+
+        await notifyRole(request.server, orgId, 'Super Admin', notifType, notifTitle, notifMessage, id);
 
         // 2. Process Project Deletion
         if (isSuperAdmin) {
