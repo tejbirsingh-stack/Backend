@@ -3,9 +3,10 @@ const crypto = require('crypto');
 const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
 const emailService = require('../services/email-service');
 const { getAncestors } = require('../services/tagHierarchy');
-const { autoAssignAdminsToWorkspace, assertWorkspaceAccess } = require('../services/workspace.service');
-const { isOrgWideRole } = require('../lib/rbac-policy');
+const { autoAssignAdminsToWorkspace, autoAssignAdminsToProject, assertWorkspaceAccess } = require('../services/workspace.service');
+const { isOrgWideRole, resolveUserWorkspacePermissions } = require('../lib/rbac-policy');
 const { verifyProjectAccess } = require('../utils/projectAccessUtils');
+const { ACCESS_LEVEL } = require('../lib/rolesPermissions');
 
 function formatWorkspaceNameWithSuffix(value) {
     if (!value || typeof value !== "string") return "Workspace-ARK";
@@ -23,7 +24,23 @@ module.exports.storeWorkplace = async (request, reply) => {
 
         // Default values for granular permissions if not provided
         const mType = memberType || 'MEMBER';
-        const aLevel = accessLevel || 'FULL_ACCESS';
+        let aLevel = accessLevel || 'FULL_ACCESS';
+
+        // Resolve access level string/ID for invited users
+        let aLevelId = accessLevel;
+        let aLevelName = ACCESS_LEVEL.FULL_ACCESS;
+        if (aLevelId) {
+            const foundLevel = await prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
+            if (foundLevel) {
+                aLevelName = foundLevel.name.toUpperCase().replace(/\s+/g, '_');
+            } else {
+                const fallbackLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+                aLevelId = fallbackLevel ? fallbackLevel.id : null;
+            }
+        } else {
+            const fallbackLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+            aLevelId = fallbackLevel ? fallbackLevel.id : null;
+        }
 
         const { orgId } = request.user;
         const userId = request.user?.id || request.user?.userId || request.user?.sub;
@@ -78,10 +95,17 @@ module.exports.storeWorkplace = async (request, reply) => {
 
         // 1. Link creator user to WorkspaceUser (same as signup flow)
         if (userId) {
+            let creatorAccessLevelId = null;
+            const fullAccessLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+            if (fullAccessLevel) {
+                creatorAccessLevelId = fullAccessLevel.id;
+            }
+
             await prisma.workspaceUser.create({
                 data: {
                     workspaceId: workspace.id,
-                    userId: userId
+                    userId: userId,
+                    accessLevelId: creatorAccessLevelId
                 }
             }).catch(err => {
                 console.error("Failed to create workspaceUser for creator:", err);
@@ -112,7 +136,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                             workspaceId: workspace.id,
                             userId: guestUser.id,
                             memberType: 'GUEST',
-                            accessLevel: aLevel
+                            accessLevelId: aLevelId
                         }
                     }).catch(() => { });
                 } else {
@@ -126,7 +150,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                                 workspaceId: workspace.id,
                                 userId: invitedUser.id,
                                 memberType: mType,
-                                accessLevel: aLevel
+                                accessLevelId: aLevelId
                             }
                         }).catch(() => { });
                     }
@@ -143,7 +167,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                         data: {
                             workspaceId: workspace.id,
                             groupId: groupId,
-                            accessLevel: aLevel
+                            accessLevelId: aLevelId
                         }
                     }).catch(() => { });
                 }
@@ -297,6 +321,13 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 message: 'You do not have access to this workspace.'
             });
         }
+        
+        const workspace = await prisma.workspace.findUnique({ where: { id } });
+        if (!workspace) {
+            return reply.code(404).send({ success: false, message: 'Workspace not found' });
+        }
+
+        const effectivePermissions = await resolveUserWorkspacePermissions(prisma, request.user, workspace);
         // ──────────────────────────────────────────────────────────────────────
 
         let tagsArray = [];
@@ -365,6 +396,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
                 folders,
                 projects,
                 allProjects,
+                effectivePermissions,
                 working: {}
             }
         });
@@ -543,17 +575,37 @@ module.exports.createProject = async (request, reply) => {
 
         // If visibility is private, handle project invites
         if (visibility.toLowerCase() === 'private') {
+            
+            // Get full access ID for the creator
+            let fullAccessId = null;
+            const fullAccessLvl = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+            if (fullAccessLvl) fullAccessId = fullAccessLvl.id;
+
+            // Resolve inviteAccess ID for invitees
+            let resolvedInviteAccessId = fullAccessId;
+            if (inviteAccess) {
+                if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(inviteAccess)) {
+                    resolvedInviteAccessId = inviteAccess;
+                } else {
+                    const lvl = await prisma.accessLevel.findFirst({ where: { title: inviteAccess } });
+                    if (lvl) resolvedInviteAccessId = lvl.id;
+                }
+            }
+
             // Add the creator as Full Access
-            if (userId) {
+            if (userId && fullAccessId) {
                 await prisma.projectUser.create({
                     data: {
                         projectId: project.id,
                         userId: userId,
-                        accessLevel: 'Full Access',
+                        accessLevelId: fullAccessId,
                         memberType: 'Member',
                     }
                 }).catch(() => { });
             }
+
+            // Also auto-assign admins for private projects
+            await autoAssignAdminsToProject(prisma, request.user.orgId, project.id);
 
             // Add invited emails
             if (Array.isArray(inviteEmails) && inviteEmails.length > 0) {
@@ -570,12 +622,12 @@ module.exports.createProject = async (request, reply) => {
                             where: { email: cleanEmail }
                         });
 
-                        if (invitedUser && invitedUser.id !== userId) {
+                        if (invitedUser && invitedUser.id !== userId && resolvedInviteAccessId) {
                             await prisma.projectUser.create({
                                 data: {
                                     projectId: project.id,
                                     userId: invitedUser.id,
-                                    accessLevel: inviteAccess,
+                                    accessLevelId: resolvedInviteAccessId,
                                     memberType: inviteMemberType,
                                 }
                             }).catch(() => { });
@@ -596,12 +648,12 @@ module.exports.createProject = async (request, reply) => {
                             where: { email: cleanEmail, orgId }
                         });
 
-                        if (invitedUser && invitedUser.id !== userId) {
+                        if (invitedUser && invitedUser.id !== userId && resolvedInviteAccessId) {
                             await prisma.projectUser.create({
                                 data: {
                                     projectId: project.id,
                                     userId: invitedUser.id,
-                                    accessLevel: inviteAccess,
+                                    accessLevelId: resolvedInviteAccessId,
                                     memberType: inviteMemberType,
                                 }
                             }).catch(() => { });
@@ -618,13 +670,13 @@ module.exports.createProject = async (request, reply) => {
             }
 
             // Add invited groups
-            if (Array.isArray(inviteGroupIds) && inviteGroupIds.length > 0) {
+            if (Array.isArray(inviteGroupIds) && inviteGroupIds.length > 0 && resolvedInviteAccessId) {
                 for (const groupId of inviteGroupIds) {
                     await prisma.projectGroup.create({
                         data: {
                             projectId: project.id,
                             groupId: groupId,
-                            accessLevel: inviteAccess,
+                            accessLevelId: resolvedInviteAccessId,
                         }
                     }).catch(() => { });
                 }
@@ -1384,6 +1436,23 @@ module.exports.searchGuestUsers = async (request, reply) => {
 
     } catch (error) {
         console.error('Error searching guest users:', error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.findAccessLevels = async (request, reply) => {
+    try {
+        const accessLevels = await prisma.accessLevel.findMany({
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, name: true, title: true, description: true }
+        });
+
+        return reply.code(200).send({
+            success: true,
+            data: accessLevels
+        });
+    } catch (error) {
+        console.error('Error fetching access levels:', error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };

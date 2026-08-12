@@ -1,7 +1,49 @@
 // Authentication & Authorization middleware for protecting routes
 const authService = require("../services/auth-service");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
-const { isOrgWideRole } = require("../lib/rbac-policy");
+const { isOrgWideRole, resolveUserWorkspacePermissions, resolveUserProjectPermissions } = require("../lib/rbac-policy");
+
+async function extractResourceContext(request) {
+  const prisma = request.server?.prisma;
+  if (!prisma) return { type: null, id: null };
+
+  const projectId = request.params?.projectId || request.body?.projectId || request.query?.projectId;
+  if (projectId) return { type: 'project', id: projectId };
+
+  const workspaceId = request.params?.workspaceId || request.body?.workspaceId || request.query?.workspaceId;
+  if (workspaceId) return { type: 'workspace', id: workspaceId };
+
+  const id = request.params?.id;
+  const url = request.url || "";
+  
+  if (id) {
+    if (url.includes('/projects/')) {
+      return { type: 'project', id };
+    } else if (url.includes('/workspaces/')) {
+      return { type: 'workspace', id };
+    } else if (url.includes('/folders/')) {
+      const folder = await prisma.folder.findUnique({ where: { id } });
+      if (folder?.workspaceId) return { type: 'workspace', id: folder.workspaceId };
+    } else if (url.includes('/media/')) {
+      const asset = await prisma.asset.findUnique({ where: { id } });
+      if (asset?.workspaceId) return { type: 'workspace', id: asset.workspaceId };
+    }
+  }
+
+  const folderId = request.params?.folderId || request.body?.folderId || request.query?.folderId;
+  if (folderId) {
+    const folder = await prisma.folder.findUnique({ where: { id: folderId } });
+    if (folder?.workspaceId) return { type: 'workspace', id: folder.workspaceId };
+  }
+
+  const mediaId = request.params?.mediaId || request.body?.mediaId || request.query?.mediaId || request.params?.assetId || request.body?.assetId || request.query?.assetId;
+  if (mediaId) {
+    const asset = await prisma.asset.findUnique({ where: { id: mediaId } });
+    if (asset?.workspaceId) return { type: 'workspace', id: asset.workspaceId };
+  }
+
+  return { type: null, id: null };
+}
 
 // Middleware to verify authentication
 async function authenticate(request, reply) {
@@ -117,11 +159,25 @@ function requirePermission(slug) {
       });
     }
 
-    const permissions = request.user.permissions || [];
+    let permissions = request.user.permissions || [];
+    const context = await extractResourceContext(request);
+
+    if (context.type === 'project' && request.server?.prisma) {
+      const project = await request.server.prisma.project.findUnique({ where: { id: context.id }, include: { workspace: true } });
+      if (project) {
+        permissions = await resolveUserProjectPermissions(request.server.prisma, request.user, project);
+      }
+    } else if (context.type === 'workspace' && request.server?.prisma) {
+      const workspace = await request.server.prisma.workspace.findUnique({ where: { id: context.id } });
+      if (workspace) {
+        permissions = await resolveUserWorkspacePermissions(request.server.prisma, request.user, workspace);
+      }
+    }
+
     if (!permissions.includes(slug)) {
       return reply.status(403).send({
         error: "Forbidden",
-        message: `Missing required permission: ${slug}`,
+        message: `Missing required permission: ${slug} in this resource context`,
         code: "RBAC_DENIED",
         requiredPermission: slug,
       });
@@ -140,13 +196,27 @@ function requireAnyPermission(slugs = []) {
       });
     }
 
-    const permissions = request.user.permissions || [];
+    let permissions = request.user.permissions || [];
+    const context = await extractResourceContext(request);
+
+    if (context.type === 'project' && request.server?.prisma) {
+      const project = await request.server.prisma.project.findUnique({ where: { id: context.id }, include: { workspace: true } });
+      if (project) {
+        permissions = await resolveUserProjectPermissions(request.server.prisma, request.user, project);
+      }
+    } else if (context.type === 'workspace' && request.server?.prisma) {
+      const workspace = await request.server.prisma.workspace.findUnique({ where: { id: context.id } });
+      if (workspace) {
+        permissions = await resolveUserWorkspacePermissions(request.server.prisma, request.user, workspace);
+      }
+    }
+
     const hasAny = slugs.some((slug) => permissions.includes(slug));
 
     if (!hasAny) {
       return reply.status(403).send({
         error: "Forbidden",
-        message: `Missing required permissions: one of ${slugs.join(", ")}`,
+        message: `Missing required permissions: one of ${slugs.join(", ")} in this resource context`,
         code: "RBAC_DENIED",
         requiredPermissions: slugs,
       });
