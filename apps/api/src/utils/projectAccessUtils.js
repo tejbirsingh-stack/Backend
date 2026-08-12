@@ -1,26 +1,22 @@
 const prisma = require('./prisma');
+const { resolveUserProjectPermissions } = require('../lib/rbac-policy');
 
 const ACCESS_LEVELS = {
-  'Full Access': 3,
-  'Can edit': 2,
-  'Can view': 1,
+  'Full Access': 'manage_root_folders',
+  'Can edit': 'upload_media',
+  'Can view': 'view_search_media',
 };
 
 /**
  * Validates if a user has the required access level for a project.
  * Throws an error if unauthorized (403).
- *
- * @param {string} projectId - The ID of the project
- * @param {string} userId - The ID of the user
- * @param {string} requiredLevel - 'Full Access', 'Can edit', or 'Can view'
- * @param {Object} localPrisma - Optional prisma client
- * @returns {Promise<boolean>} True if authorized
  */
 async function verifyProjectAccess(projectId, userId, requiredLevel, localPrisma = prisma) {
   if (!projectId) return true;
 
   const project = await localPrisma.project.findUnique({
     where: { id: projectId },
+    include: { workspace: true }
   });
 
   if (!project) {
@@ -91,17 +87,32 @@ async function verifyProjectAccess(projectId, userId, requiredLevel, localPrisma
     if (workspaceMember) {
       highestLevelValue = Math.max(highestLevelValue, ACCESS_LEVELS['Can view']);
     }
+    const user = await localPrisma.user.findUnique({ where: { id: userId }, include: { roleRelation: true } });
+    if (!user) {
+      const err = new Error('User not found');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const mockUser = {
+      id: user.id,
+      role: user.roleRelation?.name,
+      roleId: user.roleId,
+      permissions: [] // Ideally from authz context, but resolver will fallback
+    };
+
+    const perms = await resolveUserProjectPermissions(localPrisma, mockUser, project);
+
+    const requiredSlug = ACCESS_LEVELS[requiredLevel];
+
+    if (requiredSlug && !perms.includes(requiredSlug)) {
+      const err = new Error(`Access Denied: Requires '${requiredLevel}' access for this project.`);
+      err.statusCode = 403;
+      throw err;
+    }
+
+    return true;
   }
-
-  const requiredValue = ACCESS_LEVELS[requiredLevel] || 0;
-
-  if (highestLevelValue < requiredValue) {
-    const err = new Error(`Access Denied: Requires '${requiredLevel}' access for this project.`);
-    err.statusCode = 403;
-    throw err;
-  }
-
-  return true;
 }
 
 module.exports = {

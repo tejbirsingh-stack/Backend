@@ -188,6 +188,7 @@ model Workspace {
   name        String  @db.VarChar(100)
   description String? @db.VarChar(500)
   color       String? @db.VarChar(50)
+  visibility  String  @default("private") @db.VarChar(50)
 
   orgId        String       @map("org_id") @db.Uuid
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -212,10 +213,11 @@ model WorkspaceUser {
   workspaceId String @map("workspace_id")
   userId      String @map("user_id") @db.Uuid
   memberType  String @default("MEMBER") @map("member_type") @db.VarChar(50)
-  accessLevel String @default("FULL_ACCESS") @map("access_level") @db.VarChar(50)
+  accessLevelId String? @map("access_level_id") @db.Uuid
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessLevelRef AccessLevel? @relation("WorkspaceUserAccess", fields: [accessLevelId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -230,10 +232,11 @@ model WorkspaceGroup {
   id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   workspaceId String    @map("workspace_id")
   groupId     String    @map("group_id") @db.Uuid
-  accessLevel String    @default("FULL_ACCESS") @map("access_level") @db.VarChar(50)
+  accessLevelId String? @map("access_level_id") @db.Uuid
 
   workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   group       UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  accessLevelRef AccessLevel? @relation("WorkspaceGroupAccess", fields: [accessLevelId], references: [id])
 
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
@@ -417,11 +420,12 @@ model ProjectUser {
   id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId String @map("project_id")
   userId    String @map("user_id") @db.Uuid
-  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
+  accessLevelId String? @map("access_level_id") @db.Uuid
   memberType  String @default("Member") @map("member_type") @db.VarChar(50)
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessLevelObj AccessLevel? @relation("ProjectUserAccess", fields: [accessLevelId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -436,10 +440,11 @@ model ProjectGroup {
   id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId   String @map("project_id")
   groupId     String @map("group_id") @db.Uuid
-  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
+  accessLevelId String? @map("access_level_id") @db.Uuid
 
   project Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   group   UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  accessLevelObj AccessLevel? @relation("ProjectGroupAccess", fields: [accessLevelId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -817,6 +822,7 @@ model Permission {
   description String?
   createdAt   DateTime         @default(now()) @db.Timestamptz(6)
   roles       RolePermission[]
+  accessLevels AccessLevelPermission[]
 
   @@map("permissions")
 }
@@ -1123,4 +1129,33 @@ model UsageDailyRollup {
   @@unique([orgId, storageSystemId, date])
   @@index([orgId, date])
   @@map("usage_daily_rollups")
+}
+
+model AccessLevel {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String   @unique @db.VarChar(50)
+  title       String?  @db.VarChar(50)
+  description String?  @db.VarChar(255)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  workspaceUsers  WorkspaceUser[] @relation("WorkspaceUserAccess")
+  workspaceGroups WorkspaceGroup[] @relation("WorkspaceGroupAccess")
+  projectUsers    ProjectUser[]   @relation("ProjectUserAccess")
+  projectGroups   ProjectGroup[]  @relation("ProjectGroupAccess")
+  permissions     AccessLevelPermission[]
+
+  @@map("access_levels")
+}
+
+model AccessLevelPermission {
+  accessLevelId String      @db.Uuid
+  permissionId  String      @db.Uuid
+  accessLevel   AccessLevel @relation(fields: [accessLevelId], references: [id], onDelete: Cascade)
+  permission    Permission  @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now()) @db.Timestamptz(6)
+
+  @@id([accessLevelId, permissionId])
+  @@index([accessLevelId])
+  @@index([permissionId])
+  @@map("access_level_permissions")
 }

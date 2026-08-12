@@ -8,6 +8,7 @@ const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { autoAssignAdminsToWorkspace } = require("../services/workspace.service");
+const { ACCESS_LEVEL } = require("../lib/rolesPermissions");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -491,6 +492,11 @@ module.exports.register = async (request, reply) => {
 
     // Auto-assign the user to the newly created default workspace and run admin auto-assign
     if (request.newWorkspaceId) {
+      // Get the ID for Full Access
+      let fullAccessId = null;
+      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
       await request.server.prisma.workspaceUser.upsert({
         where: {
           workspaceId_userId: {
@@ -503,7 +509,7 @@ module.exports.register = async (request, reply) => {
           workspaceId: request.newWorkspaceId,
           userId: user.id,
           memberType: 'MEMBER',
-          accessLevel: 'FULL_ACCESS'
+          accessLevelId: fullAccessId
         }
       });
       // Assign Super Admins / Admins now that the first user exists
@@ -1419,6 +1425,10 @@ module.exports.googleLogin = async (request, reply) => {
       // Assign Super Admins / Admins
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace.id);
 
+      let fullAccessId = null;
+      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
       // Ensure the user gets access to this new workspace
       await request.server.prisma.workspaceUser.upsert({
         where: {
@@ -1432,7 +1442,7 @@ module.exports.googleLogin = async (request, reply) => {
           workspaceId: newWorkspace.id,
           userId: user.id,
           memberType: 'MEMBER',
-          accessLevel: 'FULL_ACCESS'
+          accessLevelId: fullAccessId
         }
       });
 
@@ -1705,6 +1715,10 @@ module.exports.microsoftLogin = async (request, reply) => {
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace2.id);
 
+      let fullAccessId = null;
+      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
       // Ensure the new user gets access to these workspaces
       for (const wid of [newWorkspace1.id, newWorkspace2.id]) {
         await request.server.prisma.workspaceUser.upsert({
@@ -1719,7 +1733,7 @@ module.exports.microsoftLogin = async (request, reply) => {
             workspaceId: wid,
             userId: user.id,
             memberType: 'MEMBER',
-            accessLevel: 'FULL_ACCESS'
+            accessLevelId: fullAccessId
           }
         });
       }
