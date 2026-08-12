@@ -19,7 +19,6 @@ Noah is an enterprise-grade media asset management platform designed for efficie
 - PostgreSQL (v14+)
 - Redis (v6+)
 - Docker and Docker Compose (for local development)
-
 ### Development Setup
 
 1. Clone the repository
