@@ -73,7 +73,7 @@ async function createShareLink(req, reply) {
     // 1. strictly enforce Expiry Days from orgSettings
     let finalExpiresInDays = expiresInDays;
     let finalCustomExpiresAt = customExpiresAt;
-    
+
     if (orgSettings.defaultExpiryDays) {
       finalExpiresInDays = orgSettings.defaultExpiryDays;
       finalCustomExpiresAt = undefined; // Force use of days if org setting exists
@@ -110,16 +110,16 @@ async function createShareLink(req, reply) {
       watermark: permissions?.watermark !== undefined ? Boolean(permissions.watermark) : defaultWatermark,
     };
 
-    // 3. Password requirement handling
+    // 3. Password requirement handling (Public links never require passwords; passwords are only for private shares)
     let passwordHash = null;
-    let finalPassword = password;
-    
-    if (finalPassword && typeof finalPassword === 'string' && finalPassword.trim().length > 0) {
-      finalPassword = finalPassword.trim();
-    } else if (orgSettings.requirePasswordDefault) {
-      finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing and org requires password
-    } else {
-      finalPassword = null;
+    let finalPassword = null;
+
+    if (visibility !== 'public') {
+      if (password && typeof password === 'string' && password.trim().length > 0) {
+        finalPassword = password.trim();
+      } else if (orgSettings.requirePasswordDefault) {
+        finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing and org requires password
+      }
     }
 
     if (finalPassword) {
@@ -305,7 +305,7 @@ async function updateShareLink(req, reply) {
       const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
       const orgSettings = await ensureDefaultOrganizationSettings(prisma, existingLink.orgId);
       finalPermissions = { ...(existingLink.permissions || {}), ...permissions };
-      
+
       if (orgSettings.lockAllowComments && orgSettings.allowCommentsDefault !== undefined) {
         finalPermissions.comment = orgSettings.allowCommentsDefault;
       }
@@ -324,10 +324,10 @@ async function updateShareLink(req, reply) {
       where: { id: shareLinkId },
       data: {
         ...(name !== undefined && { name }),
-        ...(visibility !== undefined && { 
-             visibility, 
-             ...(visibility === 'public' ? { passwordHash: null } : {}) 
-           }),
+        ...(visibility !== undefined && {
+          visibility,
+          ...(visibility === 'public' ? { passwordHash: null } : {})
+        }),
         ...(finalPermissions !== undefined && { permissions: finalPermissions }),
       }
     });
@@ -473,9 +473,9 @@ async function resolveShareToken(prisma, token) {
     where: { token, revokedAt: null },
     include: {
       shareLink: {
-        include: { 
-          asset: { include: { files: true, metadata: true } }, 
-          organization: true 
+        include: {
+          asset: { include: { files: true, metadata: true } },
+          organization: true
         },
       },
     },
@@ -492,9 +492,9 @@ async function resolveShareToken(prisma, token) {
   // Check main share link token
   const shareLink = await prisma.shareLink.findFirst({
     where: { token, revokedAt: null },
-    include: { 
-      asset: { include: { files: true, metadata: true } }, 
-      organization: true 
+    include: {
+      asset: { include: { files: true, metadata: true } },
+      organization: true
     },
   });
 
@@ -706,8 +706,8 @@ async function getShareAnnotations(req, reply) {
       } : ((ann.guestName || ann.guestEmail || ann.data?.guestName || ann.data?.guestEmail) ? {
         name: (ann.guestName || ann.data?.guestName)
           ? ((ann.guestEmail || ann.data?.guestEmail)
-              ? `${ann.guestName || ann.data?.guestName} (${ann.guestEmail || ann.data?.guestEmail})`
-              : (ann.guestName || ann.data?.guestName))
+            ? `${ann.guestName || ann.data?.guestName} (${ann.guestEmail || ann.data?.guestEmail})`
+            : (ann.guestName || ann.data?.guestName))
           : (ann.guestEmail || ann.data?.guestEmail || 'Guest User'),
         email: ann.guestEmail || ann.data?.guestEmail || null,
         initials: ((ann.guestName || ann.data?.guestName || ann.guestEmail || ann.data?.guestEmail || 'G')[0] || 'G').toUpperCase(),
