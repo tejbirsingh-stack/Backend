@@ -43,6 +43,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get('/project/find-all-data/:projectId', canRead, findProjectData);
   fastify.get('/project/find-all', canRead, findAllProjects);
   fastify.get('/timezone', canRead, findTimezone);
+  fastify.get('/validate-guest', canRead, validateGuestUser);
   fastify.get('/search-guests', canRead, searchGuestUsers);
 
   done();
