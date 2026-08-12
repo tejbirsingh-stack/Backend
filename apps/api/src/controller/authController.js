@@ -2619,9 +2619,9 @@ module.exports.upgradePlan = async (request, reply) => {
     }
 
     const normalizedPlanId = String(planId).toLowerCase().trim();
-    const currentPlanType = String(user.organization?.currentPlan?.name || user.organization?.metadata?.planId || '').toLowerCase().trim();
+    const isRequestingFree = normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd';
 
-    if (normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd') {
+    if (isRequestingFree && (user.organization?.isFreeTrialUsed || user.organization)) {
       return reply.status(403).send({
         success: false,
         error: 'Forbidden',
