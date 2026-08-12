@@ -200,7 +200,7 @@ async function main() {
   for (const org of orgs) {
     let plan = org.currentPlanId ? planMapById.get(org.currentPlanId) : null;
     if (!plan) {
-      const targetPlanName = (org.metadata?.planId || org.planType || 'free').toLowerCase();
+      const targetPlanName = (org.metadata?.planId || 'free').toLowerCase();
       plan = planMapByName.get(targetPlanName) || planMapByName.get('free');
     }
     if (plan) {
@@ -222,11 +222,6 @@ async function main() {
         where: { id: org.id },
         data: {
           currentPlanId: plan.id,
-          planType: planName,
-          maxWorkspaces: plan.maxWorkspaces,
-          maxProjects: plan.maxProjects,
-          maxUsers: plan.maxUsers,
-          storageQuotaBytes: plan.storageQuotaBytes,
           planExpiresAt: expiresAt,
         },
       });
