@@ -43,14 +43,16 @@ async function verifyProjectAccess(projectId, userId, requiredLevel, localPrisma
 
   let highestLevelValue = 0;
 
-  // 0. Check system role, project creator & workspace admin
+  // 0. Check system/org role, project creator & workspace admin
   const requestingUser = await localPrisma.user.findUnique({
     where: { id: userId },
-    select: { systemRole: true }
+    include: { roleRelation: true }
   }).catch(() => null);
 
-  if (requestingUser && (requestingUser.systemRole === 'SUPER_ADMIN' || requestingUser.systemRole === 'ADMIN')) {
-    highestLevelValue = Math.max(highestLevelValue, ACCESS_LEVELS['Full Access']);
+  const roleName = (requestingUser?.roleRelation?.name || requestingUser?.role || requestingUser?.systemRole || '').trim().toLowerCase();
+
+  if (roleName === 'super admin' || roleName === 'superadmin' || roleName === 'admin' || requestingUser?.systemRole === 'SUPER_ADMIN' || requestingUser?.systemRole === 'ADMIN') {
+    return true;
   }
 
   if (project.createdById === userId || project.createdByUserId === userId) {
