@@ -101,33 +101,29 @@ async function createShareLink(req, reply) {
       defaultWatermark = orgSettings.showCompanyWatermarkDefault;
     }
 
-    // Merge user permissions with enforced permissions
+    // Merge: user-provided permissions take priority; org defaults are used as fallback only
     const finalPermissions = {
-      ...(permissions || { view: true }),
-      comment: defaultComment,
-      download: defaultDownload,
-      downloadProxy: defaultDownloadProxy,
-      watermark: defaultWatermark
+      view: true,
+      comment: permissions?.comment !== undefined ? Boolean(permissions.comment) : defaultComment,
+      download: permissions?.download !== undefined ? Boolean(permissions.download) : defaultDownload,
+      downloadProxy: permissions?.downloadProxy !== undefined ? Boolean(permissions.downloadProxy) : defaultDownloadProxy,
+      watermark: permissions?.watermark !== undefined ? Boolean(permissions.watermark) : defaultWatermark,
     };
 
-    // 3. strictly enforce Password requirement from orgSettings
+    // 3. Password requirement handling
     let passwordHash = null;
     let finalPassword = password;
     
-    if (visibility === 'public') {
+    if (finalPassword && typeof finalPassword === 'string' && finalPassword.trim().length > 0) {
+      finalPassword = finalPassword.trim();
+    } else if (orgSettings.requirePasswordDefault) {
+      finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing and org requires password
+    } else {
       finalPassword = null;
-    } else if (orgSettings.requirePasswordDefault !== undefined) {
-      if (orgSettings.requirePasswordDefault) {
-        if (!finalPassword || finalPassword.trim().length === 0) {
-          finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing
-        }
-      } else {
-        finalPassword = null; // Strictly enforce no password if disabled by org
-      }
     }
 
-    if (finalPassword && finalPassword.trim().length > 0) {
-      passwordHash = await argon2.hash(finalPassword.trim());
+    if (finalPassword) {
+      passwordHash = await argon2.hash(finalPassword);
     } else {
       passwordHash = null;
     }
