@@ -12,11 +12,11 @@ const B2StorageService = require('../b2-storage.cjs');
 const { recordStorageDelta } = require('../services/usage-meter.service');
 
 const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
+    keyId: process.env.B2_KEY_ID,
+    applicationKey: process.env.B2_APPLICATION_KEY,
+    bucketName: process.env.B2_BUCKET_NAME,
+    endpoint: process.env.B2_ENDPOINT,
+    region: process.env.B2_REGION,
 });
 
 function formatWorkspaceNameWithSuffix(value) {
@@ -2631,9 +2631,9 @@ module.exports.deleteWorkspace = async (request, reply) => {
         }
 
         // 8. Purge workspace groups & users
-        await prisma.workspaceGroup.deleteMany({ where: { workspaceId: id } }).catch(() => {});
-        await prisma.workspaceUser.deleteMany({ where: { workspaceId: id } }).catch(() => {});
-        await prisma.annotationGroup.deleteMany({ where: { workspaceId: id } }).catch(() => {});
+        await prisma.workspaceGroup.deleteMany({ where: { workspaceId: id } }).catch(() => { });
+        await prisma.workspaceUser.deleteMany({ where: { workspaceId: id } }).catch(() => { });
+        await prisma.annotationGroup.deleteMany({ where: { workspaceId: id } }).catch(() => { });
 
         // 9. Delete the workspace
         await prisma.workspace.delete({ where: { id } });
