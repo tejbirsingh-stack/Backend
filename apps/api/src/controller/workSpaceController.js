@@ -31,6 +31,16 @@ function formatWorkspaceNameWithSuffix(value) {
 
 module.exports.storeWorkplace = async (request, reply) => {
     try {
+        const userRoleName = typeof request.user?.role === 'string' ? request.user.role : '';
+        const isSuperAdmin = userRoleName === 'Super Admin' || request.user?.roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' || userRoleName.toLowerCase() === 'superadmin' || userRoleName.toLowerCase() === 'super_admin';
+
+        if (!isSuperAdmin) {
+            return reply.code(403).send({
+                success: false,
+                message: 'Super Admin privileges required to create workspaces.'
+            });
+        }
+
         const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel } = request.body;
 
         // Default values for granular permissions if not provided
@@ -306,6 +316,19 @@ module.exports.findAllWorkspaces = async (request, reply) => {
                     }).catch(() => { });
                 }
                 workspaces = orgWorkspaces;
+            }
+        }
+
+        if (workspaces.length > 0) {
+            const hasAnyDefault = workspaces.some(w => w.isDefault);
+            if (!hasAnyDefault) {
+                const oldestWorkspaceId = workspaces.reduce((oldest, current) => {
+                    return (new Date(current.createdAt) < new Date(oldest.createdAt)) ? current : oldest;
+                }, workspaces[0]).id;
+                workspaces = workspaces.map(w => ({
+                    ...(w.toJSON ? w.toJSON() : w),
+                    isDefault: w.id === oldestWorkspaceId
+                }));
             }
         }
 
@@ -2468,5 +2491,163 @@ module.exports.findAccessLevels = async (request, reply) => {
     } catch (error) {
         console.error('Error fetching access levels:', error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.deleteWorkspace = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { orgId, role, roleId } = request.user || {};
+
+        const userRoleName = typeof role === 'string' ? role : '';
+        const isSuperAdmin = userRoleName === 'Super Admin' || roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' || userRoleName.toLowerCase() === 'superadmin' || userRoleName.toLowerCase() === 'super_admin';
+
+        if (!isSuperAdmin) {
+            return reply.code(403).send({
+                success: false,
+                message: 'Super Admin privileges required to delete workspaces.'
+            });
+        }
+
+        const workspace = await prisma.workspace.findFirst({
+            where: { id }
+        });
+
+        if (!workspace) {
+            return reply.code(404).send({
+                success: false,
+                message: 'Workspace not found.'
+            });
+        }
+
+        if (workspace.isDefault) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Default workspace created during organization registration cannot be deleted.'
+            });
+        }
+
+        const orgWorkspaces = await prisma.workspace.findMany({
+            where: { orgId: workspace.orgId },
+            orderBy: { createdAt: 'asc' }
+        });
+
+        if (orgWorkspaces.length > 0 && orgWorkspaces[0].id === workspace.id) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Default workspace created during organization registration cannot be deleted.'
+            });
+        }
+
+        // 1. Find all projects in this workspace
+        const workspaceProjects = await prisma.project.findMany({
+            where: { workspaceId: id },
+            select: { id: true }
+        }).catch(() => []);
+        const projectIds = workspaceProjects.map(p => p.id);
+
+        // 2. Find all folders in this workspace
+        const workspaceFolders = await prisma.folder.findMany({
+            where: { workspaceId: id },
+            select: { id: true }
+        }).catch(() => []);
+        const folderIds = workspaceFolders.map(f => f.id);
+
+        // 3. Find all assets in this workspace (directly, or via folders/projects)
+        const assetsToDelete = await prisma.asset.findMany({
+            where: {
+                OR: [
+                    { workspaceId: id },
+                    { ownerType: 'WORKSPACE', ownerId: id },
+                    ...(projectIds.length > 0 ? [{ ownerType: 'PROJECT', ownerId: { in: projectIds } }] : []),
+                    ...(folderIds.length > 0 ? [{ folderId: { in: folderIds } }] : [])
+                ]
+            },
+            include: { files: true }
+        }).catch(() => []);
+
+        const assetIds = assetsToDelete.map(a => a.id);
+
+        // 4. Delete file objects from Backblaze B2 Cloud & update org storage usage
+        for (const asset of assetsToDelete) {
+            let assetSizeBytes = 0;
+            if (asset.files && asset.files.length > 0) {
+                for (const f of asset.files) {
+                    assetSizeBytes += Number(f.sizeBytes || 0);
+                    if (f.filePath && b2Storage.isEnabled()) {
+                        try {
+                            await b2Storage.deleteFile(f.filePath);
+                            await b2Storage.permanentlyDeleteFile(f.filePath);
+                        } catch (b2Err) {
+                            console.warn(`[Workspace Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
+                        }
+                    }
+                }
+            }
+
+            if (assetSizeBytes > 0 && (asset.orgId || workspace.orgId)) {
+                try {
+                    await recordStorageDelta(prisma, {
+                        orgId: asset.orgId || workspace.orgId,
+                        deltaBytes: -assetSizeBytes,
+                        assetId: asset.id,
+                        reason: 'workspace_permanent_delete',
+                    });
+                } catch (dErr) {
+                    console.warn('[Workspace Delete] Failed to record storage delta:', dErr.message);
+                }
+            }
+        }
+
+        // 5. Purge asset records from Database
+        if (assetIds.length > 0) {
+            await prisma.assetFile.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.assetMetadata.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.assetTag.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.assetUser.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.assetGroup.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.collectionAsset.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.annotation.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.projectSource.deleteMany({ where: { assetId: { in: assetIds } } }).catch(() => null);
+            await prisma.asset.deleteMany({ where: { id: { in: assetIds } } }).catch(() => null);
+        }
+
+        // 6. Purge folder records from Database
+        if (folderIds.length > 0) {
+            await prisma.projectSource.deleteMany({ where: { folderId: { in: folderIds } } }).catch(() => null);
+            await prisma.folderUser.deleteMany({ where: { folderId: { in: folderIds } } }).catch(() => null);
+            await prisma.favorite.deleteMany({ where: { folderId: { in: folderIds } } }).catch(() => null);
+            await prisma.folder.deleteMany({ where: { id: { in: folderIds } } }).catch(() => null);
+        }
+
+        // 7. Purge project records from Database
+        if (projectIds.length > 0) {
+            await prisma.projectSource.deleteMany({ where: { projectId: { in: projectIds } } }).catch(() => null);
+            await prisma.projectUser.deleteMany({ where: { projectId: { in: projectIds } } }).catch(() => null);
+            await prisma.projectGroup.deleteMany({ where: { projectId: { in: projectIds } } }).catch(() => null);
+            await prisma.projectTag.deleteMany({ where: { projectId: { in: projectIds } } }).catch(() => null);
+            await prisma.favorite.deleteMany({ where: { projectId: { in: projectIds } } }).catch(() => null);
+            await prisma.project.deleteMany({ where: { id: { in: projectIds } } }).catch(() => null);
+        }
+
+        // 8. Purge workspace groups & users
+        await prisma.workspaceGroup.deleteMany({ where: { workspaceId: id } }).catch(() => {});
+        await prisma.workspaceUser.deleteMany({ where: { workspaceId: id } }).catch(() => {});
+        await prisma.annotationGroup.deleteMany({ where: { workspaceId: id } }).catch(() => {});
+
+        // 9. Delete the workspace
+        await prisma.workspace.delete({ where: { id } });
+
+        logSuccess(ACTIVITY_NAME.WORKSPACE_DELETED || 'WORKSPACE_DELETED', `Workspace ${workspace.name} and all projects/files permanently deleted.`, request);
+        return reply.code(200).send({
+            success: true,
+            message: 'Workspace and all associated projects, folders, and files permanently deleted.'
+        });
+    } catch (error) {
+        console.error('Error deleting workspace:', error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Internal Server Error'
+        });
     }
 };

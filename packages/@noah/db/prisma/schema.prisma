@@ -185,6 +185,7 @@ model Workspace {
   description String? @db.VarChar(500)
   color       String? @db.VarChar(50)
   visibility  String  @default("private") @db.VarChar(50)
+  isDefault   Boolean @default(false) @map("is_default")
 
   orgId        String       @map("org_id") @db.Uuid
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)

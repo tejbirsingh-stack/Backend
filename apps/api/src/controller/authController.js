@@ -459,6 +459,7 @@ module.exports.register = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: finalOrgId,
+          isDefault: true,
         }
       });
 
@@ -1211,6 +1212,7 @@ module.exports.resetPassword = async (request, reply) => {
         description: "Default workspace for " + name,
         color: "#4f46e5",
         orgId: updatedUser?.orgId,
+        isDefault: true,
       }
     });
     // Add the user as a WorkspaceUser so the workspace appears in their sidebar
@@ -1447,6 +1449,7 @@ module.exports.googleLogin = async (request, reply) => {
           description: "Default workspace for " + fullName,
           color: "#4f46e5",
           orgId: organization.id,
+          isDefault: true,
         }
       });
 
@@ -1733,6 +1736,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: organization.id,
+          isDefault: true,
         }
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace1.id);
