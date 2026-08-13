@@ -18,6 +18,14 @@ async function autoAssignAdminsToWorkspace(prisma, orgId, workspaceId) {
       select: { id: true }
     });
 
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { visibility: true }
+    });
+
+    // If it's a public workspace, there's no need to assign explicit owners since everyone has access
+    if (!workspace || workspace.visibility === 'public') return;
+
     if (orgAdmins.length > 0) {
       // Get the ID for Full Access
       let fullAccessId = null;
@@ -47,6 +55,50 @@ async function autoAssignAdminsToWorkspace(prisma, orgId, workspaceId) {
     }
   } catch (error) {
     console.error("Error in autoAssignAdminsToWorkspace:", error);
+  }
+}
+
+/**
+ * Automatically assigns a newly appointed Admin or Super Admin to all existing workspaces in the org as OWNER.
+ */
+async function autoAssignNewAdminToWorkspaces(prisma, orgId, userId) {
+  if (!orgId || !userId) return;
+
+  try {
+    const orgWorkspaces = await prisma.workspace.findMany({
+      where: { orgId, visibility: 'private' },
+      select: { id: true }
+    });
+
+    if (orgWorkspaces.length > 0) {
+      // Get the ID for Full Access
+      let fullAccessId = null;
+      const foundLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
+      for (const workspace of orgWorkspaces) {
+        await prisma.workspaceUser.upsert({
+          where: {
+            workspaceId_userId: {
+              workspaceId: workspace.id,
+              userId: userId
+            }
+          },
+          update: {
+            memberType: MEMBER_TYPES.OWNER,
+            accessLevelId: fullAccessId
+          },
+          create: {
+            workspaceId: workspace.id,
+            userId: userId,
+            memberType: MEMBER_TYPES.OWNER,
+            accessLevelId: fullAccessId
+          }
+        }).catch(err => console.error(`Failed to auto-assign new admin ${userId} to workspace ${workspace.id}:`, err));
+      }
+    }
+  } catch (error) {
+    console.error("Error in autoAssignNewAdminToWorkspaces:", error);
   }
 }
 
@@ -168,6 +220,7 @@ async function assertWorkspaceAccess(prisma, user, workspaceId) {
 
 module.exports = {
   autoAssignAdminsToWorkspace,
+  autoAssignNewAdminToWorkspaces,
   autoAssignAdminsToProject,
   assertWorkspaceAccess,
 };

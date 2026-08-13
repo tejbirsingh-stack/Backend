@@ -7,7 +7,7 @@ const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
-const { autoAssignAdminsToWorkspace } = require("../services/workspace.service");
+const { autoAssignAdminsToWorkspace, autoAssignNewAdminToWorkspaces } = require("../services/workspace.service");
 const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
 
 function slugifyWorkspaceName(value) {
@@ -760,6 +760,12 @@ module.exports.registerRole = async (request, reply) => {
       },
     });
     user.role = roleObj.name;
+
+    if (['Super Admin', 'Admin', 'System Admin'].includes(user.role)) {
+      if (user.orgId) {
+        await autoAssignNewAdminToWorkspaces(request.server.prisma, user.orgId, user.id);
+      }
+    }
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
