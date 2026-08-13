@@ -31,6 +31,7 @@ async function getDashboardSummary(_request, reply) {
       newUsers30d,
       mrrOrgs,
       catalogPlanCount,
+      attentionCandidates,
     ] = await Promise.all([
       prisma.organization.count(),
       prisma.organization.count({ where: { status: 'active' } }),
@@ -83,6 +84,17 @@ async function getDashboardSummary(_request, reply) {
         include: { currentPlan: { select: { monthlyPriceCents: true } } },
       }),
       prisma.plan.count({ where: { isPublic: true } }),
+      prisma.organization.findMany({
+        where: {
+          OR: [{ status: 'suspended' }, { storageUsedBytes: { gt: 0 } }],
+        },
+        orderBy: { storageUsedBytes: 'desc' },
+        take: 40,
+        include: {
+          currentPlan: true,
+          _count: { select: { users: true, workspaces: true, assets: true } },
+        },
+      }),
     ]);
 
     const roleIds = roleGroups.map((r) => r.roleId).filter(Boolean);
@@ -108,7 +120,13 @@ async function getDashboardSummary(_request, reply) {
     }
 
     const storageUsedBytes = storageAgg._sum.storageUsedBytes || 0n;
-    const storageQuotaBytes = storageAgg._sum.storageQuotaBytes || 0n;
+    let storageQuotaBytes = 0n;
+    for (const row of planGroups) {
+      const plan = allPlans.find((p) => p.id === row.currentPlanId);
+      if (plan?.storageQuotaBytes) {
+        storageQuotaBytes += BigInt(plan.storageQuotaBytes) * BigInt(row._count._all);
+      }
+    }
 
     const planMap = new Map(allPlans.map((p) => [p.id, p.name.toLowerCase()]));
     const planMix = planGroups
@@ -118,21 +136,16 @@ async function getDashboardSummary(_request, reply) {
       }))
       .sort((a, b) => b.count - a.count);
 
-    const attentionOrgs = recentOrgs
+    const orgQuotaBytes = (org) => org.currentPlan?.storageQuotaBytes || 0n;
+
+    const attentionOrgs = attentionCandidates
       .filter((org) => {
         const used = Number(org.storageUsedBytes || 0);
-        const quota = Number(org.storageQuotaBytes || 0);
+        const quota = Number(orgQuotaBytes(org));
         const storageHot = quota > 0 && used / quota >= 0.8;
         return org.status === 'suspended' || storageHot;
       })
       .slice(0, 6);
-
-    let totalQuotaBytes = 0n;
-    for (const org of recentOrgs) {
-      if (org.currentPlan?.storageQuotaBytes) {
-        totalQuotaBytes += BigInt(org.currentPlan.storageQuotaBytes);
-      }
-    }
 
     return {
       success: true,
@@ -160,13 +173,13 @@ async function getDashboardSummary(_request, reply) {
           ...org,
           planType: org.currentPlan?.name ? org.currentPlan.name.toLowerCase() : 'free',
           storageUsedBytes: serializeBigInt(org.storageUsedBytes),
-          storageQuotaBytes: serializeBigInt(org.storageQuotaBytes),
+          storageQuotaBytes: serializeBigInt(orgQuotaBytes(org)),
         })),
         attentionOrgs: attentionOrgs.map((org) => ({
           ...org,
           planType: org.currentPlan?.name ? org.currentPlan.name.toLowerCase() : 'free',
           storageUsedBytes: serializeBigInt(org.storageUsedBytes),
-          storageQuotaBytes: serializeBigInt(org.storageQuotaBytes),
+          storageQuotaBytes: serializeBigInt(orgQuotaBytes(org)),
         })),
         recentActivity: recentAudit,
         growth: {

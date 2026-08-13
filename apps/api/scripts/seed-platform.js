@@ -172,8 +172,9 @@ async function main() {
       slug: 'main',
       status: 'published',
       heroTitle: 'A library worthy of your beautiful work.',
-      heroSubtitle: 'Enterprise media asset management for modern creative teams.',
-      ctaLabel: 'Get started',
+      heroSubtitle:
+        'NOAH Cloud is the media intelligence layer for modern teams — find anything, review on the timeline, and share finished work without leaving your library.',
+      ctaLabel: 'Start free trial',
       ctaHref: '/signup',
       sections: { plansEnabled: true },
       publishedAt: new Date(),
@@ -184,6 +185,55 @@ async function main() {
     },
   });
   console.log('Landing page ready: main');
+
+  const DEFAULT_CONTENT = [
+    {
+      title: 'Noah starter brand kit',
+      fileName: 'noah-brand-kit.pdf',
+      filePath: 'platform-defaults/noah-brand-kit.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: BigInt(245000),
+      assetType: 'document',
+      sortOrder: 0,
+      isEnabled: true,
+    },
+    {
+      title: 'Sample hero still',
+      fileName: 'sample-hero.jpg',
+      filePath: 'platform-defaults/sample-hero.jpg',
+      mimeType: 'image/jpeg',
+      sizeBytes: BigInt(1800000),
+      assetType: 'image',
+      sortOrder: 1,
+      isEnabled: true,
+    },
+    {
+      title: 'Onboarding welcome clip',
+      fileName: 'welcome-clip.mp4',
+      filePath: 'platform-defaults/welcome-clip.mp4',
+      mimeType: 'video/mp4',
+      sizeBytes: BigInt(12 * MB),
+      assetType: 'video',
+      sortOrder: 2,
+      isEnabled: true,
+    },
+  ];
+
+  for (const item of DEFAULT_CONTENT) {
+    const existing = await prisma.platformDefaultContent.findFirst({
+      where: { title: item.title },
+    });
+    if (existing) {
+      await prisma.platformDefaultContent.update({
+        where: { id: existing.id },
+        data: item,
+      });
+      console.log(`Default content ready: ${item.title}`);
+    } else {
+      await prisma.platformDefaultContent.create({ data: item });
+      console.log(`Default content ready: ${item.title}`);
+    }
+  }
 
   // Sync all existing organizations with their active plan's maxWorkspaces & maxProjects
   const allPlans = await prisma.plan.findMany();

@@ -47,6 +47,7 @@ const {
   getLandingPage,
   updateLandingPage,
   getPublishedLanding,
+  submitDemoRequest,
 } = require('../controller/platform-landing.controller');
 const {
   listDefaultContent,
@@ -66,6 +67,7 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   // Public catalog + published landing (customer-facing)
   fastify.get('/catalog/plans', listPublicPlans);
   fastify.get('/public/landing', getPublishedLanding);
+  fastify.post('/public/demo-request', submitDemoRequest);
 
   // Protected platform routes
   fastify.get('/auth/me', { preHandler: requirePlatformAdmin }, platformMe);
