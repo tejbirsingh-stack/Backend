@@ -1571,6 +1571,19 @@ module.exports.deletePermanently = async (request, reply) => {
           if (assetToDelete.deletedByUserId) {
             await createNotification(request.server, assetToDelete.deletedByUserId, assetToDelete.orgId, 'deletion_approved', 'Permanently Deleted', `Your asset ${assetToDelete.title} has been permanently deleted.`, assetToDelete.id);
           }
+
+          const deleterUser = await request.server.prisma.user.findUnique({
+            where: { id: request.user.id },
+            include: { roleRelation: true }
+          }).catch(() => null);
+          const deleterRole = (deleterUser?.roleRelation?.name || deleterUser?.role || 'User').trim().toLowerCase();
+          const isDeleterSuperAdmin = ['super admin', 'superadmin'].includes(deleterRole);
+
+          if (isDeleterSuperAdmin) {
+            await notifyRole(request.server, assetToDelete.orgId, 'Admin', 'deletion_alert', 'File Permanently Deleted', `${deleterUser?.name || deleterUser?.email || 'Super Admin'} (Super Admin) permanently deleted file '${assetToDelete.title}'.`, assetToDelete.id);
+          } else {
+            await notifyRole(request.server, assetToDelete.orgId, 'Super Admin', 'deletion_alert', 'File Permanently Deleted', `${deleterUser?.name || deleterUser?.email || 'Admin'} (${deleterRole}) permanently deleted file '${assetToDelete.title}'.`, assetToDelete.id);
+          }
         }
       } catch (dbErr) {
         console.warn("Could not delete asset from database during permanent delete:", dbErr.message);
@@ -2150,16 +2163,35 @@ module.exports.deleteMediaFile = async (request, reply) => {
 module.exports.requestPermanentDelete = async (request, reply) => {
   try {
     const { filename } = request.params;
+
+    const liveUser = await request.server.prisma.user.findUnique({
+      where: { id: request.user.id },
+      include: { roleRelation: true }
+    });
+    const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+    const userRole = rawRoleName.trim().toLowerCase();
+    const isAdmin = userRole === 'admin';
+
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      const nextStatus = isAdmin ? "pending_super_admin" : "pending_admin_review";
       const asset = await request.server.prisma.asset.update({
         where: { id: filename },
-        data: { status: "pending_admin_review" },
+        data: {
+          status: nextStatus,
+          deletedByUserId: request.user.id
+        },
         include: { deletedBy: { include: { roleRelation: true } } }
       });
       const userName = asset.deletedBy?.name || request.user?.name || 'User';
       const roleName = asset.deletedBy?.roleRelation?.name || request.user?.role || 'Unknown Role';
-      await notifyRole(request.server, asset.orgId, 'Admin', 'approval_request', 'Manual Deletion Request', `${userName} (${roleName}) requested permanent deletion for file: '${asset.title}'. Please review.`, asset.id);
-      return reply.send({ success: true, message: "Deletion requested for admin review" });
+
+      if (isAdmin) {
+        await notifyRole(request.server, asset.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) requested permanent deletion for file: '${asset.title}'. Please review.`, asset.id);
+        return reply.send({ success: true, message: "Deletion requested for Super Admin review" });
+      } else {
+        await notifyRole(request.server, asset.orgId, 'Admin', 'approval_request', 'Manual Deletion Request', `${userName} (${roleName}) requested permanent deletion for file: '${asset.title}'. Please review.`, asset.id);
+        return reply.send({ success: true, message: "Deletion requested for admin review" });
+      }
     }
     return reply.code(400).send({ success: false, error: "Invalid file ID" });
   } catch (error) {
@@ -2177,21 +2209,24 @@ module.exports.getPendingDeletions = async (request, reply) => {
     const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
     const userRole = rawRoleName.trim().toLowerCase();
 
-    let statusFilter = null;
+    const orgId = liveUser?.orgId || request.user?.orgId;
 
-    if (userRole === 'super admin' || userRole === 'superadmin') {
-      statusFilter = { in: ['pending_admin_review', 'pending_super_admin'] };
-    } else if (userRole === 'admin') {
-      statusFilter = 'pending_admin_review';
-    } else {
+    const isSuperAdmin = userRole === 'super admin' || userRole === 'superadmin';
+    const isAdmin = userRole === 'admin' || isSuperAdmin;
+
+    if (!isAdmin) {
       return reply.code(403).send({ success: false, error: 'Unauthorized to view pending deletions' });
     }
+
+    const statusFilter = isSuperAdmin
+      ? { in: ['pending_admin_review', 'pending_super_admin', 'PENDING_ADMIN_REVIEW', 'PENDING_SUPER_ADMIN'] }
+      : { in: ['pending_admin_review', 'PENDING_ADMIN_REVIEW'] };
 
     const [assets, projects] = await Promise.all([
       request.server.prisma.asset.findMany({
         where: {
           status: statusFilter,
-          orgId: request.user?.orgId
+          ...(!isSuperAdmin && orgId ? { orgId } : {})
         },
         include: {
           deletedBy: {
@@ -2199,35 +2234,148 @@ module.exports.getPendingDeletions = async (request, reply) => {
           }
         },
         orderBy: { deletedAt: 'desc' }
-      }),
+      }).catch(() => []),
       request.server.prisma.project.findMany({
         where: {
           status: statusFilter,
-          workspace: { orgId: request.user?.orgId }
+          ...(!isSuperAdmin && orgId ? { workspace: { orgId } } : {})
         },
         include: {
           workspace: { select: { name: true } },
-          deletedBy: {
-            include: { roleRelation: true }
-          }
+          deletedBy: true
         },
-        orderBy: { deletedAt: 'desc' }
-      }).catch(() => [])
+        orderBy: { updatedAt: 'desc' }
+      }).catch((err) => {
+        console.error('Error in projects findMany query:', err);
+        return [];
+      })
     ]);
 
-    const formattedProjects = projects.map(p => ({
-      id: p.id,
-      title: p.name,
-      status: p.status,
-      deletedAt: p.deletedAt,
-      deletionReason: p.deletionReason || 'Project deletion requested',
-      type: 'project',
-      isProject: true,
-      workspaceName: p.workspace?.name || 'Workspace',
-      deletedBy: p.deletedBy
+    const isDateContainerName = (name) => {
+      if (!name) return false;
+      const trimmed = name.trim();
+      if (/^\d{4}$/.test(trimmed)) return true;
+      const lower = trimmed.toLowerCase();
+      const months = [
+        'january', 'february', 'march', 'april', 'may', 'june',
+        'july', 'august', 'september', 'october', 'november', 'december',
+        'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
+      ];
+      return months.some(m => {
+        if (lower === m) return true;
+        if (lower.includes(m) && (/\d/.test(lower) || lower.includes('/') || lower.includes('-'))) return true;
+        return false;
+      });
+    };
+
+    // 1. Process Projects pending Super Admin review
+    const formattedProjects = await Promise.all(projects.map(async (p) => {
+      const isWhole = !p.deletionReason || p.deletionReason.toLowerCase().includes('whole') || p.deletionReason.toLowerCase().includes('all project');
+
+      let folderItems = [];
+      let fileItems = [];
+
+      if (isWhole) {
+        const [deletedFiles, projectFolderSources] = await Promise.all([
+          request.server.prisma.asset.findMany({
+            where: {
+              status: statusFilter,
+              OR: [
+                { deletionReason: { contains: p.id } },
+                { deletionReason: { contains: p.name } }
+              ]
+            },
+            select: { id: true, title: true, type: true, ownerType: true, ownerId: true }
+          }).catch(() => []),
+          request.server.prisma.projectSource.findMany({
+            where: { projectId: p.id, sourceableType: 'FOLDER' },
+            include: { folder: true }
+          }).catch(() => [])
+        ]);
+
+        const uniqueFolderMap = new Map();
+        projectFolderSources.forEach(ps => {
+          if (ps.folder && !uniqueFolderMap.has(ps.folder.id) && !isDateContainerName(ps.folder.name)) {
+            uniqueFolderMap.set(ps.folder.id, { id: ps.folder.id, title: ps.folder.name || 'Untitled folder', type: 'folder', isFolder: true });
+          }
+        });
+        folderItems = Array.from(uniqueFolderMap.values());
+        fileItems = deletedFiles.filter(f => f.type !== 'folder').map(f => ({ id: f.id, title: f.title || 'Untitled file', type: f.type, isFolder: false }));
+      } else {
+        const groupAssets = await request.server.prisma.asset.findMany({
+          where: {
+            status: statusFilter,
+            deletionReason: { contains: p.id }
+          },
+          select: { id: true, title: true, type: true, ownerType: true, ownerId: true, deletionReason: true }
+        }).catch(() => []);
+
+        const selectedFolderIdSet = new Set();
+        groupAssets.forEach(a => {
+          const fMatch = (a.deletionReason || '').match(/folder:\[([0-9a-fA-F-]+)\]/);
+          if (fMatch) selectedFolderIdSet.add(fMatch[1]);
+          if (a.ownerType === 'FOLDER' && a.ownerId) selectedFolderIdSet.add(a.ownerId);
+        });
+
+        const folderRecords = selectedFolderIdSet.size > 0 ? await request.server.prisma.folder.findMany({
+          where: { id: { in: Array.from(selectedFolderIdSet) } },
+          select: { id: true, name: true }
+        }).catch(() => []) : [];
+
+        const uniqueFolderMap = new Map();
+        folderRecords.forEach(f => {
+          if (!uniqueFolderMap.has(f.id) && !isDateContainerName(f.name)) {
+            uniqueFolderMap.set(f.id, { id: f.id, title: f.name || 'Untitled folder', type: 'folder', isFolder: true });
+          }
+        });
+        folderItems = Array.from(uniqueFolderMap.values());
+        fileItems = groupAssets.filter(f => f.type !== 'folder').map(f => ({ id: f.id, title: f.title || 'Untitled file', type: f.type, isFolder: false }));
+      }
+
+      const allItems = [...folderItems, ...fileItems];
+
+      return {
+        id: p.id,
+        title: p.name,
+        status: 'Pending Review',
+        rawStatus: p.status,
+        deletedAt: p.deletedAt,
+        deletionReason: p.deletionReason || (isWhole ? 'Whole Project deletion requested' : 'Project deletion with selected items requested'),
+        deletionType: isWhole ? 'Whole Project' : 'Selected Files/Folders',
+        type: 'project',
+        isProject: true,
+        workspaceName: p.workspace?.name || 'Workspace',
+        deletedBy: p.deletedBy,
+        itemCount: allItems.length,
+        deletedFiles: allItems,
+        deletedFolders: folderItems,
+      };
     }));
 
-    return reply.send({ success: true, data: [...formattedProjects, ...assets] });
+    // Track assets attached to whole project requests
+    const wholeProjectIds = new Set(projects.map(p => p.id));
+    const processedAssetIds = new Set();
+
+    formattedProjects.forEach(wp => {
+      wp.deletedFiles.forEach(f => {
+        if (!f.isFolder) processedAssetIds.add(f.id);
+      });
+    });
+
+    // 2. Process Standalone assets pending deletion not attached to any project
+    const standaloneAssets = [];
+    assets.forEach((asset) => {
+      if (processedAssetIds.has(asset.id)) return;
+      const reason = asset.deletionReason || '';
+      if (!reason.includes('Deleted with project') && !reason.includes('Selected deletion from project')) {
+        standaloneAssets.push(asset);
+      }
+    });
+
+    return reply.send({
+      success: true,
+      data: [...formattedProjects, ...standaloneAssets]
+    });
   } catch (error) {
     return reply.code(500).send({ success: false, error: error.message });
   }

@@ -41,6 +41,7 @@ async function listItems(prisma, params) {
   }
 
   const assetConditions = [
+    Prisma.sql`("status" IS NULL OR "status" NOT IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`,
     Prisma.sql`"deletedAt" IS NULL`
   ];
   const folderConditions = [];
@@ -58,7 +59,7 @@ async function listItems(prisma, params) {
       OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
       OR id IN (
         SELECT "asset_id" FROM "project_sources" WHERE "project_id" IN (
-          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" != 'inactive') AND "visibility" = 'public' AND "workspace_id" = ${workspaceId}
+          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted')) AND "visibility" = 'public' AND "workspace_id" = ${workspaceId}
           UNION
           SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid
           UNION
@@ -71,7 +72,7 @@ async function listItems(prisma, params) {
       folderConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
       projectConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
     }
-    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" != 'inactive')`);
+    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`);
     projectConditions.push(Prisma.sql`(
       "visibility" = 'public' 
       OR ("visibility" = 'private' AND (
@@ -103,7 +104,7 @@ async function listItems(prisma, params) {
       ))
     )`);
     folderConditions.push(Prisma.sql`false`);
-    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" != 'inactive')`);
+    projectConditions.push(Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`);
     projectConditions.push(Prisma.sql`(
       ("created_by_id" IS NULL OR "created_by_id" != ${params.userId}::uuid)
       AND (
@@ -302,7 +303,7 @@ async function listItems(prisma, params) {
       include: { _count: { select: { children: true, projects: true } } }
     }) : [],
     projectIds.length > 0 ? prisma.project.findMany({ 
-      where: { id: { in: projectIds } },
+      where: { id: { in: projectIds }, status: { notIn: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] } },
       include: { _count: { select: { sources: true } } }
     }) : []
   ]);

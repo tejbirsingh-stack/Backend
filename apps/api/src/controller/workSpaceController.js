@@ -8,6 +8,16 @@ const { isOrgWideRole, resolveUserWorkspacePermissions } = require('../lib/rbac-
 const { verifyProjectAccess } = require('../utils/projectAccessUtils');
 const { createNotification, notifyRole } = require('./notificationController');
 const { ACCESS_LEVEL } = require('../lib/rolesPermissions');
+const B2StorageService = require('../b2-storage.cjs');
+const { recordStorageDelta } = require('../services/usage-meter.service');
+
+const b2Storage = new B2StorageService({
+  keyId: process.env.B2_KEY_ID,
+  applicationKey: process.env.B2_APPLICATION_KEY,
+  bucketName: process.env.B2_BUCKET_NAME,
+  endpoint: process.env.B2_ENDPOINT,
+  region: process.env.B2_REGION,
+});
 
 function formatWorkspaceNameWithSuffix(value) {
     if (!value || typeof value !== "string") return "Workspace-ARK";
@@ -1277,25 +1287,64 @@ module.exports.findProjectData = async (request, reply) => {
             await verifyProjectAccess(projectId, userId, 'Can view');
         }
 
-        const { assets } = await getAllProjectAssetIdsAndObjects(prisma, projectId);
+        let { assets } = await getAllProjectAssetIdsAndObjects(prisma, projectId);
+
+        const isDeleteFlow = request.query?.isDeleteFlow === 'true' || request.query?.isDeleteFlow === true;
+        const projectRecord = await prisma.project.findUnique({
+            where: { id: projectId },
+            select: { status: true, deletionReason: true }
+        }).catch(() => null);
+
+        if (isDeleteFlow && projectRecord && (projectRecord.status === 'pending_super_admin' || projectRecord.status === 'pending_admin_review')) {
+            const isSelective = !projectRecord.deletionReason || !projectRecord.deletionReason.toLowerCase().includes('whole');
+            if (isSelective) {
+                // For selective deletion requests, ONLY include assets specifically marked for deletion FOR THIS PROJECT
+                assets = assets.filter(a =>
+                    (a.status === 'pending_super_admin' || a.status === 'pending_admin_review') &&
+                    a.deletionReason &&
+                    a.deletionReason.includes(projectId)
+                );
+            }
+        }
 
         const projectSources = await prisma.projectSource.findMany({
-            where: {
-                projectId: projectId
-            },
-            include: {
-                folder: true
-            }
+            where: { projectId },
+            include: { folder: true }
         });
 
-        const projectFolders = projectSources.filter(ps => ps.sourceableType === 'FOLDER' && ps.folder).map(ps => ps.folder);
+        const directFolderIds = projectSources
+            .filter(ps => ps.sourceableType === 'FOLDER' && ps.folderId)
+            .map(ps => ps.folderId);
+
+        const assetFolderIds = assets
+            .map(a => (a.ownerType === 'FOLDER' ? a.ownerId : a.folderId))
+            .filter(Boolean);
+
+        const allFolderIds = new Set([...directFolderIds, ...assetFolderIds]);
+
+        // Expand downwards (child subfolders inside project folders)
+        let currentDownLevel = Array.from(allFolderIds);
+        while (currentDownLevel.length > 0) {
+            const children = await prisma.folder.findMany({
+                where: { parentId: { in: currentDownLevel } },
+                select: { id: true }
+            }).catch(() => []);
+            const newChildIds = children.map(c => c.id).filter(id => !allFolderIds.has(id));
+            if (newChildIds.length === 0) break;
+            newChildIds.forEach(id => allFolderIds.add(id));
+            currentDownLevel = newChildIds;
+        }
+
+        const completeFolders = await prisma.folder.findMany({
+            where: { id: { in: Array.from(allFolderIds) } }
+        }).catch(() => []);
 
         return reply.code(200).send({
             success: true,
             message: 'Project contents fetched successfully.',
             data: {
                 media: assets,
-                folders: projectFolders
+                folders: completeFolders
             }
         });
 
@@ -1823,7 +1872,7 @@ module.exports.findTimezone = async (request, reply) => {
 module.exports.deleteProject = async (request, reply) => {
     try {
         const { id } = request.params;
-        const { deleteFileIds = [], deletionReason = 'Project deletion requested' } = request.body || {};
+        const { isWholeProject = false, deleteFileIds = [], deleteFolderIds = [], deletionReason } = request.body || {};
 
         await verifyProjectAccess(id, request.user.id, 'Full Access');
 
@@ -1840,123 +1889,447 @@ module.exports.deleteProject = async (request, reply) => {
             where: { id },
             include: { workspace: true }
         });
+        if (!targetProject) {
+            return reply.code(404).send({ success: false, message: 'Project not found.' });
+        }
+
         const projectName = targetProject?.name || 'Project';
         const orgId = liveUser?.orgId || targetProject?.workspace?.orgId || request.user?.orgId;
         const userName = liveUser?.name || liveUser?.email || 'User';
 
-        // 1. Fetch all linked asset IDs for this project (including project folders!)
+        // Fetch all linked asset IDs for this project
         const { assetIds: allLinkedAssetIds } = await getAllProjectAssetIdsAndObjects(prisma, id);
 
-        const selectedAssetIds = Array.isArray(deleteFileIds)
-            ? deleteFileIds.filter(fId => allLinkedAssetIds.includes(fId))
-            : [];
-
-        // Fetch names/titles of files being deleted with the project
-        let deletedFileNames = [];
-        if (selectedAssetIds.length > 0) {
-            const assetsToDelete = await prisma.asset.findMany({
-                where: { id: { in: selectedAssetIds } },
-                select: { id: true, title: true, fileName: true }
-            });
-            deletedFileNames = assetsToDelete.map(a => a.title || a.fileName || 'Untitled file');
-        }
-
-        // If specific files were checked for deletion: mark those assets based on role
-        if (selectedAssetIds.length > 0) {
-            const assetStatusUpdate = isSuperAdmin ? 'trash' : 'pending_super_admin';
-            await prisma.asset.updateMany({
-                where: { id: { in: selectedAssetIds } },
-                data: {
-                    status: assetStatusUpdate,
-                    deletedAt: new Date(),
-                    deletedByUserId: request.user.id,
-                    deletionReason: `Deleted with project (${projectName})`
-                }
-            });
-        }
-
-        // Unselected files: remove ProjectSource links & project tags so files remain active without project tags
-        const unselectedAssetIds = allLinkedAssetIds.filter(aId => !selectedAssetIds.includes(aId));
-        if (unselectedAssetIds.length > 0) {
-            await prisma.projectSource.deleteMany({
-                where: {
-                    projectId: id,
-                    assetId: { in: unselectedAssetIds }
-                }
-            });
-            await prisma.assetTag.deleteMany({
-                where: {
-                    assetId: { in: unselectedAssetIds },
-                    tag: { name: { equals: id, mode: 'insensitive' } }
-                }
-            }).catch(() => null);
-        }
-
-        // Cleanup projectSource links for selected assets as well
-        if (selectedAssetIds.length > 0) {
-            await prisma.projectSource.deleteMany({
-                where: {
-                    projectId: id,
-                    assetId: { in: selectedAssetIds }
-                }
-            });
-        }
-
-        // Generate Notification for Super Admin
-        const notifTitle = isSuperAdmin ? 'Project Deleted' : 'Project Deletion Request';
-        const notifType = isSuperAdmin ? 'deletion_alert' : 'approval_request';
-        let notifMessage = '';
-
-        if (deletedFileNames.length > 0) {
-            const filesText = deletedFileNames.join(', ');
-            if (isSuperAdmin) {
-                notifMessage = `${userName} (Super Admin) deleted project '${projectName}' along with ${deletedFileNames.length} file(s): ${filesText}.`;
-            } else {
-                notifMessage = `${userName} (${rawRoleName}) requested deletion for project '${projectName}' along with ${deletedFileNames.length} file(s): ${filesText}.`;
-            }
-        } else {
-            if (isSuperAdmin) {
-                notifMessage = `${userName} (Super Admin) deleted project '${projectName}'.`;
-            } else {
-                notifMessage = `${userName} (${rawRoleName}) requested deletion for project '${projectName}'.`;
-            }
-        }
-
-        await notifyRole(request.server, orgId, 'Super Admin', notifType, notifTitle, notifMessage, id);
-
-        // 2. Process Project Deletion
         if (isSuperAdmin) {
-            await prisma.project.delete({
-                where: { id }
-            });
+            // Super Admin executing permanent deletion from Database and Backblaze B2
+            if (isWholeProject) {
+                const { assets: allLinkedAssets, assetIds: allLinkedAssetIds } = await getAllProjectAssetIdsAndObjects(prisma, id);
 
-            return reply.code(200).send({
-                success: true,
-                message: 'Project permanently deleted.'
-            });
+                const reasonAssets = await prisma.asset.findMany({
+                    where: {
+                        deletionReason: { contains: id },
+                        status: { in: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] }
+                    },
+                    include: { files: true }
+                }).catch(() => []);
+
+                const assetMap = new Map();
+                [...allLinkedAssets, ...reasonAssets].forEach(a => {
+                    if (a && a.id) assetMap.set(a.id, a);
+                });
+                const totalAssetsToDelete = Array.from(assetMap.values());
+                const totalAssetIds = Array.from(assetMap.keys());
+
+                // Find all project folders directly linked or owned
+                const projectFolderSources = await prisma.projectSource.findMany({
+                    where: { projectId: id, sourceableType: 'FOLDER' },
+                    select: { folderId: true }
+                }).catch(() => []);
+
+                const initialFolderIds = new Set(
+                    projectFolderSources.map(s => s.folderId).filter(Boolean)
+                );
+
+                const allFolderIds = new Set(initialFolderIds);
+                let currentFolderLevel = Array.from(initialFolderIds);
+                while (currentFolderLevel.length > 0) {
+                    const childFolders = await prisma.folder.findMany({
+                        where: { parentId: { in: currentFolderLevel } },
+                        select: { id: true }
+                    }).catch(() => []);
+                    const childIds = childFolders.map(f => f.id).filter(fId => !allFolderIds.has(fId));
+                    if (childIds.length === 0) break;
+                    childIds.forEach(fId => allFolderIds.add(fId));
+                    currentFolderLevel = childIds;
+                }
+
+                // Delete file objects from Backblaze B2 Cloud & update org storage usage
+                for (const asset of totalAssetsToDelete) {
+                    let assetSizeBytes = 0;
+                    if (asset.files && asset.files.length > 0) {
+                        for (const f of asset.files) {
+                            assetSizeBytes += Number(f.sizeBytes || 0);
+                            if (f.filePath && b2Storage.isEnabled()) {
+                                try {
+                                    await b2Storage.deleteFile(f.filePath);
+                                    await b2Storage.permanentlyDeleteFile(f.filePath);
+                                } catch (b2Err) {
+                                    console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
+                                }
+                            }
+                        }
+                    }
+
+                    if (assetSizeBytes > 0 && (asset.orgId || orgId)) {
+                        try {
+                            await recordStorageDelta(prisma, {
+                                orgId: asset.orgId || orgId,
+                                deltaBytes: -assetSizeBytes,
+                                assetId: asset.id,
+                                reason: 'permanent_delete',
+                            });
+                        } catch (dErr) {
+                            console.warn('Failed to record storage delta for permanent delete:', dErr.message);
+                        }
+                    }
+                }
+
+                // Purge asset records from Database
+                if (totalAssetIds.length > 0) {
+                    await prisma.assetFile.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.assetMetadata.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.assetTag.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.assetUser.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.assetGroup.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.collectionAsset.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.annotation.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.projectSource.deleteMany({ where: { assetId: { in: totalAssetIds } } }).catch(() => null);
+                    await prisma.asset.deleteMany({ where: { id: { in: totalAssetIds } } }).catch(() => null);
+                }
+
+                // Purge folder records from Database
+                if (allFolderIds.size > 0) {
+                    const folderIdList = Array.from(allFolderIds);
+                    await prisma.projectSource.deleteMany({ where: { folderId: { in: folderIdList } } }).catch(() => null);
+                    await prisma.folderUser.deleteMany({ where: { folderId: { in: folderIdList } } }).catch(() => null);
+                    await prisma.favorite.deleteMany({ where: { folderId: { in: folderIdList } } }).catch(() => null);
+                    await prisma.folder.deleteMany({ where: { id: { in: folderIdList } } }).catch(() => null);
+                }
+
+                await prisma.projectSource.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.projectUser.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.projectGroup.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.projectTag.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.favorite.deleteMany({ where: { projectId: id } }).catch(() => null);
+
+                await prisma.project.delete({ where: { id } }).catch(() => null);
+
+                await notifyRole(request.server, orgId, 'Admin', 'deletion_alert', 'Project Permanently Deleted', `${userName} (Super Admin) permanently deleted project '${projectName}'.`, id);
+
+                return reply.code(200).send({
+                    success: true,
+                    message: 'Project, folders, and all files permanently deleted from database and Backblaze B2.'
+                });
+            } else {
+                let targetAssetIds = Array.from(
+                    new Set([...(Array.isArray(deleteFileIds) ? deleteFileIds : [])])
+                );
+
+                const selectedFolderSet = new Set(Array.isArray(deleteFolderIds) ? deleteFolderIds : []);
+                let currentFolderLevel = Array.from(selectedFolderSet);
+                while (currentFolderLevel.length > 0) {
+                    const childFolders = await prisma.folder.findMany({
+                        where: { parentId: { in: currentFolderLevel } },
+                        select: { id: true }
+                    }).catch(() => []);
+                    const childIds = childFolders.map(f => f.id).filter(fId => !selectedFolderSet.has(fId));
+                    if (childIds.length === 0) break;
+                    childIds.forEach(fId => selectedFolderSet.add(fId));
+                    currentFolderLevel = childIds;
+                }
+                const targetFolderIds = Array.from(selectedFolderSet);
+
+                if (targetAssetIds.length === 0 && targetFolderIds.length === 0) {
+                    const pendingAssets = await prisma.asset.findMany({
+                        where: {
+                            deletionReason: { contains: id },
+                            status: { in: ['pending_super_admin', 'pending_admin_review'] }
+                        },
+                        select: { id: true }
+                    }).catch(() => []);
+                    targetAssetIds = pendingAssets.map(a => a.id);
+                }
+
+                if (targetAssetIds.length > 0) {
+                    const assetsToDelete = await prisma.asset.findMany({
+                        where: { id: { in: targetAssetIds } },
+                        include: { files: true }
+                    }).catch(() => []);
+
+                    for (const asset of assetsToDelete) {
+                        let assetSizeBytes = 0;
+                        if (asset.files && asset.files.length > 0) {
+                            for (const f of asset.files) {
+                                assetSizeBytes += Number(f.sizeBytes || 0);
+                                if (f.filePath && b2Storage.isEnabled()) {
+                                    try {
+                                        await b2Storage.deleteFile(f.filePath);
+                                        await b2Storage.permanentlyDeleteFile(f.filePath);
+                                    } catch (b2Err) {
+                                        console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
+                                    }
+                                }
+                            }
+                        }
+
+                        if (assetSizeBytes > 0 && (asset.orgId || orgId)) {
+                            try {
+                                await recordStorageDelta(prisma, {
+                                    orgId: asset.orgId || orgId,
+                                    deltaBytes: -assetSizeBytes,
+                                    assetId: asset.id,
+                                    reason: 'permanent_delete',
+                                });
+                            } catch (dErr) {
+                                console.warn('Failed to record storage delta:', dErr.message);
+                            }
+                        }
+                    }
+
+                    await prisma.assetFile.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.assetMetadata.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.assetTag.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.assetUser.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.assetGroup.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.collectionAsset.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.annotation.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.projectSource.deleteMany({ where: { assetId: { in: targetAssetIds } } }).catch(() => null);
+                    await prisma.asset.deleteMany({ where: { id: { in: targetAssetIds } } }).catch(() => null);
+                }
+
+                if (targetFolderIds.length > 0) {
+                    await prisma.projectSource.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
+                    await prisma.folderUser.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
+                    await prisma.favorite.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
+                    await prisma.folder.deleteMany({ where: { id: { in: targetFolderIds } } }).catch(() => null);
+                }
+
+                // Restore any pending assets associated with this project that were UNCHECKED by Super Admin back to active status
+                const uncheckedAssets = await prisma.asset.findMany({
+                    where: {
+                        deletionReason: { contains: id },
+                        id: { notIn: targetAssetIds }
+                    },
+                    select: { id: true }
+                }).catch(() => []);
+
+                const uncheckedAssetIds = uncheckedAssets.map(a => a.id);
+
+                if (uncheckedAssetIds.length > 0) {
+                    // 1. Remove project source links (project tags/associations)
+                    await prisma.projectSource.deleteMany({
+                        where: { assetId: { in: uncheckedAssetIds } }
+                    }).catch(() => null);
+
+                    // 2. Restore asset status to active
+                    await prisma.asset.updateMany({
+                        where: { id: { in: uncheckedAssetIds } },
+                        data: {
+                            status: 'active',
+                            deletedAt: null,
+                            deletedByUserId: null,
+                            deletionReason: null
+                        }
+                    }).catch(() => null);
+
+                    // 3. Reset ownerType from PROJECT to WORKSPACE so project tags are stripped
+                    if (targetProject?.workspaceId) {
+                        await prisma.asset.updateMany({
+                            where: {
+                                id: { in: uncheckedAssetIds },
+                                ownerType: 'PROJECT',
+                                ownerId: id
+                            },
+                            data: {
+                                ownerType: 'WORKSPACE',
+                                ownerId: targetProject.workspaceId
+                            }
+                        }).catch(() => null);
+                    }
+                }
+
+                // Purge project record from Database
+                await prisma.projectSource.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.projectUser.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.projectGroup.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.projectTag.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.favorite.deleteMany({ where: { projectId: id } }).catch(() => null);
+                await prisma.project.delete({ where: { id } }).catch(() => null);
+
+                await notifyRole(request.server, orgId, 'Admin', 'deletion_alert', 'Project Files Permanently Deleted', `${userName} (Super Admin) permanently deleted ${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) from project '${projectName}'.`, id);
+
+                return reply.code(200).send({
+                    success: true,
+                    message: `${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) permanently deleted from database and Backblaze B2.`
+                });
+            }
         } else {
-            // Admin role: mark project as pending_super_admin for Super Admin deletion dashboard
+            // Always set project status to pending_super_admin so project is marked for deletion and removed from Admin Projects list and All media
             await prisma.project.update({
                 where: { id },
                 data: {
                     status: 'pending_super_admin',
                     deletedAt: new Date(),
                     deletedByUserId: request.user.id,
-                    deletionReason: deletionReason
+                    deletionReason: deletionReason || (isWholeProject ? 'Whole Project deletion requested' : 'Project deletion with selected items requested')
                 }
             });
 
-            return reply.code(200).send({
-                success: true,
-                message: 'Project deletion request submitted for Super Admin review.'
-            });
+            if (isWholeProject) {
+                if (allLinkedAssetIds.length > 0) {
+                    await prisma.asset.updateMany({
+                        where: { id: { in: allLinkedAssetIds } },
+                        data: {
+                            status: 'pending_super_admin',
+                            deletedAt: new Date(),
+                            deletedByUserId: request.user.id,
+                            deletionReason: deletionReason || `Deleted with project: [${id}] ${projectName}`
+                        }
+                    });
+                }
+
+                await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Project Deletion Request', `${userName} (${rawRoleName}) requested whole project deletion for '${projectName}'.`, id);
+
+                return reply.code(200).send({
+                    success: true,
+                    message: 'Project deletion request submitted for Super Admin review.'
+                });
+            } else {
+                const allProjectFolderSources = await prisma.projectSource.findMany({
+                    where: { projectId: id, sourceableType: 'FOLDER' },
+                    select: { folderId: true }
+                }).catch(() => []);
+                const allProjectFolderIds = allProjectFolderSources.map(s => s.folderId).filter(Boolean);
+
+                const explicitlySelectedFolders = Array.isArray(deleteFolderIds) ? deleteFolderIds : [];
+                const selectedFolderSet = new Set(explicitlySelectedFolders);
+
+                // Unlink UNCHECKED folders from project so they stay safe in workspace
+                const uncheckedFolderIds = allProjectFolderIds.filter(fId => !selectedFolderSet.has(fId));
+                if (uncheckedFolderIds.length > 0) {
+                    await prisma.projectSource.deleteMany({
+                        where: {
+                            projectId: id,
+                            folderId: { in: uncheckedFolderIds }
+                        }
+                    }).catch(() => null);
+                }
+
+                let folderAssetIds = [];
+                const folderIdMap = new Map();
+
+                if (explicitlySelectedFolders.length > 0) {
+                    const allFolderIds = new Set(explicitlySelectedFolders);
+                    let currentLevel = [...explicitlySelectedFolders];
+                    while (currentLevel.length > 0) {
+                        const childFolders = await prisma.folder.findMany({
+                            where: { parentId: { in: currentLevel } },
+                            select: { id: true }
+                        }).catch(() => []);
+                        const childIds = childFolders.map(f => f.id).filter(fId => !allFolderIds.has(fId));
+                        if (childIds.length === 0) break;
+                        childIds.forEach(fId => allFolderIds.add(fId));
+                        currentLevel = childIds;
+                    }
+
+                    const explicitFileIdsSet = new Set(Array.isArray(deleteFileIds) ? deleteFileIds : []);
+                    const hasExplicitFileSelections = Array.isArray(deleteFileIds);
+
+                    const folderAssets = await prisma.asset.findMany({
+                        where: {
+                            ownerType: 'FOLDER',
+                            ownerId: { in: Array.from(allFolderIds) },
+                            status: { notIn: ['trash', 'deleted'] }
+                        },
+                        select: { id: true, ownerId: true }
+                    }).catch(() => []);
+
+                    const foldersWithAssets = new Set();
+                    folderAssets.forEach(a => {
+                        // Respect Admin's explicit unchecking of files inside selected folders
+                        const isExplicitlyUnchecked = hasExplicitFileSelections && !explicitFileIdsSet.has(a.id);
+                        if (!isExplicitlyUnchecked) {
+                            folderAssetIds.push(a.id);
+                            folderIdMap.set(a.id, a.ownerId);
+                            foldersWithAssets.add(a.ownerId);
+                        }
+                    });
+
+                    // For explicitly selected folders with 0 active assets inside, create a tracking asset so Super Admin panel tracks the folder
+                    for (const fId of explicitlySelectedFolders) {
+                        if (!foldersWithAssets.has(fId)) {
+                            const fRecord = await prisma.folder.findUnique({
+                                where: { id: fId },
+                                select: { name: true }
+                            }).catch(() => null);
+
+                            const fName = fRecord?.name || 'Folder';
+                            await prisma.asset.create({
+                                data: {
+                                    orgId: orgId,
+                                    title: fName,
+                                    type: 'folder',
+                                    ownerType: 'FOLDER',
+                                    ownerId: fId,
+                                    status: 'pending_super_admin',
+                                    deletedAt: new Date(),
+                                    deletedByUserId: request.user.id,
+                                    deletionReason: `Selected deletion from project: [${id}] folder:[${fId}] ${projectName}`
+                                }
+                            }).catch(() => null);
+                        }
+                    }
+                }
+
+                const fileAssetIds = (Array.isArray(deleteFileIds) ? deleteFileIds : []).filter(aId => allLinkedAssetIds.includes(aId));
+
+                // Unlink UNCHECKED files from project so they stay safe in workspace
+                const selectedFileSet = new Set(fileAssetIds);
+                const uncheckedAssetIds = allLinkedAssetIds.filter(aId => !selectedFileSet.has(aId) && !folderAssetIds.includes(aId));
+                if (uncheckedAssetIds.length > 0) {
+                    await prisma.projectSource.deleteMany({
+                        where: {
+                            projectId: id,
+                            assetId: { in: uncheckedAssetIds }
+                        }
+                    }).catch(() => null);
+
+                    await prisma.asset.updateMany({
+                        where: { id: { in: uncheckedAssetIds } },
+                        data: {
+                            status: 'active',
+                            deletionReason: null,
+                            ownerType: 'WORKSPACE',
+                            ownerId: targetProject.workspaceId
+                        }
+                    }).catch(() => null);
+                }
+
+                const targetAssetIds = Array.from(
+                    new Set([...fileAssetIds, ...folderAssetIds])
+                ).filter(aId => allLinkedAssetIds.includes(aId));
+
+                for (const aId of targetAssetIds) {
+                    const fId = folderIdMap.get(aId);
+                    const folderTag = fId ? ` folder:[${fId}]` : '';
+                    await prisma.asset.update({
+                        where: { id: aId },
+                        data: {
+                            status: 'pending_super_admin',
+                            deletedAt: new Date(),
+                            deletedByUserId: request.user.id,
+                            deletionReason: deletionReason || `Selected deletion from project: [${id}]${folderTag} ${projectName}`
+                        }
+                    }).catch(() => null);
+                }
+
+                await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Project Deletion Request', `${userName} (${rawRoleName}) requested deletion of project '${projectName}' with selected files/folders.`, id);
+
+                return reply.code(200).send({
+                    success: true,
+                    message: `Project deletion request for '${projectName}' submitted for Super Admin review.`
+                });
+            }
         }
     } catch (error) {
-        console.error('Failed to delete project:', error);
-        if (error.code === 'P2025') {
-            return reply.code(404).send({ success: false, message: 'Project not found.' });
+        console.error('Failed to delete project / selected files:', error);
+        if (error.code === 'P2025' || error.statusCode === 404) {
+            return reply.code(404).send({ success: false, message: error.message || 'Project not found.' });
         }
-        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+        if (error.statusCode) {
+            return reply.code(error.statusCode).send({ success: false, message: error.message || 'Access denied.' });
+        }
+        return reply.code(500).send({ success: false, message: error.message || 'Internal Server Error' });
     }
 };
 
@@ -1977,7 +2350,16 @@ module.exports.restoreProject = async (request, reply) => {
             }
         });
 
-        // Also restore any pending assets associated with this project back to active
+        // Delete tracking assets created for empty folders
+        await prisma.asset.deleteMany({
+            where: {
+                type: 'folder',
+                deletionReason: { contains: id },
+                status: 'pending_super_admin'
+            }
+        }).catch(() => null);
+
+        // Restore real pending assets associated with this project back to active
         await prisma.asset.updateMany({
             where: {
                 OR: [
