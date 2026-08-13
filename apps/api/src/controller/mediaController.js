@@ -3623,6 +3623,18 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
     }
 
+    let aLevelId = accessLevel;
+    if (aLevelId) {
+        const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
+        if (!foundLevel) {
+            const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
+            aLevelId = fallbackLevel ? fallbackLevel.id : null;
+        }
+    } else {
+        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
+        aLevelId = fallbackLevel ? fallbackLevel.id : null;
+    }
+
     const override = await request.server.prisma.assetUser.upsert({
       where: {
         assetId_userId: {
@@ -3631,12 +3643,12 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
         }
       },
       update: {
-        accessLevel
+        accessLevelId: aLevelId
       },
       create: {
         assetId,
         userId: targetUserId,
-        accessLevel
+        accessLevelId: aLevelId
       }
     });
 
@@ -3702,6 +3714,18 @@ module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
     }
 
+    let aLevelId = accessLevel;
+    if (aLevelId) {
+        const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
+        if (!foundLevel) {
+            const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
+            aLevelId = fallbackLevel ? fallbackLevel.id : null;
+        }
+    } else {
+        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
+        aLevelId = fallbackLevel ? fallbackLevel.id : null;
+    }
+
     const override = await request.server.prisma.assetGroup.upsert({
       where: {
         assetId_groupId: {
@@ -3710,12 +3734,12 @@ module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
         }
       },
       update: {
-        accessLevel
+        accessLevelId: aLevelId
       },
       create: {
         assetId,
         groupId: targetGroupId,
-        accessLevel
+        accessLevelId: aLevelId
       }
     });
 

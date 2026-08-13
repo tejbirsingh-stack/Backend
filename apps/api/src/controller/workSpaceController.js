@@ -1,4 +1,5 @@
 const prisma = require('../utils/prisma');
+const { resolveUserProjectPermissions } = require("../lib/rbac-policy");
 const crypto = require('crypto');
 const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
 const emailService = require('../services/email-service');
@@ -7,7 +8,7 @@ const { autoAssignAdminsToWorkspace, autoAssignAdminsToProject, assertWorkspaceA
 const { isOrgWideRole, resolveUserWorkspacePermissions } = require('../lib/rbac-policy');
 const { verifyProjectAccess } = require('../utils/projectAccessUtils');
 const { createNotification } = require('./notificationController');
-const { ACCESS_LEVEL } = require('../lib/rolesPermissions');
+const { ACCESS_LEVEL, MEMBER_TYPES, VISIBILITY } = require('../lib/rolesPermissions');
 
 function formatWorkspaceNameWithSuffix(value) {
     if (!value || typeof value !== "string") return "Workspace-ARK";
@@ -21,7 +22,7 @@ function formatWorkspaceNameWithSuffix(value) {
 
 module.exports.storeWorkplace = async (request, reply) => {
     try {
-        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel } = request.body;
+        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel, isRestricted } = request.body;
 
         // Default values for granular permissions if not provided
         const mType = memberType || 'MEMBER';
@@ -103,7 +104,8 @@ module.exports.storeWorkplace = async (request, reply) => {
                 orgId,
                 name: formattedWorkspaceName,
                 description,
-                color
+                color,
+                visibility: isRestricted ? VISIBILITY.PRIVATE : VISIBILITY.PUBLIC
             }
         });
 
@@ -119,6 +121,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                 data: {
                     workspaceId: workspace.id,
                     userId: userId,
+                    memberType: MEMBER_TYPES.OWNER,
                     accessLevelId: creatorAccessLevelId
                 }
             }).catch(err => {
@@ -258,24 +261,22 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             });
         }
 
-        const orConditions = [
-            {
-                users: {
-                    some: {
-                        userId: userId
-                    }
+        let whereCondition = {
+            ...(orgId ? { orgId } : {}),
+            OR: [
+                { visibility: VISIBILITY.PUBLIC },
+                {
+                    visibility: VISIBILITY.PRIVATE,
+                    OR: [
+                        { users: { some: { userId: userId } } },
+                        { groups: { some: { group: { members: { some: { userId: userId } } } } } }
+                    ]
                 }
-            }
-        ];
-
-        if (orgId) {
-            orConditions.push({ orgId: orgId });
-        }
+            ]
+        };
 
         let workspaces = await prisma.workspace.findMany({
-            where: {
-                OR: orConditions
-            },
+            where: whereCondition,
             orderBy: {
                 createdAt: 'desc'
             }
@@ -610,15 +611,29 @@ module.exports.addProjectMember = async (request, reply) => {
         }
 
         const effectiveMemberType = memberType || 'Member';
+        
+        let resolvedAccessLevelId = null;
+        if (accessLevel) {
+            const lvl = await prisma.accessLevel.findFirst({ where: { title: accessLevel } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        } else {
+            const lvl = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        }
 
-        await prisma.projectUser.create({
-            data: {
+        await prisma.projectUser.upsert({
+            where: { projectId_userId: { projectId, userId: user.id } },
+            update: {
+                accessLevelId: resolvedAccessLevelId,
+                memberType: effectiveMemberType
+            },
+            create: {
                 projectId,
                 userId: user.id,
-                accessLevel: accessLevel || 'Full Access',
+                accessLevelId: resolvedAccessLevelId,
                 memberType: effectiveMemberType,
             }
-        }).catch(() => { });
+        }).catch((err) => { console.error("Failed to add project member:", err) });
 
         // ALWAYS send in-app notification
         createNotification(
@@ -848,8 +863,8 @@ module.exports.createProject = async (request, reply) => {
                 }).catch(() => { });
             }
 
-            // Also auto-assign admins for private projects
-            await autoAssignAdminsToProject(prisma, request.user.orgId, project.id);
+            // Also auto-assign admins/owners for private projects
+            await autoAssignAdminsToProject(prisma, request.user.orgId, workspaceId, project.id);
 
             // Add invited emails
             if (Array.isArray(inviteEmails) && inviteEmails.length > 0) {
@@ -1035,26 +1050,23 @@ module.exports.createProject = async (request, reply) => {
 module.exports.findAllProjects = async (request, reply) => {
     try {
         const { orgId, id: userId, role } = request.user;
-        const isAdmin = role === 'Super Admin' || role === 'Admin';
 
         const projects = await prisma.project.findMany({
             where: {
                 workspace: {
                     orgId
                 },
-                ...(isAdmin ? {} : {
-                    status: 'active',
-                    OR: [
-                        { visibility: 'public' },
-                        {
-                            visibility: 'private',
-                            OR: [
-                                { users: { some: { userId } } },
-                                { groups: { some: { group: { members: { some: { userId } } } } } }
-                            ]
-                        }
-                    ]
-                })
+                status: 'active',
+                OR: [
+                    { visibility: VISIBILITY.PUBLIC },
+                    {
+                        visibility: VISIBILITY.PRIVATE,
+                        OR: [
+                            { users: { some: { userId } } },
+                            { groups: { some: { group: { members: { some: { userId } } } } } }
+                        ]
+                    }
+                ]
             },
             include: {
                 workspace: {
@@ -1186,12 +1198,24 @@ module.exports.findProjectData = async (request, reply) => {
         const projectAssets = projectSources.filter(ps => ps.sourceableType === 'ASSET' && ps.asset).map(ps => ps.asset);
         const projectFolders = projectSources.filter(ps => ps.sourceableType === 'FOLDER' && ps.folder).map(ps => ps.folder);
 
+        let effectivePermissions = [];
+        if (request.user) {
+            const project = await prisma.project.findUnique({ 
+                where: { id: projectId },
+                include: { workspace: true }
+            });
+            if (project) {
+                effectivePermissions = await resolveUserProjectPermissions(prisma, request.user, project);
+            }
+        }
+
         return reply.code(200).send({
             success: true,
             message: 'Project contents fetched successfully.',
             data: {
                 media: projectAssets,
-                folders: projectFolders
+                folders: projectFolders,
+                effectivePermissions
             }
         });
 
