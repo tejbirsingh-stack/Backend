@@ -2338,6 +2338,13 @@ module.exports.restoreProject = async (request, reply) => {
         const { id } = request.params;
         await verifyProjectAccess(id, request.user.id, 'Full Access');
 
+        const targetProject = await prisma.project.findUnique({
+            where: { id },
+            select: { name: true, deletedByUserId: true, workspaceId: true }
+        }).catch(() => null);
+
+        const projectName = targetProject?.name || 'Project';
+
         const { assetIds: allLinkedAssetIds } = await getAllProjectAssetIdsAndObjects(prisma, id);
 
         await prisma.project.update({
@@ -2355,7 +2362,7 @@ module.exports.restoreProject = async (request, reply) => {
             where: {
                 type: 'folder',
                 deletionReason: { contains: id },
-                status: 'pending_super_admin'
+                status: { in: ['pending_super_admin', 'pending_admin_review'] }
             }
         }).catch(() => null);
 
@@ -2366,7 +2373,7 @@ module.exports.restoreProject = async (request, reply) => {
                     { id: { in: allLinkedAssetIds } },
                     { deletionReason: { contains: id } }
                 ],
-                status: 'pending_super_admin'
+                status: { in: ['pending_super_admin', 'pending_admin_review'] }
             },
             data: {
                 status: 'active',
@@ -2376,9 +2383,22 @@ module.exports.restoreProject = async (request, reply) => {
             }
         }).catch(() => null);
 
+        if (targetProject?.deletedByUserId) {
+            const userName = request.user?.name || 'Super Admin';
+            await createNotification(
+                request.server,
+                targetProject.deletedByUserId,
+                null,
+                'deletion_rejected',
+                'Project Deletion Rejected',
+                `${userName} rejected the deletion request for project '${projectName}'. The project and its files have been restored to Active status.`,
+                id
+            ).catch(() => null);
+        }
+
         return reply.code(200).send({
             success: true,
-            message: 'Project restored successfully.'
+            message: `Project '${projectName}' and all its associated files/folders restored to Active successfully.`
         });
     } catch (error) {
         console.error('Failed to restore project:', error);
