@@ -73,7 +73,7 @@ async function createShareLink(req, reply) {
     // 1. strictly enforce Expiry Days from orgSettings
     let finalExpiresInDays = expiresInDays;
     let finalCustomExpiresAt = customExpiresAt;
-    
+
     if (orgSettings.defaultExpiryDays) {
       finalExpiresInDays = orgSettings.defaultExpiryDays;
       finalCustomExpiresAt = undefined; // Force use of days if org setting exists
@@ -101,33 +101,29 @@ async function createShareLink(req, reply) {
       defaultWatermark = orgSettings.showCompanyWatermarkDefault;
     }
 
-    // Merge user permissions with enforced permissions
+    // Merge: user-provided permissions take priority; org defaults are used as fallback only
     const finalPermissions = {
-      ...(permissions || { view: true }),
-      comment: defaultComment,
-      download: defaultDownload,
-      downloadProxy: defaultDownloadProxy,
-      watermark: defaultWatermark
+      view: true,
+      comment: permissions?.comment !== undefined ? Boolean(permissions.comment) : defaultComment,
+      download: permissions?.download !== undefined ? Boolean(permissions.download) : defaultDownload,
+      downloadProxy: permissions?.downloadProxy !== undefined ? Boolean(permissions.downloadProxy) : defaultDownloadProxy,
+      watermark: permissions?.watermark !== undefined ? Boolean(permissions.watermark) : defaultWatermark,
     };
 
-    // 3. strictly enforce Password requirement from orgSettings
+    // 3. Password requirement handling (Public links never require passwords; passwords are only for private shares)
     let passwordHash = null;
-    let finalPassword = password;
-    
-    if (visibility === 'public') {
-      finalPassword = null;
-    } else if (orgSettings.requirePasswordDefault !== undefined) {
-      if (orgSettings.requirePasswordDefault) {
-        if (!finalPassword || finalPassword.trim().length === 0) {
-          finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing
-        }
-      } else {
-        finalPassword = null; // Strictly enforce no password if disabled by org
+    let finalPassword = null;
+
+    if (visibility !== 'public') {
+      if (password && typeof password === 'string' && password.trim().length > 0) {
+        finalPassword = password.trim();
+      } else if (orgSettings.requirePasswordDefault) {
+        finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing and org requires password
       }
     }
 
-    if (finalPassword && finalPassword.trim().length > 0) {
-      passwordHash = await argon2.hash(finalPassword.trim());
+    if (finalPassword) {
+      passwordHash = await argon2.hash(finalPassword);
     } else {
       passwordHash = null;
     }
@@ -308,18 +304,18 @@ async function updateShareLink(req, reply) {
     if (permissions) {
       const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
       const orgSettings = await ensureDefaultOrganizationSettings(prisma, existingLink.orgId);
-      finalPermissions = { ...permissions };
-      
-      if (orgSettings.allowCommentsDefault !== undefined) {
+      finalPermissions = { ...(existingLink.permissions || {}), ...permissions };
+
+      if (orgSettings.lockAllowComments && orgSettings.allowCommentsDefault !== undefined) {
         finalPermissions.comment = orgSettings.allowCommentsDefault;
       }
-      if (orgSettings.allowDownloadOriginalDefault !== undefined) {
+      if (orgSettings.lockAllowDownloadOriginal && orgSettings.allowDownloadOriginalDefault !== undefined) {
         finalPermissions.download = orgSettings.allowDownloadOriginalDefault;
       }
-      if (orgSettings.allowDownloadProxyDefault !== undefined) {
+      if (orgSettings.lockAllowDownloadProxy && orgSettings.allowDownloadProxyDefault !== undefined) {
         finalPermissions.downloadProxy = orgSettings.allowDownloadProxyDefault;
       }
-      if (orgSettings.showCompanyWatermarkDefault !== undefined) {
+      if (orgSettings.lockShowCompanyWatermark && orgSettings.showCompanyWatermarkDefault !== undefined) {
         finalPermissions.watermark = orgSettings.showCompanyWatermarkDefault;
       }
     }
@@ -328,10 +324,10 @@ async function updateShareLink(req, reply) {
       where: { id: shareLinkId },
       data: {
         ...(name !== undefined && { name }),
-        ...(visibility !== undefined && { 
-             visibility, 
-             ...(visibility === 'public' ? { passwordHash: null } : {}) 
-           }),
+        ...(visibility !== undefined && {
+          visibility,
+          ...(visibility === 'public' ? { passwordHash: null } : {})
+        }),
         ...(finalPermissions !== undefined && { permissions: finalPermissions }),
       }
     });
@@ -477,9 +473,9 @@ async function resolveShareToken(prisma, token) {
     where: { token, revokedAt: null },
     include: {
       shareLink: {
-        include: { 
-          asset: { include: { files: true, metadata: true } }, 
-          organization: true 
+        include: {
+          asset: { include: { files: true, metadata: true } },
+          organization: true
         },
       },
     },
@@ -496,9 +492,9 @@ async function resolveShareToken(prisma, token) {
   // Check main share link token
   const shareLink = await prisma.shareLink.findFirst({
     where: { token, revokedAt: null },
-    include: { 
-      asset: { include: { files: true, metadata: true } }, 
-      organization: true 
+    include: {
+      asset: { include: { files: true, metadata: true } },
+      organization: true
     },
   });
 
@@ -710,8 +706,8 @@ async function getShareAnnotations(req, reply) {
       } : ((ann.guestName || ann.guestEmail || ann.data?.guestName || ann.data?.guestEmail) ? {
         name: (ann.guestName || ann.data?.guestName)
           ? ((ann.guestEmail || ann.data?.guestEmail)
-              ? `${ann.guestName || ann.data?.guestName} (${ann.guestEmail || ann.data?.guestEmail})`
-              : (ann.guestName || ann.data?.guestName))
+            ? `${ann.guestName || ann.data?.guestName} (${ann.guestEmail || ann.data?.guestEmail})`
+            : (ann.guestName || ann.data?.guestName))
           : (ann.guestEmail || ann.data?.guestEmail || 'Guest User'),
         email: ann.guestEmail || ann.data?.guestEmail || null,
         initials: ((ann.guestName || ann.data?.guestName || ann.guestEmail || ann.data?.guestEmail || 'G')[0] || 'G').toUpperCase(),

@@ -23,6 +23,7 @@ function parsePlanBody(body = {}) {
   if (body.storageQuotaBytes !== undefined) data.storageQuotaBytes = BigInt(body.storageQuotaBytes);
   if (body.maxUsers !== undefined) data.maxUsers = parseInt(body.maxUsers, 10) || 1;
   if (body.maxWorkspaces !== undefined) data.maxWorkspaces = parseInt(body.maxWorkspaces, 10) || 1;
+  if (body.maxProjects !== undefined) data.maxProjects = parseInt(body.maxProjects, 10) || 1;
   if (body.features !== undefined) data.features = body.features;
   if (body.monthlyPriceId !== undefined || body.stripeMonthlyPriceId !== undefined) {
     data.monthlyPriceId = body.monthlyPriceId ?? body.stripeMonthlyPriceId ?? null;

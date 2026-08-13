@@ -2187,20 +2187,47 @@ module.exports.getPendingDeletions = async (request, reply) => {
       return reply.code(403).send({ success: false, error: 'Unauthorized to view pending deletions' });
     }
 
-    const assets = await request.server.prisma.asset.findMany({
-      where: {
-        status: statusFilter,
-        orgId: request.user?.orgId
-      },
-      include: {
-        deletedBy: {
-          include: { roleRelation: true }
-        }
-      },
-      orderBy: { deletedAt: 'desc' }
-    });
+    const [assets, projects] = await Promise.all([
+      request.server.prisma.asset.findMany({
+        where: {
+          status: statusFilter,
+          orgId: request.user?.orgId
+        },
+        include: {
+          deletedBy: {
+            include: { roleRelation: true }
+          }
+        },
+        orderBy: { deletedAt: 'desc' }
+      }),
+      request.server.prisma.project.findMany({
+        where: {
+          status: statusFilter,
+          workspace: { orgId: request.user?.orgId }
+        },
+        include: {
+          workspace: { select: { name: true } },
+          deletedBy: {
+            include: { roleRelation: true }
+          }
+        },
+        orderBy: { deletedAt: 'desc' }
+      }).catch(() => [])
+    ]);
 
-    return reply.send({ success: true, data: assets });
+    const formattedProjects = projects.map(p => ({
+      id: p.id,
+      title: p.name,
+      status: p.status,
+      deletedAt: p.deletedAt,
+      deletionReason: p.deletionReason || 'Project deletion requested',
+      type: 'project',
+      isProject: true,
+      workspaceName: p.workspace?.name || 'Workspace',
+      deletedBy: p.deletedBy
+    }));
+
+    return reply.send({ success: true, data: [...formattedProjects, ...assets] });
   } catch (error) {
     return reply.code(500).send({ success: false, error: error.message });
   }
@@ -2533,7 +2560,13 @@ module.exports.initiateResumableUpload = async (request, reply) => {
 
   } catch (error) {
     console.error("Failed to initiate resumable upload:", error);
-    return reply.status(500).send({ message: "Failed to initiate upload session", error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "UPLOAD_FAILED",
+      message: error.message || "Failed to initiate upload session",
+      details: error.details || null,
+    });
   }
 }
 
@@ -2548,6 +2581,10 @@ module.exports.uploadChunk = async (request, reply) => {
   }
 
   try {
+    if (request.user && request.user.orgId) {
+      await assertQuotaAvailable(request.user.orgId, 0);
+    }
+
     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
     if (!sessionRaw) {
       return reply.status(404).send({ message: "Upload session not found or expired" });
@@ -2584,7 +2621,13 @@ module.exports.uploadChunk = async (request, reply) => {
 
   } catch (error) {
     console.error(`Failed to upload chunk ${partNumber}:`, error);
-    return reply.status(500).send({ message: `Failed to upload chunk ${partNumber}`, error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "CHUNK_UPLOAD_FAILED",
+      message: error.message || `Failed to upload chunk ${partNumber}`,
+      details: error.details || null,
+    });
   }
 }
 
@@ -2598,6 +2641,10 @@ module.exports.getChunkUploadUrl = async (request, reply) => {
   }
 
   try {
+    if (request.user && request.user.orgId) {
+      await assertQuotaAvailable(request.user.orgId, 0);
+    }
+
     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
     if (!sessionRaw) {
       return reply.status(404).send({ message: "Upload session not found or expired" });
@@ -2610,7 +2657,13 @@ module.exports.getChunkUploadUrl = async (request, reply) => {
     return { success: true, partNumber, presignedUrl };
   } catch (error) {
     console.error(`Failed to generate upload URL for chunk ${partNumber}:`, error);
-    return reply.status(500).send({ message: `Failed to generate upload URL for chunk ${partNumber}`, error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "CHUNK_URL_FAILED",
+      message: error.message || `Failed to generate upload URL for chunk ${partNumber}`,
+      details: error.details || null,
+    });
   }
 }
 
@@ -2949,7 +3002,13 @@ module.exports.completeResumableUpload = async (request, reply) => {
 
   } catch (error) {
     console.error("❌ Failed to complete resumable upload:", error);
-    return reply.status(500).send({ message: "Failed to complete upload session", error: error.message });
+    return reply.status(error.statusCode || 500).send({
+      success: false,
+      error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
+      code: error.code || "COMPLETION_FAILED",
+      message: error.message || "Failed to complete upload session",
+      details: error.details || null,
+    });
   }
 }
 

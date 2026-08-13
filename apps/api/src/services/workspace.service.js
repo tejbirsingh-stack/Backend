@@ -1,5 +1,5 @@
-// apps/api/src/services/workspace.service.js
 const { isOrgWideRole } = require('../lib/rbac-policy');
+const { ACCESS_LEVEL } = require('../lib/rolesPermissions');
 
 /**
  * Automatically assigns all Super Admins and Admins in the organization to a given workspace.
@@ -19,6 +19,11 @@ async function autoAssignAdminsToWorkspace(prisma, orgId, workspaceId) {
     });
 
     if (orgAdmins.length > 0) {
+      // Get the ID for Full Access
+      let fullAccessId = null;
+      const foundLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
       for (const admin of orgAdmins) {
         await prisma.workspaceUser.upsert({
           where: {
@@ -32,13 +37,58 @@ async function autoAssignAdminsToWorkspace(prisma, orgId, workspaceId) {
             workspaceId,
             userId: admin.id,
             memberType: 'MEMBER',
-            accessLevel: 'FULL_ACCESS'
+            accessLevelId: fullAccessId
           }
         }).catch(err => console.error(`Failed to auto-assign admin ${admin.id} to workspace ${workspaceId}:`, err));
       }
     }
   } catch (error) {
     console.error("Error in autoAssignAdminsToWorkspace:", error);
+  }
+}
+
+/**
+ * Automatically assigns all Super Admins and Admins in the organization to a given private project.
+ */
+async function autoAssignAdminsToProject(prisma, orgId, projectId) {
+  if (!orgId || !projectId) return;
+
+  try {
+    const orgAdmins = await prisma.user.findMany({
+      where: {
+        orgId,
+        roleRelation: {
+          name: { in: ['Super Admin', 'Admin', 'System Admin'] }
+        }
+      },
+      select: { id: true }
+    });
+
+    if (orgAdmins.length > 0) {
+      let fullAccessId = null;
+      const foundLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
+      for (const admin of orgAdmins) {
+        await prisma.projectUser.upsert({
+          where: {
+            projectId_userId: {
+              projectId,
+              userId: admin.id
+            }
+          },
+          update: {},
+          create: {
+            projectId,
+            userId: admin.id,
+            memberType: 'Member',
+            accessLevelId: fullAccessId
+          }
+        }).catch(err => console.error(`Failed to auto-assign admin ${admin.id} to project ${projectId}:`, err));
+      }
+    }
+  } catch (error) {
+    console.error("Error in autoAssignAdminsToProject:", error);
   }
 }
 
@@ -87,5 +137,6 @@ async function assertWorkspaceAccess(prisma, user, workspaceId) {
 
 module.exports = {
   autoAssignAdminsToWorkspace,
+  autoAssignAdminsToProject,
   assertWorkspaceAccess,
 };

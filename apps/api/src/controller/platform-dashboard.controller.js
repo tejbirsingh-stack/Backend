@@ -24,6 +24,7 @@ async function getDashboardSummary(_request, reply) {
       storageAgg,
       planGroups,
       roleGroups,
+      allPlans,
       recentOrgs,
       recentAudit,
       newOrgs30d,
@@ -45,31 +46,22 @@ async function getDashboardSummary(_request, reply) {
         where: { status: { in: ['open', 'quarantined'] } },
       }),
       prisma.organization.aggregate({
-        _sum: { storageUsedBytes: true, storageQuotaBytes: true },
+        _sum: { storageUsedBytes: true },
       }),
       prisma.organization.groupBy({
-        by: ['planType'],
+        by: ['currentPlanId'],
         _count: { _all: true },
       }),
       prisma.user.groupBy({
         by: ['roleId'],
         _count: { _all: true },
       }),
+      prisma.plan.findMany(),
       prisma.organization.findMany({
         orderBy: { createdAt: 'desc' },
         take: 8,
-        select: {
-          id: true,
-          name: true,
-          slug: true,
-          planType: true,
-          status: true,
-          storageUsedBytes: true,
-          storageQuotaBytes: true,
-          maxUsers: true,
-          subscriptionStatus: true,
-          createdAt: true,
-          currentPlan: { select: { id: true, name: true } },
+        include: {
+          currentPlan: true,
           _count: { select: { users: true, workspaces: true, assets: true } },
         },
       }),
@@ -118,9 +110,10 @@ async function getDashboardSummary(_request, reply) {
     const storageUsedBytes = storageAgg._sum.storageUsedBytes || 0n;
     const storageQuotaBytes = storageAgg._sum.storageQuotaBytes || 0n;
 
+    const planMap = new Map(allPlans.map((p) => [p.id, p.name.toLowerCase()]));
     const planMix = planGroups
       .map((row) => ({
-        planType: row.planType,
+        planType: row.currentPlanId ? (planMap.get(row.currentPlanId) || 'free') : 'free',
         count: row._count._all,
       }))
       .sort((a, b) => b.count - a.count);
@@ -133,6 +126,13 @@ async function getDashboardSummary(_request, reply) {
         return org.status === 'suspended' || storageHot;
       })
       .slice(0, 6);
+
+    let totalQuotaBytes = 0n;
+    for (const org of recentOrgs) {
+      if (org.currentPlan?.storageQuotaBytes) {
+        totalQuotaBytes += BigInt(org.currentPlan.storageQuotaBytes);
+      }
+    }
 
     return {
       success: true,
@@ -158,11 +158,13 @@ async function getDashboardSummary(_request, reply) {
         usersByRole,
         recentOrgs: recentOrgs.map((org) => ({
           ...org,
+          planType: org.currentPlan?.name ? org.currentPlan.name.toLowerCase() : 'free',
           storageUsedBytes: serializeBigInt(org.storageUsedBytes),
           storageQuotaBytes: serializeBigInt(org.storageQuotaBytes),
         })),
         attentionOrgs: attentionOrgs.map((org) => ({
           ...org,
+          planType: org.currentPlan?.name ? org.currentPlan.name.toLowerCase() : 'free',
           storageUsedBytes: serializeBigInt(org.storageUsedBytes),
           storageQuotaBytes: serializeBigInt(org.storageQuotaBytes),
         })),

@@ -100,15 +100,27 @@ const createNotification = async (fastify, userId, orgId, type, title, message, 
 // Internal helper function to notify all users with a specific role in an org
 const notifyRole = async (fastify, orgId, roleName, type, title, message, relatedEntityId = null) => {
   try {
-    const users = await fastify.prisma.user.findMany({
-      where: { 
-        orgId, 
-        roleRelation: { name: roleName } 
+    const isSuperAdminRole = ['super admin', 'superadmin', 'super_admin'].includes(String(roleName).toLowerCase());
+
+    const roleNamesToMatch = isSuperAdminRole
+      ? ['Super Admin', 'SuperAdmin', 'super_admin', 'super admin', 'System Admin']
+      : [roleName];
+
+    const whereClause = {
+      roleRelation: {
+        name: { in: roleNamesToMatch, mode: 'insensitive' }
       }
+    };
+    if (orgId) {
+      whereClause.orgId = orgId;
+    }
+
+    const users = await fastify.prisma.user.findMany({
+      where: whereClause
     });
     
     for (const user of users) {
-      await createNotification(fastify, user.id, orgId, type, title, message, relatedEntityId);
+      await createNotification(fastify, user.id, user.orgId || orgId, type, title, message, relatedEntityId);
     }
   } catch(error) {
     console.error(`Error notifying role ${roleName}:`, error);

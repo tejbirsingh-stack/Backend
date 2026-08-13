@@ -42,22 +42,17 @@ async function assertQuotaAvailable(orgId, additionalBytes = 0) {
     throw err;
   }
 
-  if (!org.currentPlan && org.planType) {
+  if (!org.currentPlan) {
     try {
-      const matchedPlan = await prisma.plan.findFirst({
-        where: {
-          OR: [
-            { id: org.planType.toLowerCase().trim() },
-            { name: { equals: org.planType.trim(), mode: 'insensitive' } },
-          ],
-        },
+      const freePlan = await prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } },
       });
-      if (matchedPlan) {
-        org.currentPlanId = matchedPlan.id;
-        org.currentPlan = matchedPlan;
+      if (freePlan) {
+        org.currentPlanId = freePlan.id;
+        org.currentPlan = freePlan;
         await prisma.organization.update({
           where: { id: orgId },
-          data: { currentPlanId: matchedPlan.id, storageQuotaBytes: matchedPlan.storageQuotaBytes },
+          data: { currentPlanId: freePlan.id },
         }).catch(() => {});
       }
     } catch {}
@@ -200,22 +195,17 @@ async function getUsageSummary(orgId) {
     if (org) org.storageSystems = [];
   }
 
-  if (!org.currentPlan && org.planType) {
+  if (!org.currentPlan) {
     try {
-      const matchedPlan = await prisma.plan.findFirst({
-        where: {
-          OR: [
-            { id: org.planType.toLowerCase().trim() },
-            { name: { equals: org.planType.trim(), mode: 'insensitive' } },
-          ],
-        },
+      const freePlan = await prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } },
       });
-      if (matchedPlan) {
-        org.currentPlanId = matchedPlan.id;
-        org.currentPlan = matchedPlan;
+      if (freePlan) {
+        org.currentPlanId = freePlan.id;
+        org.currentPlan = freePlan;
         prisma.organization.update({
           where: { id: orgId },
-          data: { currentPlanId: matchedPlan.id },
+          data: { currentPlanId: freePlan.id },
         }).catch(() => {});
       }
     } catch {}
@@ -332,7 +322,7 @@ async function getUsageSummary(orgId) {
       data: { storageUsedBytes: actualTotalBytes },
     }).catch((e) => console.warn('Background storageUsedBytes sync error:', e.message));
   }
-  const storageQuotaBytes = BigInt(org.currentPlan?.storageQuotaBytes ?? org.storageQuotaBytes ?? 314572800n);
+  const storageQuotaBytes = BigInt(org.currentPlan?.storageQuotaBytes ?? 314572800n);
 
   const storagePercent = Number((storageUsedBytes * BigInt(100)) / (storageQuotaBytes > 0n ? storageQuotaBytes : 1n));
 
@@ -434,6 +424,8 @@ async function getUsageSummary(orgId) {
   // 6. Counts for Projects & Workspaces
   const projectsCount = await prisma.project.count({ where: { workspace: { orgId } } });
   const workspacesCount = await prisma.workspace.count({ where: { orgId } });
+  const projectsTotal = org.currentPlan?.maxProjects ?? org.maxProjects ?? 1;
+  const workspacesTotal = org.currentPlan?.maxWorkspaces ?? org.maxWorkspaces ?? 1;
 
   return {
     membersUsed,
@@ -459,7 +451,9 @@ async function getUsageSummary(orgId) {
       classB: Number(classBEvent._sum.delta || 0n),
     },
     projectsCount,
+    projectsTotal,
     workspacesCount,
+    workspacesTotal,
     seatGuardrailMax: membersTotal + 1,
   };
 }

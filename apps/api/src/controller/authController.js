@@ -8,6 +8,7 @@ const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { autoAssignAdminsToWorkspace } = require("../services/workspace.service");
+const { ACCESS_LEVEL } = require("../lib/rolesPermissions");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -17,6 +18,36 @@ function slugifyWorkspaceName(value) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
+}
+
+function formatOrganization(org) {
+  if (!org) return null;
+  const currentPlan = org.currentPlan || {};
+  const planType = currentPlan.name
+    ? currentPlan.name.toLowerCase()
+    : (org.metadata?.planId || 'free');
+  const storageQuotaBytes = (
+    currentPlan.storageQuotaBytes !== undefined && currentPlan.storageQuotaBytes !== null
+      ? currentPlan.storageQuotaBytes
+      : BigInt(0)
+  ).toString();
+  const maxUsers = currentPlan.maxUsers ?? 5;
+  const maxWorkspaces = currentPlan.maxWorkspaces ?? 1;
+  const maxProjects = currentPlan.maxProjects ?? 1;
+  const features = currentPlan.features ?? [];
+  const isFreeTrialUsed = Boolean(org.isFreeTrialUsed);
+
+  return {
+    ...org,
+    planType,
+    isFreeTrialUsed,
+    storageQuotaBytes,
+    storageUsedBytes: org.storageUsedBytes?.toString?.() ?? '0',
+    maxUsers,
+    maxWorkspaces,
+    maxProjects,
+    features,
+  };
 }
 
 function formatDomainToOrgName(email, defaultName) {
@@ -407,12 +438,17 @@ module.exports.register = async (request, reply) => {
       const derivedOrgName = formatDomainToOrgName(email, orgName || name);
       const rawOrgName = orgName || name || email.split('@')[0];
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
-          planType: "free",
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: true,
         },
+        include: { currentPlan: true },
       });
       finalOrgId = organization.id;
 
@@ -483,6 +519,11 @@ module.exports.register = async (request, reply) => {
 
     // Auto-assign the user to the newly created default workspace and run admin auto-assign
     if (request.newWorkspaceId) {
+      // Get the ID for Full Access
+      let fullAccessId = null;
+      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
       await request.server.prisma.workspaceUser.upsert({
         where: {
           workspaceId_userId: {
@@ -495,7 +536,7 @@ module.exports.register = async (request, reply) => {
           workspaceId: request.newWorkspaceId,
           userId: user.id,
           memberType: 'MEMBER',
-          accessLevel: 'FULL_ACCESS'
+          accessLevelId: fullAccessId
         }
       });
       // Assign Super Admins / Admins now that the first user exists
@@ -942,13 +983,12 @@ module.exports.getMe = async (request, reply) => {
             id: true,
             name: true,
             slug: true,
-            planType: true,
             currentPlanId: true,
-            storageQuotaBytes: true,
+            currentPlan: true,
             storageUsedBytes: true,
-            maxUsers: true,
-            features: true,
             metadata: true,
+            planExpiresAt: true,
+            isFreeTrialUsed: true,
           },
         },
         roleRelation: {
@@ -1016,8 +1056,7 @@ module.exports.getMe = async (request, reply) => {
       select: { projectId: true },
     });
     if (user?.organization) {
-      user.organization.storageQuotaBytes = user.organization.storageQuotaBytes?.toString?.() ?? '0';
-      user.organization.storageUsedBytes = user.organization.storageUsedBytes?.toString?.() ?? '0';
+      user.organization = formatOrganization(user.organization);
     }
 
     return {
@@ -1341,13 +1380,17 @@ module.exports.googleLogin = async (request, reply) => {
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
       const orgSlug = `workspace-${crypto.randomBytes(4).toString("hex")}`;
 
-      // Create Organization
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       const organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: orgSlug,
-          planType: "free"
-        }
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: true,
+        },
+        include: { currentPlan: true },
       });
       let defaultRole = await request.server.prisma.role.findFirst({
         where: {
@@ -1410,6 +1453,10 @@ module.exports.googleLogin = async (request, reply) => {
       // Assign Super Admins / Admins
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace.id);
 
+      let fullAccessId = null;
+      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
       // Ensure the user gets access to this new workspace
       await request.server.prisma.workspaceUser.upsert({
         where: {
@@ -1423,7 +1470,7 @@ module.exports.googleLogin = async (request, reply) => {
           workspaceId: newWorkspace.id,
           userId: user.id,
           memberType: 'MEMBER',
-          accessLevel: 'FULL_ACCESS'
+          accessLevelId: fullAccessId
         }
       });
 
@@ -1618,12 +1665,17 @@ module.exports.microsoftLogin = async (request, reply) => {
       const rawOrgName = name || email.split("@")[0];
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
 
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       const organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
-          planType: "free",
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: true,
         },
+        include: { currentPlan: true },
       });
 
       let defaultRole = await request.server.prisma.role.findFirst({
@@ -1696,6 +1748,10 @@ module.exports.microsoftLogin = async (request, reply) => {
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace2.id);
 
+      let fullAccessId = null;
+      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
       // Ensure the new user gets access to these workspaces
       for (const wid of [newWorkspace1.id, newWorkspace2.id]) {
         await request.server.prisma.workspaceUser.upsert({
@@ -1710,7 +1766,7 @@ module.exports.microsoftLogin = async (request, reply) => {
             workspaceId: wid,
             userId: user.id,
             memberType: 'MEMBER',
-            accessLevel: 'FULL_ACCESS'
+            accessLevelId: fullAccessId
           }
         });
       }
@@ -2030,12 +2086,17 @@ module.exports.sendSignupOtp = async (request, reply) => {
     } else {
       // Create a new organization for pending registration using email domain
       const derivedOrgName = formatDomainToOrgName(normalizedEmail);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
       const pendingOrg = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `pending-${Date.now()}`,
-          planType: "free",
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: true,
         },
+        include: { currentPlan: true },
       });
       await request.server.prisma.user.create({
         data: {
@@ -2299,22 +2360,22 @@ module.exports.completeSignup = async (request, reply) => {
     const orgData = {
       name: derivedOrgName,
       slug: uniqueSlug,
-      planType: planId,
       currentPlanId: dbPlan ? dbPlan.id : null,
-      storageQuotaBytes: selectedStorageQuotaBytes,
-      maxUsers: selectedMaxUsers,
-      features: selectedFeatures,
+      isFreeTrialUsed: true,
       metadata: orgMetadata,
+      planExpiresAt: expiresAtDate,
     };
 
     if (user && user.orgId && user.status === "pending_signup") {
       organization = await request.server.prisma.organization.update({
         where: { id: user.orgId },
         data: orgData,
+        include: { currentPlan: true },
       });
     } else {
       organization = await request.server.prisma.organization.create({
         data: orgData,
+        include: { currentPlan: true },
       });
     }
 
@@ -2490,11 +2551,7 @@ module.exports.completeSignup = async (request, reply) => {
         role: user.role,
         roleRelation: superAdminRole || { id: user.roleId, name: user.role },
         permissions: userPermissions,
-        organization: {
-          ...organization,
-          storageQuotaBytes: organization.storageQuotaBytes?.toString?.() ?? '0',
-          storageUsedBytes: organization.storageUsedBytes?.toString?.() ?? '0',
-        },
+        organization: formatOrganization(organization),
         workspace: {
           id: workspace.id,
           name: workspace.name,
@@ -2553,6 +2610,89 @@ module.exports.logoutAll = async (request, reply) => {
       success: false,
       error: "Internal Server Error",
       message: "Failed to revoke all sessions",
+    });
+  }
+};
+
+module.exports.upgradePlan = async (request, reply) => {
+  try {
+    const userId = request.user.id;
+    const { planId = 'free', billingCycle = 'annual' } = request.body || {};
+
+    const user = await request.server.prisma.user.findUnique({
+      where: { id: userId },
+      include: { organization: true },
+    });
+
+    if (!user || !user.orgId) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Bad Request',
+        message: 'Organization not found for user',
+      });
+    }
+
+    const normalizedPlanId = String(planId).toLowerCase().trim();
+    const isRequestingFree = normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd';
+
+    if (isRequestingFree && (user.organization?.isFreeTrialUsed || user.organization)) {
+      return reply.status(403).send({
+        success: false,
+        error: 'Forbidden',
+        message: 'The Free plan trial can only be used once per organization. Please select a Basic, Premium, or Enterprise plan to upgrade.',
+      });
+    }
+
+    const dbPlan = await request.server.prisma.plan.findFirst({
+      where: {
+        OR: [
+          { id: normalizedPlanId },
+          { name: { equals: normalizedPlanId, mode: 'insensitive' } },
+        ],
+      },
+    }).catch(() => null);
+
+    const resolvedPlanName = dbPlan ? dbPlan.name.toLowerCase() : (normalizedPlanId.length > 30 ? 'free' : normalizedPlanId);
+    const isMonthly = String(billingCycle).toLowerCase() === 'monthly';
+
+    const now = new Date();
+    let expiresAtDate = new Date(now);
+    if (resolvedPlanName === 'free') {
+      expiresAtDate.setDate(expiresAtDate.getDate() + 3);
+    } else if (isMonthly) {
+      expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
+    } else {
+      expiresAtDate.setFullYear(expiresAtDate.getFullYear() + 1);
+    }
+
+    const updatedOrg = await request.server.prisma.organization.update({
+      where: { id: user.orgId },
+      data: {
+        currentPlanId: dbPlan ? dbPlan.id : null,
+        isFreeTrialUsed: true,
+        planExpiresAt: expiresAtDate,
+        metadata: {
+          ...(typeof user.organization?.metadata === 'object' ? user.organization.metadata : {}),
+          planId: normalizedPlanId,
+          billingCycle: normalizedPlanId === 'free' ? '3days' : (isMonthly ? 'monthly' : 'annual'),
+          planSelectedAt: now.toISOString(),
+          expiresAt: expiresAtDate.toISOString(),
+        },
+      },
+      include: { currentPlan: true },
+    });
+
+    return reply.send({
+      success: true,
+      message: `Plan updated to ${normalizedPlanId.toUpperCase()} successfully!`,
+      organization: formatOrganization(updatedOrg),
+    });
+  } catch (error) {
+    console.error('Error upgrading plan:', error);
+    return reply.status(500).send({
+      success: false,
+      error: 'Internal Server Error',
+      message: error.message || 'Failed to upgrade plan',
     });
   }
 };

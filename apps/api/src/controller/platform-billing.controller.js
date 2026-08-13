@@ -34,7 +34,7 @@ async function getBillingOverview(request, reply) {
             OR: [
               { stripeCustomerId: { not: null } },
               { subscriptionStatus: { not: null } },
-              { planType: { notIn: ['free'] } },
+              { currentPlan: { name: { notIn: ['free', 'Free'] } } },
             ],
           },
           ...(q
@@ -74,7 +74,7 @@ async function getBillingOverview(request, reply) {
           id: org.id,
           name: org.name,
           slug: org.slug,
-          planType: org.planType,
+          planType: org.currentPlan?.name ? org.currentPlan.name.toLowerCase() : 'free',
           status: org.status,
           subscriptionStatus: org.subscriptionStatus,
           stripeCustomerId: org.stripeCustomerId,
@@ -109,14 +109,6 @@ async function overrideSubscription(request, reply) {
     if (stripeCustomerId !== undefined) data.stripeCustomerId = stripeCustomerId;
     if (currentPlanId !== undefined) {
       data.currentPlanId = currentPlanId || null;
-      if (currentPlanId) {
-        const plan = await prisma.plan.findUnique({ where: { id: currentPlanId } });
-        if (plan) {
-          data.planType = plan.id;
-          data.storageQuotaBytes = plan.storageQuotaBytes;
-          data.maxUsers = plan.maxUsers;
-        }
-      }
     }
 
     const org = await prisma.organization.update({
@@ -133,12 +125,18 @@ async function overrideSubscription(request, reply) {
       orgId: org.id,
     });
 
+    const currentPlan = org.currentPlan || {};
     return {
       success: true,
       organization: {
         ...org,
-        storageQuotaBytes: org.storageQuotaBytes.toString(),
-        storageUsedBytes: org.storageUsedBytes.toString(),
+        planType: currentPlan.name ? currentPlan.name.toLowerCase() : 'free',
+        storageQuotaBytes: (currentPlan.storageQuotaBytes || 0n).toString(),
+        storageUsedBytes: org.storageUsedBytes?.toString?.() ?? '0',
+        maxUsers: currentPlan.maxUsers ?? 5,
+        maxWorkspaces: currentPlan.maxWorkspaces ?? 1,
+        maxProjects: currentPlan.maxProjects ?? 1,
+        features: currentPlan.features ?? [],
       },
     };
   } catch (error) {
@@ -167,29 +165,27 @@ async function getUsageOverview(request, reply) {
         : undefined,
       orderBy: { storageUsedBytes: 'desc' },
       take: 50,
-      select: {
-        id: true,
-        name: true,
-        slug: true,
-        planType: true,
-        status: true,
-        storageUsedBytes: true,
-        storageQuotaBytes: true,
-        maxUsers: true,
+      include: {
+        currentPlan: true,
         _count: { select: { users: true, assets: true, workspaces: true } },
       },
     });
 
     return {
       success: true,
-      usage: orgs.map((org) => ({
-        ...org,
-        storageUsedBytes: org.storageUsedBytes.toString(),
-        storageQuotaBytes: org.storageQuotaBytes.toString(),
-        usersUsed: org._count.users,
-        assetsCount: org._count.assets,
-        workspacesCount: org._count.workspaces,
-      })),
+      usage: orgs.map((org) => {
+        const currentPlan = org.currentPlan || {};
+        return {
+          ...org,
+          planType: currentPlan.name ? currentPlan.name.toLowerCase() : 'free',
+          storageUsedBytes: org.storageUsedBytes?.toString?.() ?? '0',
+          storageQuotaBytes: (currentPlan.storageQuotaBytes || 0n).toString(),
+          maxUsers: currentPlan.maxUsers ?? 5,
+          usersUsed: org._count.users,
+          assetsCount: org._count.assets,
+          workspacesCount: org._count.workspaces,
+        };
+      }),
     };
   } catch (error) {
     console.error('getUsageOverview error:', error);

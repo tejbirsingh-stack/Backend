@@ -11,10 +11,16 @@ const {
   updateProject,
   findProjectData,
   findAllProjects,
+  getProjectSources,
   deleteProject,
+  restoreProject,
+  removeProjectMember,
+  addProjectMember,
+  updateProjectMemberAccess,
   findTimezone,
   validateGuestUser,
-  searchGuestUsers
+  searchGuestUsers,
+  findAccessLevels
 } = require('../controller');
 const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
@@ -33,11 +39,19 @@ module.exports = function (fastify, opts, done) {
   fastify.post('/project/add/:workspaceId', canUpload, createProject);
   fastify.put('/project/update/:id', canUpload, updateProject);
   fastify.delete('/project/delete/:id', canRead, deleteProject);
+  fastify.post('/project/delete/:id', canRead, deleteProject);
+  fastify.post('/project/restore/:id', canRead, restoreProject);
+  fastify.post('/project/:projectId/member', canUpload, addProjectMember);
+  fastify.put('/project/:projectId/member/:memberId', canUpload, updateProjectMemberAccess);
+  fastify.delete('/project/:projectId/member/:memberId', canUpload, removeProjectMember);
   fastify.post('/project/link-source/:projectId', canUpload, linkProjectSource);
+  fastify.get('/project/sources/:projectId', canRead, getProjectSources);
   fastify.get('/project/find-all-data/:projectId', canRead, findProjectData);
   fastify.get('/project/find-all', canRead, findAllProjects);
   fastify.get('/timezone', canRead, findTimezone);
+  fastify.get('/validate-guest', canRead, validateGuestUser);
   fastify.get('/search-guests', canRead, searchGuestUsers);
+  fastify.get('/access-levels', canRead, findAccessLevels);
 
   done();
 };
