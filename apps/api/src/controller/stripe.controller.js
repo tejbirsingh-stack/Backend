@@ -2,8 +2,21 @@ const stripeService = require('../services/stripe.service.js');
 const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
-function getFrontendUrl() {
-  const url = process.env.FRONTEND_URL || 'http://localhost:3002';
+function getFrontendUrl(req) {
+  if (req) {
+    const origin = req.headers?.origin;
+    if (origin && origin.startsWith('http')) {
+      return origin.replace(/\/$/, '');
+    }
+    const referer = req.headers?.referer;
+    if (referer && referer.startsWith('http')) {
+      try {
+        const parsed = new URL(referer);
+        return `${parsed.protocol}//${parsed.host}`;
+      } catch (e) {}
+    }
+  }
+  const url = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://qa.noahcloud.ai' : 'http://localhost:3002');
   return url.replace(/\/$/, '');
 }
 
@@ -372,7 +385,7 @@ class StripeController {
         }
       }
 
-      const baseUrl = getFrontendUrl();
+      const baseUrl = getFrontendUrl(request);
       const session = await stripeService.createCheckoutSession(
         customerId,
         checkoutPriceId,
@@ -437,7 +450,7 @@ class StripeController {
         });
       }
 
-      const baseUrl = getFrontendUrl();
+      const baseUrl = getFrontendUrl(request);
       const session = await stripeService.createBillingPortalSession(
         customerId,
         `${baseUrl}/home/settings/accounts/plan`
