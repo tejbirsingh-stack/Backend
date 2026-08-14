@@ -37,16 +37,21 @@ class StripeService {
    * @param {string} email - The customer's email address
    * @param {string} name - The customer's name (Organization name)
    * @param {object} metadata - Additional metadata (e.g., orgId)
+   * @param {object} [address] - Optional address object { line1, line2, city, state, postal_code, country }
    * @returns {Promise<Stripe.Customer>} The created customer
    */
-  async createCustomer(email, name, metadata = {}) {
+  async createCustomer(email, name, metadata = {}, address = null) {
     try {
       const stripe = await getStripe();
-      const customer = await stripe.customers.create({
+      const payload = {
         email,
         name,
         metadata,
-      });
+      };
+      if (address) {
+        payload.address = address;
+      }
+      const customer = await stripe.customers.create(payload);
       return customer;
     } catch (error) {
       console.error('[StripeService] Error creating customer:', error);
@@ -63,6 +68,19 @@ class StripeService {
   }
 
   /**
+   * Update an existing Stripe Customer by ID
+   */
+  async updateCustomer(customerId, updateData) {
+    try {
+      const stripe = await getStripe();
+      return await stripe.customers.update(customerId, updateData);
+    } catch (error) {
+      console.error('[StripeService] Error updating customer:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Create a Stripe Checkout Session for a subscription
    * @param {string} customerId - The Stripe Customer ID
    * @param {string} priceId - The Stripe Price ID (from Plan table)
@@ -75,6 +93,7 @@ class StripeService {
       const session = await stripe.checkout.sessions.create({
         customer: customerId,
         payment_method_types: ['card'],
+        billing_address_collection: 'auto',
         line_items: [
           {
             price: priceId,
@@ -172,7 +191,7 @@ class StripeService {
         ],
         proration_behavior: 'always_invoice',
         payment_behavior: 'error_if_incomplete',
-        expand: ['latest_invoice.payment_intent'],
+        expand: ['latest_invoice', 'latest_invoice.payment_intent'],
       });
 
       return updatedSubscription;
@@ -305,6 +324,26 @@ class StripeService {
     } catch (error) {
       console.error('[StripeService] Error creating billing portal session:', error);
       throw error;
+    }
+  }
+
+  /**
+   * List invoices for a Stripe customer
+   * @param {string} customerId
+   * @param {number} limit
+   */
+  async listInvoices(customerId, limit = 20) {
+    try {
+      const stripe = await getStripe();
+      if (!customerId) return { data: [] };
+      const invoices = await stripe.invoices.list({
+        customer: customerId,
+        limit,
+      });
+      return invoices;
+    } catch (error) {
+      console.error('[StripeService] Error listing invoices:', error);
+      return { data: [] };
     }
   }
 
