@@ -1038,6 +1038,25 @@ model LandingPage {
   @@map("landing_page_content")
 }
 
+/// Starter files seeded into new users' default workspaces
+model PlatformDefaultContent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title        String   @db.VarChar(255)
+  fileName     String   @db.VarChar(500)
+  filePath     String   @db.VarChar(1000) // B2 key for the template file
+  mimeType     String   @db.VarChar(100)
+  sizeBytes    BigInt
+  assetType    String   @db.VarChar(50) // video | audio | image | document
+  sortOrder    Int      @default(0)
+  isEnabled    Boolean  @default(true)
+  uploadedById String?  @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([isEnabled, sortOrder])
+  @@map("platform_default_content")
+}
+
 /// Cross-org content moderation flags
 model PlatformModerationFlag {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid

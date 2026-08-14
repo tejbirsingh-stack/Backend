@@ -5,8 +5,10 @@ const { writePlatformAudit } = require('../lib/platform-audit');
  * Platform billing overview — Phase 2 surface.
  * Uses Organization subscription fields; Stripe webhook sync can populate later.
  */
-async function getBillingOverview(_request, reply) {
+async function getBillingOverview(request, reply) {
   try {
+    const q = String(request.query?.q || '').trim();
+
     const [byStatus, mrrEstimate] = await Promise.all([
       prisma.organization.groupBy({
         by: ['subscriptionStatus'],
@@ -27,10 +29,28 @@ async function getBillingOverview(_request, reply) {
 
     const subscriptions = await prisma.organization.findMany({
       where: {
-        OR: [
-          { stripeCustomerId: { not: null } },
-          { subscriptionStatus: { not: null } },
-          { currentPlan: { name: { notIn: ['free', 'Free'] } } },
+        AND: [
+          {
+            OR: [
+              { stripeCustomerId: { not: null } },
+              { subscriptionStatus: { not: null } },
+              { currentPlan: { name: { notIn: ['free', 'Free'] } } },
+            ],
+          },
+          ...(q
+            ? [
+                {
+                  OR: [
+                    { name: { contains: q, mode: 'insensitive' } },
+                    { slug: { contains: q, mode: 'insensitive' } },
+                    { stripeCustomerId: { contains: q, mode: 'insensitive' } },
+                    { planType: { contains: q, mode: 'insensitive' } },
+                    { subscriptionStatus: { contains: q, mode: 'insensitive' } },
+                    { currentPlan: { name: { contains: q, mode: 'insensitive' } } },
+                  ],
+                },
+              ]
+            : []),
         ],
       },
       orderBy: { updatedAt: 'desc' },
@@ -129,9 +149,20 @@ async function overrideSubscription(request, reply) {
   }
 }
 
-async function getUsageOverview(_request, reply) {
+async function getUsageOverview(request, reply) {
   try {
+    const q = String(request.query?.q || '').trim();
+
     const orgs = await prisma.organization.findMany({
+      where: q
+        ? {
+            OR: [
+              { name: { contains: q, mode: 'insensitive' } },
+              { slug: { contains: q, mode: 'insensitive' } },
+              { planType: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : undefined,
       orderBy: { storageUsedBytes: 'desc' },
       take: 50,
       include: {

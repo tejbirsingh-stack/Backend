@@ -11,7 +11,8 @@ const {
   CompleteMultipartUploadCommand,
   AbortMultipartUploadCommand,
   PutBucketCorsCommand,
-  HeadObjectCommand
+  HeadObjectCommand,
+  CopyObjectCommand,
 } = require('@aws-sdk/client-s3');
 
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
@@ -459,6 +460,29 @@ class B2StorageService {
 
     } catch (error) {
       console.error('❌ Error uploading stream to B2:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Server-side copy of a B2 object to a new key
+   */
+  async copyFile(sourceKey, destinationKey) {
+    if (!this.enabled) {
+      throw new Error('B2 Storage is not configured');
+    }
+
+    try {
+      const command = new CopyObjectCommand({
+        Bucket: this.bucket,
+        CopySource: `${this.bucket}/${sourceKey}`,
+        Key: destinationKey,
+      });
+      await this.s3Client.send(command);
+      console.log(`✅ Copied B2 object: ${sourceKey} -> ${destinationKey}`);
+      return { key: destinationKey, bucket: this.bucket };
+    } catch (error) {
+      console.error(`❌ Error copying B2 object ${sourceKey}:`, error);
       throw error;
     }
   }

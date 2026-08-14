@@ -8,9 +8,17 @@ const { getDashboardSummary } = require('../controller/platform-dashboard.contro
 const {
   listOrganizations,
   getOrganization,
+  createOrganization,
   patchOrganization,
   updateWorkspace,
 } = require('../controller/platform-organizations.controller');
+const {
+  listUsers,
+  inviteUser,
+  listRoles,
+  patchUser,
+  listWorkspaces,
+} = require('../controller/platform-users.controller');
 const {
   listPlans,
   createPlan,
@@ -33,12 +41,20 @@ const {
 const {
   listPlatformActivity,
   getReportingSummary,
+  exportPlatformReports,
 } = require('../controller/platform-activity.controller');
 const {
   getLandingPage,
   updateLandingPage,
   getPublishedLanding,
+  submitDemoRequest,
 } = require('../controller/platform-landing.controller');
+const {
+  listDefaultContent,
+  uploadDefaultContent,
+  updateDefaultContent,
+  deleteDefaultContent,
+} = require('../controller/platform-default-content.controller');
 
 /**
  * Platform Admin API — NOAH operator console.
@@ -51,6 +67,7 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   // Public catalog + published landing (customer-facing)
   fastify.get('/catalog/plans', listPublicPlans);
   fastify.get('/public/landing', getPublishedLanding);
+  fastify.post('/public/demo-request', submitDemoRequest);
 
   // Protected platform routes
   fastify.get('/auth/me', { preHandler: requirePlatformAdmin }, platformMe);
@@ -59,6 +76,7 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   fastify.get('/dashboard/summary', { preHandler: requirePlatformAdmin }, getDashboardSummary);
 
   fastify.get('/organizations', { preHandler: requirePlatformAdmin }, listOrganizations);
+  fastify.post('/organizations', { preHandler: requirePlatformAdmin }, createOrganization);
   fastify.get('/organizations/:orgId', { preHandler: requirePlatformAdmin }, getOrganization);
   fastify.patch('/organizations/:orgId', { preHandler: requirePlatformAdmin }, patchOrganization);
   fastify.patch(
@@ -66,6 +84,12 @@ module.exports = function platformRoutes(fastify, _opts, done) {
     { preHandler: requirePlatformAdmin },
     updateWorkspace,
   );
+
+  fastify.get('/users', { preHandler: requirePlatformAdmin }, listUsers);
+  fastify.post('/users', { preHandler: requirePlatformAdmin }, inviteUser);
+  fastify.patch('/users/:userId', { preHandler: requirePlatformAdmin }, patchUser);
+  fastify.get('/roles', { preHandler: requirePlatformAdmin }, listRoles);
+  fastify.get('/workspaces', { preHandler: requirePlatformAdmin }, listWorkspaces);
 
   fastify.get('/plans', { preHandler: requirePlatformAdmin }, listPlans);
   fastify.post('/plans', { preHandler: requirePlatformAdmin }, createPlan);
@@ -96,10 +120,16 @@ module.exports = function platformRoutes(fastify, _opts, done) {
 
   fastify.get('/activity', { preHandler: requirePlatformAdmin }, listPlatformActivity);
   fastify.get('/reporting/summary', { preHandler: requirePlatformAdmin }, getReportingSummary);
+  fastify.get('/reporting/export', { preHandler: requirePlatformAdmin }, exportPlatformReports);
 
   fastify.get('/landing/:slug', { preHandler: requirePlatformAdmin }, getLandingPage);
   fastify.get('/landing', { preHandler: requirePlatformAdmin }, getLandingPage);
   fastify.put('/landing/:slug', { preHandler: requirePlatformAdmin }, updateLandingPage);
+
+  fastify.get('/default-content', { preHandler: requirePlatformAdmin }, listDefaultContent);
+  fastify.post('/default-content', { preHandler: requirePlatformAdmin }, uploadDefaultContent);
+  fastify.patch('/default-content/:id', { preHandler: requirePlatformAdmin }, updateDefaultContent);
+  fastify.delete('/default-content/:id', { preHandler: requirePlatformAdmin }, deleteDefaultContent);
 
   done();
 };

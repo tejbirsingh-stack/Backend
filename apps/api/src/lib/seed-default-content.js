@@ -1,0 +1,133 @@
+const B2StorageService = require('../b2-storage.cjs');
+
+const b2Storage = new B2StorageService({
+  keyId: process.env.B2_KEY_ID,
+  applicationKey: process.env.B2_APPLICATION_KEY,
+  bucketName: process.env.B2_BUCKET_NAME,
+  endpoint: process.env.B2_ENDPOINT,
+  region: process.env.B2_REGION,
+});
+
+function sanitizeSlug(value, fallback = 'org') {
+  const slug = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+  return slug || fallback;
+}
+
+function subFolderForType(assetType) {
+  if (assetType === 'image') return 'images';
+  if (assetType === 'audio') return 'audios';
+  if (assetType === 'video') return 'videos';
+  return 'files';
+}
+
+/**
+ * Copy enabled platform default-content templates into a newly created workspace.
+ * Safe to call repeatedly — skips items already seeded into the same workspace.
+ */
+async function seedDefaultContentIntoWorkspace(prisma, { orgId, workspaceId, orgName, uploadedByUserId = null }) {
+  if (!prisma || !orgId || !workspaceId) return { seeded: 0, skipped: 0 };
+
+  const items = await prisma.platformDefaultContent.findMany({
+    where: { isEnabled: true },
+    orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+  });
+
+  if (!items.length) return { seeded: 0, skipped: 0 };
+
+  const existing = await prisma.asset.findMany({
+    where: {
+      orgId,
+      workspaceId,
+      status: { not: 'trash' },
+    },
+    include: { metadata: true },
+  });
+
+  const alreadySeeded = new Set(
+    existing
+      .map((asset) => {
+        const props = asset.metadata?.customProperties;
+        if (props && typeof props === 'object' && props.platformDefaultContentId) {
+          return String(props.platformDefaultContentId);
+        }
+        return null;
+      })
+      .filter(Boolean),
+  );
+
+  const orgSlug = sanitizeSlug(orgName, 'org');
+  let seeded = 0;
+  let skipped = 0;
+
+  for (const item of items) {
+    if (alreadySeeded.has(item.id)) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const safeFileName = String(item.fileName || 'file').replace(/[^a-zA-Z0-9.-]/g, '_');
+      const baseName = safeFileName.replace(/\.[^/.]+$/, '').toLowerCase() || 'file';
+      const subFolder = subFolderForType(item.assetType);
+      let finalPath = item.filePath;
+
+      if (b2Storage.isEnabled() && item.filePath) {
+        const destKey = `noah-uploads/${orgSlug}/${subFolder}/platform-default/${baseName}-${uniqueId}/${uniqueId}-raw-${safeFileName}`;
+        try {
+          await b2Storage.copyFile(item.filePath, destKey);
+          finalPath = destKey;
+        } catch (copyErr) {
+          console.warn(
+            `[seedDefaultContent] B2 copy failed for ${item.id}, using shared template key:`,
+            copyErr.message,
+          );
+        }
+      }
+
+      await prisma.asset.create({
+        data: {
+          orgId,
+          title: item.title || item.fileName,
+          type: item.assetType || 'document',
+          status: 'active',
+          visibility: 'public',
+          ownerType: 'WORKSPACE',
+          ownerId: workspaceId,
+          workspaceId,
+          uploadedByUserId: uploadedByUserId || null,
+          files: {
+            create: {
+              fileClass: 'original',
+              fileName: item.fileName,
+              filePath: finalPath,
+              sizeBytes: item.sizeBytes,
+              mimeType: item.mimeType,
+            },
+          },
+          metadata: {
+            create: {
+              technicalSpecs: {},
+              customProperties: {
+                platformDefaultContentId: item.id,
+                seededFromPlatform: true,
+              },
+            },
+          },
+        },
+      });
+
+      seeded += 1;
+    } catch (err) {
+      console.error(`[seedDefaultContent] Failed for item ${item.id}:`, err.message);
+      skipped += 1;
+    }
+  }
+
+  return { seeded, skipped };
+}
+
+module.exports = { seedDefaultContentIntoWorkspace };
