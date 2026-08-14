@@ -33,6 +33,7 @@ model Organization {
   shareLinks   ShareLink[]
   annotations  Annotation[]
   auditLogs    AuditLog[]
+  paymentLogs  PaymentLog[]
   notifications Notification[]
   annotationGroups AnnotationGroup[]
   userGroups       UserGroup[]
@@ -102,6 +103,7 @@ model User {
   addedAssetTags      AssetTag[]
   createdShareLinks   ShareLink[]
   auditLogs           AuditLog[]
+  paymentLogs         PaymentLog[]
   analyticsEvents     AnalyticsEvent[]
   createdAssetVersions AssetVersion[]
   notifications       Notification[]
@@ -185,6 +187,7 @@ model Workspace {
   description String? @db.VarChar(500)
   color       String? @db.VarChar(50)
   visibility  String  @default("private") @db.VarChar(50)
+  isDefault   Boolean @default(false) @map("is_default")
 
   orgId        String       @map("org_id") @db.Uuid
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -816,6 +819,56 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+model PaymentLog {
+  id                    String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId                 String?           @db.Uuid
+  organization          Organization?     @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  userId                String?           @db.Uuid
+  user                  User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  stripeCustomerId      String?           @db.VarChar(255)
+  stripeSessionId       String?           @db.VarChar(255)
+  stripePaymentIntentId String?           @db.VarChar(255)
+  stripeSubscriptionId  String?           @db.VarChar(255)
+
+  status                String            @default("PENDING") @db.VarChar(50)
+  amountCents           Int?
+  currency              String            @default("usd") @db.VarChar(10)
+  planId                String?           @db.VarChar(255)
+  planName              String?           @db.VarChar(255)
+  invoicePdf            String?           @db.Text
+  invoiceUrl            String?           @db.Text
+  metadata              Json?             @default("{}") @db.JsonB
+
+  createdAt             DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime          @default(now()) @updatedAt @db.Timestamptz(6)
+
+  events                PaymentEventLog[]
+
+  @@index([orgId])
+  @@index([userId])
+  @@index([stripeSessionId])
+  @@index([stripeCustomerId])
+  @@map("payments_log")
+}
+
+model PaymentEventLog {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  paymentLogId  String?     @db.Uuid
+  paymentLog    PaymentLog? @relation(fields: [paymentLogId], references: [id], onDelete: Cascade)
+
+  eventType     String      @db.VarChar(100)
+  status        String      @db.VarChar(50)
+  failureReason String?     @db.Text
+  metadata      Json?       @default("{}") @db.JsonB
+
+  createdAt     DateTime    @default(now()) @db.Timestamptz(6)
+
+  @@index([paymentLogId])
+  @@index([eventType])
+  @@map("payment_events_log")
+}
+
 model Permission {
   id          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   slug        String           @unique @db.VarChar(255)
@@ -1037,6 +1090,25 @@ model LandingPage {
   @@map("landing_page_content")
 }
 
+/// Starter files seeded into new users' default workspaces
+model PlatformDefaultContent {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title        String   @db.VarChar(255)
+  fileName     String   @db.VarChar(500)
+  filePath     String   @db.VarChar(1000) // B2 key for the template file
+  mimeType     String   @db.VarChar(100)
+  sizeBytes    BigInt
+  assetType    String   @db.VarChar(50) // video | audio | image | document
+  sortOrder    Int      @default(0)
+  isEnabled    Boolean  @default(true)
+  uploadedById String?  @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([isEnabled, sortOrder])
+  @@map("platform_default_content")
+}
+
 /// Cross-org content moderation flags
 model PlatformModerationFlag {
   id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -1159,4 +1231,14 @@ model AccessLevelPermission {
   @@index([accessLevelId])
   @@index([permissionId])
   @@map("access_level_permissions")
+}
+
+model SystemSetting {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key       String   @unique @db.VarChar(100)
+  value     String   @db.Text
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@map("system_settings")
 }

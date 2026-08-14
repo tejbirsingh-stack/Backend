@@ -8,6 +8,7 @@ const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { autoAssignAdminsToWorkspace } = require("../services/workspace.service");
+const { createDefaultWorkspace: createDefaultWorkspaceWithStarterContent } = require("../lib/platform-provision");
 const { ACCESS_LEVEL } = require("../lib/rolesPermissions");
 
 function slugifyWorkspaceName(value) {
@@ -446,7 +447,7 @@ module.exports.register = async (request, reply) => {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -459,6 +460,7 @@ module.exports.register = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: finalOrgId,
+          isDefault: true,
         }
       });
 
@@ -1205,13 +1207,13 @@ module.exports.resetPassword = async (request, reply) => {
     //get first name from name
     const firstName = name.trim().split(/\s+/)[0];
     // Automatically create a default workspace for the new user and add them as a member
-    const defaultWorkspace = await request.server.prisma.workspace.create({
-      data: {
-        name: `${firstName}-Workspace`,
-        description: "Default workspace for " + name,
-        color: "#4f46e5",
-        orgId: updatedUser?.orgId,
-      }
+    const defaultWorkspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+      name: `${firstName}-Workspace`,
+      description: "Default workspace for " + name,
+      color: "#4f46e5",
+      orgId: updatedUser?.orgId,
+      orgName: updatedUser?.organization?.name || firstName,
+      uploadedByUserId: updatedUser?.id,
     });
     // Add the user as a WorkspaceUser so the workspace appears in their sidebar
     await request.server.prisma.workspaceUser.create({
@@ -1388,7 +1390,7 @@ module.exports.googleLogin = async (request, reply) => {
           name: derivedOrgName,
           slug: orgSlug,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -1447,6 +1449,7 @@ module.exports.googleLogin = async (request, reply) => {
           description: "Default workspace for " + fullName,
           color: "#4f46e5",
           orgId: organization.id,
+          isDefault: true,
         }
       });
 
@@ -1673,7 +1676,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -1733,6 +1736,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: organization.id,
+          isDefault: true,
         }
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace1.id);
@@ -2094,7 +2098,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
           name: derivedOrgName,
           slug: `pending-${Date.now()}`,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -2466,13 +2470,13 @@ module.exports.completeSignup = async (request, reply) => {
       });
     }
 
-    const workspace = await request.server.prisma.workspace.create({
-      data: {
-        name: formattedWorkspaceName,
-        description: `Workspace for ${formattedWorkspaceName}`,
-        color: "#4f46e5",
-        orgId: organization.id,
-      },
+    const workspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
+      name: formattedWorkspaceName,
+      description: `Workspace for ${formattedWorkspaceName}`,
+      color: "#4f46e5",
+      orgId: organization.id,
+      orgName: organization.name,
+      uploadedByUserId: user.id,
     });
 
     // Assign Super Admins / Admins
@@ -2635,7 +2639,7 @@ module.exports.upgradePlan = async (request, reply) => {
     const normalizedPlanId = String(planId).toLowerCase().trim();
     const isRequestingFree = normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd';
 
-    if (isRequestingFree && (user.organization?.isFreeTrialUsed || user.organization)) {
+    if (isRequestingFree && Boolean(user.organization?.isFreeTrialUsed)) {
       return reply.status(403).send({
         success: false,
         error: 'Forbidden',

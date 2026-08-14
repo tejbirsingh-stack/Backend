@@ -20,7 +20,8 @@ const {
   findTimezone,
   validateGuestUser,
   searchGuestUsers,
-  findAccessLevels
+  findAccessLevels,
+  deleteWorkspace
 } = require('../controller');
 const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
@@ -29,7 +30,30 @@ module.exports = function (fastify, opts, done) {
   const canManageFolders = { preHandler: [authenticate, requirePermission('manage_root_folders')] };
   const canUpload = { preHandler: [authenticate, requirePermission('upload_media')] };
 
-  fastify.post('/add', canManageFolders, storeWorkplace);
+  const isSuperAdminUser = (req) => {
+    const role = req.user?.role;
+    const roleId = req.user?.roleId;
+    const userRoleName = typeof role === 'string' ? role : '';
+    return userRoleName === 'Super Admin' || roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' || userRoleName.toLowerCase() === 'superadmin' || userRoleName.toLowerCase() === 'super_admin';
+  };
+
+  const canManageWorkspaces = {
+    preHandler: [
+      authenticate,
+      async (request, reply) => {
+        if (!isSuperAdminUser(request)) {
+          return reply.status(403).send({
+            error: 'Forbidden',
+            message: 'Super Admin access required to manage workspaces',
+          });
+        }
+      },
+    ],
+  };
+
+  fastify.post('/add', canManageWorkspaces, storeWorkplace);
+  fastify.delete('/delete/:id', canManageWorkspaces, deleteWorkspace);
+  fastify.delete('/:id', canManageWorkspaces, deleteWorkspace);
   fastify.get('/find-all', canRead, findAllWorkspaces);
   fastify.get('/find-all-data/:id', canRead, findWorkspaceMedia);
   fastify.post('/folder/add/:workspaceId', canManageFolders, createFolder);

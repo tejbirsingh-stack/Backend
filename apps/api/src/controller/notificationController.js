@@ -97,14 +97,17 @@ const createNotification = async (fastify, userId, orgId, type, title, message, 
   }
 };
 
-// Internal helper function to notify all users with a specific role in an org
 const notifyRole = async (fastify, orgId, roleName, type, title, message, relatedEntityId = null) => {
   try {
     const isSuperAdminRole = ['super admin', 'superadmin', 'super_admin'].includes(String(roleName).toLowerCase());
+    const isAdminRole = ['admin', 'system admin'].includes(String(roleName).toLowerCase());
 
-    const roleNamesToMatch = isSuperAdminRole
-      ? ['Super Admin', 'SuperAdmin', 'super_admin', 'super admin', 'System Admin']
-      : [roleName];
+    let roleNamesToMatch = [roleName];
+    if (isSuperAdminRole) {
+      roleNamesToMatch = ['Super Admin', 'SuperAdmin', 'super_admin', 'super admin', 'System Admin'];
+    } else if (isAdminRole) {
+      roleNamesToMatch = ['Admin', 'admin', 'System Admin'];
+    }
 
     const whereClause = {
       roleRelation: {
