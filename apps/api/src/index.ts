@@ -8,6 +8,7 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
+import rawBody from 'fastify-raw-body';
 import { PrismaClient } from '@prisma/client';
 import Redis from 'ioredis';
 import path from 'path';
@@ -139,6 +140,13 @@ async function setupServer() {
     },
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" }
+  });
+
+  await fastify.register(rawBody, {
+    field: 'rawBody', // the raw body will be available on request.rawBody
+    global: false, // Don't parse all requests globally, we'll enable it for webhooks
+    encoding: 'utf8',
+    runFirst: true
   });
 
   await fastify.register(cors, {
@@ -327,6 +335,7 @@ async function setupServer() {
     fastify.register(require('./routes/library'), { prefix: '/api/library' });
     fastify.register(require('./routes/platform'), { prefix: '/api/platform' });
     fastify.register(require('./routes/usage'), { prefix: '/api/usage' });
+    fastify.register(require('./routes/stripe'), { prefix: '/api/stripe' });
 
     console.log('All routes registerd successfully')
     logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);

@@ -447,7 +447,7 @@ module.exports.register = async (request, reply) => {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -1390,7 +1390,7 @@ module.exports.googleLogin = async (request, reply) => {
           name: derivedOrgName,
           slug: orgSlug,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -1676,7 +1676,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -2098,7 +2098,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
           name: derivedOrgName,
           slug: `pending-${Date.now()}`,
           currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: true,
+          isFreeTrialUsed: false,
         },
         include: { currentPlan: true },
       });
@@ -2639,7 +2639,7 @@ module.exports.upgradePlan = async (request, reply) => {
     const normalizedPlanId = String(planId).toLowerCase().trim();
     const isRequestingFree = normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd';
 
-    if (isRequestingFree && (user.organization?.isFreeTrialUsed || user.organization)) {
+    if (isRequestingFree && Boolean(user.organization?.isFreeTrialUsed)) {
       return reply.status(403).send({
         success: false,
         error: 'Forbidden',
