@@ -1232,3 +1232,13 @@ model AccessLevelPermission {
   @@index([permissionId])
   @@map("access_level_permissions")
 }
+
+model SystemSetting {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key       String   @unique @db.VarChar(100)
+  value     String   @db.Text
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@map("system_settings")
+}
