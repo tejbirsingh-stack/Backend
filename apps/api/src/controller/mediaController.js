@@ -1417,6 +1417,8 @@ module.exports.softDelete = async (request, reply) => {
         compressionStatus: asset.transcodingStatus || "completed",
         storageLocation: asset.metadata?.storageLocation || "local",
         isTrash: true,
+        workspaceId: asset.workspaceId,
+        deletionReason: asset.deletionReason || undefined,
       };
     });
 
