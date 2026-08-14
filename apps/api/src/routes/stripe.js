@@ -25,6 +25,16 @@ async function stripeRoutes(fastify, options) {
   fastify.post('/delete-card', { preHandler: [fastify.authenticate] }, stripeController.deletePaymentMethod);
 
   fastify.get('/logs', { preHandler: [fastify.authenticate] }, stripeController.getPaymentLogs);
+
+  fastify.get('/billing-details', { preHandler: [fastify.authenticate] }, stripeController.getBillingDetails);
+
+  fastify.post('/billing-address', { preHandler: [fastify.authenticate] }, stripeController.updateBillingAddress);
+
+  fastify.post('/invoice-config', { preHandler: [fastify.authenticate] }, stripeController.updateInvoiceConfig);
+
+  fastify.post('/cancel-scheduled-downgrade', { preHandler: [fastify.authenticate] }, stripeController.cancelScheduledDowngrade);
+
+  fastify.get('/invoices', { preHandler: [fastify.authenticate] }, stripeController.getInvoices);
 }
 
 module.exports = stripeRoutes;
