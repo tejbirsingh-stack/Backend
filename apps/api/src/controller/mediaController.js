@@ -1526,14 +1526,15 @@ module.exports.deletePermanently = async (request, reply) => {
       }
     }
 
+    const orgId = request.user?.orgId;
     let dbDeleted = false;
     let assetToDelete = null;
 
     // First delete from database if it's a UUID
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
       try {
-        assetToDelete = await request.server.prisma.asset.findUnique({
-          where: { id: filename },
+        assetToDelete = await request.server.prisma.asset.findFirst({
+          where: { id: filename, ...(orgId ? { orgId } : {}) },
           include: { files: true },
         });
         if (assetToDelete) {
@@ -2088,7 +2089,7 @@ module.exports.deleteMediaFile = async (request, reply) => {
             const level = await verifyProjectAccess(projectSource.projectId, request.user.id, 'Can edit', request.server.prisma);
             if (level === 'Full Access' || (level === 'Can edit' && assetToUpdate.uploadedByUserId === request.user.id)) {
               // Project access overrides global role to allow deletion
-              userRole = 'editor'; 
+              userRole = 'editor';
             } else {
               // Block if they don't meet project deletion rules (even if they are a global admin/editor)
               return reply.code(403).send({ success: false, error: "Access Denied: You do not have permission to delete this project asset." });
@@ -2226,7 +2227,7 @@ module.exports.getPendingDeletions = async (request, reply) => {
       request.server.prisma.asset.findMany({
         where: {
           status: statusFilter,
-          ...(!isSuperAdmin && orgId ? { orgId } : {})
+          ...(orgId ? { orgId } : {})
         },
         include: {
           deletedBy: {
@@ -2238,7 +2239,7 @@ module.exports.getPendingDeletions = async (request, reply) => {
       request.server.prisma.project.findMany({
         where: {
           status: statusFilter,
-          ...(!isSuperAdmin && orgId ? { workspace: { orgId } } : {})
+          ...(orgId ? { workspace: { orgId } } : {})
         },
         include: {
           workspace: { select: { name: true } },
@@ -2280,6 +2281,7 @@ module.exports.getPendingDeletions = async (request, reply) => {
           request.server.prisma.asset.findMany({
             where: {
               status: statusFilter,
+              ...(orgId ? { orgId } : {}),
               OR: [
                 { deletionReason: { contains: p.id } },
                 { deletionReason: { contains: p.name } }
@@ -2305,6 +2307,7 @@ module.exports.getPendingDeletions = async (request, reply) => {
         const groupAssets = await request.server.prisma.asset.findMany({
           where: {
             status: statusFilter,
+            ...(orgId ? { orgId } : {}),
             deletionReason: { contains: p.id }
           },
           select: { id: true, title: true, type: true, ownerType: true, ownerId: true, deletionReason: true }
@@ -2393,7 +2396,16 @@ module.exports.adminApproveDelete = async (request, reply) => {
     const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
     const userRole = rawRoleName.trim().toLowerCase();
 
+    const orgId = liveUser?.orgId || request.user?.orgId;
+
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      const targetAsset = await request.server.prisma.asset.findFirst({
+        where: { id: filename, ...(orgId ? { orgId } : {}) }
+      });
+      if (!targetAsset) {
+        return reply.code(404).send({ success: false, error: "Asset not found in organization" });
+      }
+
       if (userRole === 'admin') {
         const asset = await request.server.prisma.asset.update({
           where: { id: filename },
@@ -2427,9 +2439,11 @@ module.exports.rejectDelete = async (request, reply) => {
     const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
     const userRole = rawRoleName.trim().toLowerCase();
 
+    const orgId = liveUser?.orgId || request.user?.orgId;
+
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
-      const existingAsset = await request.server.prisma.asset.findUnique({
-        where: { id: filename }
+      const existingAsset = await request.server.prisma.asset.findFirst({
+        where: { id: filename, ...(orgId ? { orgId } : {}) }
       });
       if (!existingAsset) {
         return reply.code(404).send({ success: false, error: "Asset not found" });
