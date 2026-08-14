@@ -973,7 +973,16 @@ class StripeController {
       }
 
       const setupIntent = await stripeService.createSetupIntent(customerId);
-      const publishableKey = process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
+      let publishableKey = '';
+      try {
+        const setting = await prisma.systemSetting.findFirst({
+          where: { key: { in: ['TEST_STRIPE_PUBLISHABLE_KEY', 'STRIPE_PUBLISHABLE_KEY'] } },
+        });
+        if (setting?.value) publishableKey = setting.value;
+      } catch (e) {}
+      if (!publishableKey) {
+        publishableKey = process.env.TEST_STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
+      }
 
       return reply.send({
         success: true,

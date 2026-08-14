@@ -1,9 +1,30 @@
 const Stripe = require('stripe');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
-// Initialize Stripe with the secret key from environment variables
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: '2023-10-16', // Always hardcode the version your integration is built for
-});
+let cachedSecretKey = null;
+let cachedStripeInstance = null;
+
+async function getStripe() {
+  try {
+    let key = '';
+    const setting = await prisma.systemSetting.findFirst({
+      where: { key: { in: ['TEST_STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY'] } }
+    });
+    if (setting?.value) key = setting.value;
+    if (!key) key = process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+
+    if (cachedStripeInstance && cachedSecretKey === key) {
+      return cachedStripeInstance;
+    }
+    cachedSecretKey = key;
+    cachedStripeInstance = new Stripe(key, { apiVersion: '2023-10-16' });
+    return cachedStripeInstance;
+  } catch (err) {
+    const fallbackKey = process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+    return new Stripe(fallbackKey, { apiVersion: '2023-10-16' });
+  }
+}
 
 /**
  * Stripe Service
@@ -20,6 +41,7 @@ class StripeService {
    */
   async createCustomer(email, name, metadata = {}) {
     try {
+      const stripe = await getStripe();
       const customer = await stripe.customers.create({
         email,
         name,
@@ -36,6 +58,7 @@ class StripeService {
    * Get an existing Stripe Customer by ID
    */
   async getCustomer(customerId) {
+    const stripe = await getStripe();
     return stripe.customers.retrieve(customerId);
   }
 
@@ -48,6 +71,7 @@ class StripeService {
    */
   async createCheckoutSession(customerId, priceId, successUrl, cancelUrl) {
     try {
+      const stripe = await getStripe();
       const session = await stripe.checkout.sessions.create({
         customer: customerId,
         payment_method_types: ['card'],
@@ -76,6 +100,7 @@ class StripeService {
    */
   async createSubscriptionDirectly(customerId, priceId, paymentMethodId) {
     try {
+      const stripe = await getStripe();
       if (paymentMethodId) {
         await stripe.customers.update(customerId, {
           invoice_settings: {
@@ -103,6 +128,7 @@ class StripeService {
    */
   async createPrice({ amountCents, interval = 'month', productName = 'Noah Plan' }) {
     try {
+      const stripe = await getStripe();
       const price = await stripe.prices.create({
         unit_amount: amountCents,
         currency: 'usd',
@@ -126,6 +152,7 @@ class StripeService {
    */
   async updateSubscription(subscriptionId, newPriceId, isDowngrade = false) {
     try {
+      const stripe = await getStripe();
       if (isDowngrade) {
         return await this.scheduleDowngrade(subscriptionId, newPriceId);
       }
@@ -160,6 +187,7 @@ class StripeService {
    */
   async scheduleDowngrade(subscriptionId, newPriceId) {
     try {
+      const stripe = await getStripe();
       const subscription = await stripe.subscriptions.retrieve(subscriptionId);
 
       let scheduleId = typeof subscription.schedule === 'string'
@@ -203,6 +231,7 @@ class StripeService {
    */
   async retrieveCheckoutSession(sessionId) {
     try {
+      const stripe = await getStripe();
       return await stripe.checkout.sessions.retrieve(sessionId, {
         expand: ['line_items', 'customer', 'invoice'],
       });
@@ -217,6 +246,7 @@ class StripeService {
    */
   async listActiveSubscriptions(customerId) {
     try {
+      const stripe = await getStripe();
       return await stripe.subscriptions.list({
         customer: customerId,
         status: 'active',
@@ -234,6 +264,7 @@ class StripeService {
    */
   async cancelSubscriptionAtPeriodEnd(subscriptionId) {
     try {
+      const stripe = await getStripe();
       return await stripe.subscriptions.update(subscriptionId, {
         cancel_at_period_end: true,
       });
@@ -248,6 +279,7 @@ class StripeService {
    */
   async resumeSubscription(subscriptionId) {
     try {
+      const stripe = await getStripe();
       return await stripe.subscriptions.update(subscriptionId, {
         cancel_at_period_end: false,
       });
@@ -264,6 +296,7 @@ class StripeService {
    */
   async createBillingPortalSession(customerId, returnUrl) {
     try {
+      const stripe = await getStripe();
       const session = await stripe.billingPortal.sessions.create({
         customer: customerId,
         return_url: returnUrl,
@@ -280,9 +313,31 @@ class StripeService {
    * @param {string} payload - The raw request body
    * @param {string} signature - The Stripe signature header
    */
-  constructWebhookEvent(payload, signature) {
+  async constructWebhookEvent(payload, signature) {
     try {
-      const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+      const stripe = await getStripe();
+      let webhookSecret = '';
+      const isQA = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'qa' || process.env.WEBHOOK_HOST?.includes('qa.noahcloud.ai');
+      const preferredKeys = isQA
+        ? ['QA_STRIPE_WEBHOOK_SECRET', 'LOCAL_STRIPE_WEBHOOK_SECRET', 'STRIPE_WEBHOOK_SECRET']
+        : ['LOCAL_STRIPE_WEBHOOK_SECRET', 'QA_STRIPE_WEBHOOK_SECRET', 'STRIPE_WEBHOOK_SECRET'];
+
+      try {
+        for (const key of preferredKeys) {
+          const setting = await prisma.systemSetting.findUnique({ where: { key } });
+          if (setting?.value) {
+            webhookSecret = setting.value;
+            break;
+          }
+        }
+      } catch (e) { }
+
+      if (!webhookSecret) {
+        webhookSecret =
+          process.env.QA_STRIPE_WEBHOOK_SECRET ||
+          process.env.LOCAL_STRIPE_WEBHOOK_SECRET ||
+          process.env.STRIPE_WEBHOOK_SECRET;
+      }
       return stripe.webhooks.constructEvent(payload, signature, webhookSecret);
     } catch (error) {
       console.error('[StripeService] Webhook signature verification failed:', error.message);
@@ -298,6 +353,7 @@ class StripeService {
    */
   async reportUsage(subscriptionItemId, quantity, action = 'set') {
     try {
+      const stripe = await getStripe();
       const usageRecord = await stripe.subscriptionItems.createUsageRecord(
         subscriptionItemId,
         {
@@ -318,6 +374,7 @@ class StripeService {
    */
   async createSetupIntent(customerId) {
     try {
+      const stripe = await getStripe();
       const setupIntent = await stripe.setupIntents.create({
         customer: customerId,
         payment_method_types: ['card'],
@@ -334,6 +391,7 @@ class StripeService {
    */
   async listPaymentMethods(customerId) {
     try {
+      const stripe = await getStripe();
       const customer = await stripe.customers.retrieve(customerId);
       const defaultPmId = typeof customer.invoice_settings?.default_payment_method === 'string'
         ? customer.invoice_settings.default_payment_method
@@ -366,6 +424,7 @@ class StripeService {
    */
   async setDefaultPaymentMethod(customerId, paymentMethodId) {
     try {
+      const stripe = await getStripe();
       try {
         await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
       } catch (attachErr) {
@@ -387,6 +446,7 @@ class StripeService {
    */
   async detachPaymentMethod(paymentMethodId) {
     try {
+      const stripe = await getStripe();
       return await stripe.paymentMethods.detach(paymentMethodId);
     } catch (error) {
       console.error('[StripeService] Error detaching payment method:', error);
