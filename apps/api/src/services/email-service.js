@@ -101,18 +101,20 @@ class EmailService {
 
   // Send password reset template
   async sendPasswordReset(to, name, resetUrl) {
-    const subject = "Reset Your Noah Password";
-    const text = `Hi ${name},\n\nYou requested to reset your password. Please use the following link to reset it:\n\n${resetUrl}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`;
+    const displayName = name && typeof name === "string" ? name.trim() : "there";
+    const subject = "Reset Your Password";
+    const text = `Hi ${displayName},\n\nYou requested to reset your password for your Noah Cloud account. Please click the link below to set a new password:\n\n${resetUrl}\n\nThis password reset link will expire in 12 hours.\n\nIf you did not request a password reset, please ignore this email or contact support if you have concerns.`;
     const html = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-        <h2 style="color: #4f46e5; text-align: center;">Reset Your Password</h2>
-        <p>Hi ${name},</p>
-        <p>You requested to reset your password for your Noah account. Click the button below to choose a new password:</p>
-        <div style="text-align: center; margin: 30px 0;">
-          <a href="${resetUrl}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block;">Reset Password</a>
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+        <h2 style="color: #4f46e5; text-align: center; margin-bottom: 24px;">Reset Your Password</h2>
+        <p style="font-size: 15px; color: #1e293b;">Hi ${displayName},</p>
+        <p style="font-size: 15px; color: #334155; line-height: 1.5;">We received a request to reset the password for your Noah Cloud account. Click the button below to set a new password:</p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${resetUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; display: inline-block;">Reset Password</a>
         </div>
-        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0;" />
-        <p style="font-size: 12px; color: #64748b;">This link will expire in 1 hour. If you did not make this request, you can safely ignore this email.</p>
+        <p style="font-size: 13px; color: #64748b; margin-top: 20px;">Or copy and paste this link into your browser:<br/><a href="${resetUrl}" style="color: #4f46e5; word-break: break-all;">${resetUrl}</a></p>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 28px 0;" />
+        <p style="font-size: 12px; color: #64748b; line-height: 1.4;">This password reset link is valid for <strong>12 hours</strong>.<br/>If you did not request a password reset, please ignore this email or contact support if you have security concerns.</p>
       </div>
     `;
 

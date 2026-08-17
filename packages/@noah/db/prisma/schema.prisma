@@ -136,14 +136,17 @@ model User {
 // Password reset tokens
 model PasswordResetToken {
   id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  token     String    @unique @db.VarChar(255)
+  token     String?   @db.Text
+  jti       String    @unique @default(uuid()) @db.VarChar(255)
   userId    String    @db.Uuid
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime  @db.Timestamptz(6)
   usedAt    DateTime? @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
 
-  @@index([token])
+  @@index([jti])
+  @@index([userId])
   @@map("password_reset_tokens")
 }
 

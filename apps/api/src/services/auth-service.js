@@ -1,6 +1,7 @@
 // Authentication service with JWT, password hashing, and session management
 // const argon2 = require("argon2");
 const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const { authenticator } = require("otplib");
 const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
@@ -400,19 +401,49 @@ class AuthService {
     return this.revokeAllSessions(userId);
   }
 
+  // Get secret for Password Reset JWT
+  getResetJwtSecret() {
+    return process.env.PASSWORD_RESET_JWT_SECRET || process.env.JWT_SECRET || "password-reset-secret-key-noah-prod-2026-secure";
+  }
+
   // Create a password reset token
   async createPasswordResetToken(userId) {
-    // Generate a random token
-    const token = crypto.randomBytes(64).toString("hex");
+    // Revoke any previous active reset tokens for this user
+    await prisma.passwordResetToken.updateMany({
+      where: {
+        userId,
+        usedAt: null,
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    });
 
-    // Set expiry to 1 hour from now
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 1);
+    // Generate cryptographically secure unique jti
+    const jti = crypto.randomUUID();
 
-    // Store the token in the database
+    // Token expiry must be exactly 12 hours
+    const expiresAt = new Date(Date.now() + 12 * 60 * 60 * 1000);
+
+    const secret = this.getResetJwtSecret();
+    const token = jwt.sign(
+      {
+        sub: userId,
+        purpose: "password_reset",
+        jti: jti,
+      },
+      secret,
+      {
+        expiresIn: "12h",
+      }
+    );
+
+    // Store the jti and token in the database
     await prisma.passwordResetToken.create({
       data: {
         userId,
+        jti,
         token,
         expiresAt,
       },
@@ -421,30 +452,94 @@ class AuthService {
     return token;
   }
 
-  // Verify a password reset token and return the associated user ID
-  async verifyPasswordResetToken(token) {
-    // Find a valid token
-    const resetToken = await prisma.passwordResetToken.findFirst({
-      where: {
-        token,
-        expiresAt: {
-          gt: new Date(), // Not expired
-        },
-        usedAt: null, // Not used yet
-      },
-    });
+  // Validate password reset token (signature, expiry, purpose, sub, user, jti, used_at, revoked_at)
+  async validatePasswordResetToken(token) {
+    if (!token || typeof token !== "string") return null;
 
-    if (!resetToken) {
+    const secret = this.getResetJwtSecret();
+    let decoded;
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch (err) {
+      console.warn("JWT reset token verification failed:", err.message);
       return null;
     }
 
-    // Mark the token as used
-    await prisma.passwordResetToken.update({
-      where: { id: resetToken.id },
-      data: { usedAt: new Date() },
+    if (!decoded || decoded.purpose !== "password_reset" || !decoded.sub || !decoded.jti) {
+      return null;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.sub },
+    });
+    if (!user) return null;
+
+    const resetTokenRecord = await prisma.passwordResetToken.findUnique({
+      where: { jti: decoded.jti },
     });
 
-    return resetToken.userId;
+    if (!resetTokenRecord) return null;
+    if (resetTokenRecord.userId !== decoded.sub) return null;
+    if (resetTokenRecord.usedAt !== null) return null;
+    if (resetTokenRecord.revokedAt !== null) return null;
+    if (new Date(resetTokenRecord.expiresAt) <= new Date()) return null;
+
+    return { user, resetTokenRecord, decoded, userId: user.id };
+  }
+
+  // Verify a password reset token and return the associated user ID
+  async verifyPasswordResetToken(token) {
+    const result = await this.validatePasswordResetToken(token);
+    return result ? result.userId : null;
+  }
+
+  // Reset user password with DB transaction ensuring password update and token invalidation
+  async resetUserPassword(token, newPassword) {
+    const validation = await this.validatePasswordResetToken(token);
+    if (!validation) {
+      throw new Error("This password reset link is invalid or has expired. Please request a new reset link.");
+    }
+
+    const { user, resetTokenRecord } = validation;
+
+    const passCheck = this.validatePassword(newPassword);
+    if (!passCheck.isValid) {
+      throw new Error(passCheck.message);
+    }
+
+    const passwordHash = await this.hashPassword(newPassword);
+
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash,
+          status: "active",
+          emailVerified: true,
+        },
+      }),
+      prisma.passwordResetToken.update({
+        where: { id: resetTokenRecord.id },
+        data: {
+          usedAt: new Date(),
+        },
+      }),
+      prisma.passwordResetToken.updateMany({
+        where: {
+          userId: user.id,
+          id: { not: resetTokenRecord.id },
+          usedAt: null,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+        },
+      }),
+    ]);
+
+    await this.revokeAllUserSessions(user.id);
+
+    return { success: true, user };
   }
 
   // Create an email verification token
