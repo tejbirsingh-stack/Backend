@@ -551,6 +551,45 @@ async function validateShareToken(req, reply) {
       }
     }
 
+    let branding = null;
+    try {
+      const dbBranding = await prisma.organisationBrandingSetting.findUnique({
+        where: { orgId: shareLink.orgId }
+      });
+      if (dbBranding) {
+        let bLogoUrl = dbBranding.logoUrl;
+        let bHeaderImageUrl = dbBranding.headerImageUrl;
+        if (dbBranding.logoKey && b2Storage.isEnabled()) {
+          bLogoUrl = await b2Storage.getPresignedUrl(dbBranding.logoKey).catch(() => dbBranding.logoUrl);
+        }
+        if (dbBranding.headerImageKey && b2Storage.isEnabled()) {
+          bHeaderImageUrl = await b2Storage.getPresignedUrl(dbBranding.headerImageKey).catch(() => dbBranding.headerImageUrl);
+        }
+        branding = {
+          accountName: dbBranding.accountName || shareLink.organization?.name || "User's Account",
+          accountInitials: dbBranding.accountInitials || (dbBranding.accountName ? dbBranding.accountName.slice(0, 2).toUpperCase() : 'NO'),
+          logoUrl: bLogoUrl || logoUrl || null,
+          headerImageUrl: bHeaderImageUrl || null,
+          accentColor: dbBranding.accentColor || '#5B53FF',
+          reelBackgroundColor: dbBranding.reelBackgroundColor || 'None',
+          reelTitleColor: dbBranding.reelTitleColor || 'None',
+        };
+      }
+    } catch (bErr) {
+      req.log.error('Failed to fetch branding for share token', bErr);
+    }
+
+    if (!branding) {
+      branding = {
+        accountName: shareLink.organization?.name || "User's Account",
+        logoUrl: logoUrl || null,
+        headerImageUrl: null,
+        accentColor: '#5B53FF',
+        reelBackgroundColor: 'None',
+        reelTitleColor: 'None',
+      };
+    }
+
     const originalFile = asset?.files?.find(f => f.fileClass === 'original');
     const techSpecs = asset?.metadata?.technicalSpecs || {};
     const customProps = asset?.metadata?.customProperties || {};
@@ -568,6 +607,7 @@ async function validateShareToken(req, reply) {
       expiresAt: shareLink.expiresAt,
       visibility: shareLink.visibility,
       mode: shareLink.mode,
+      branding,
       assetMeta: {
         id: asset ? asset.id : shareLink.assetId,
         title: asset ? (asset.originalName || asset.title) : 'Shared Asset',

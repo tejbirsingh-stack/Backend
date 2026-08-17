@@ -140,6 +140,22 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
       { type: 'company_logo', orgId: targetOrgId }
     );
 
+    // Also update logoKey & logoUrl in organisation_branding_settings
+    await request.server.prisma.organisationBrandingSetting.upsert({
+      where: { orgId: targetOrgId },
+      update: {
+        logoKey: uploadedAsset.key,
+        logoUrl: uploadedAsset.url,
+      },
+      create: {
+        orgId: targetOrgId,
+        accountName: org.name,
+        accountInitials: org.name ? org.name.slice(0, 2).toUpperCase() : 'NO',
+        logoKey: uploadedAsset.key,
+        logoUrl: uploadedAsset.url,
+      },
+    }).catch(() => {});
+
     return reply.send({
       success: true,
       logoUrl: uploadedAsset.url,
@@ -199,5 +215,179 @@ module.exports.updateShareSettings = async (request, reply) => {
   } catch (error) {
     request.log.error(error);
     return reply.code(500).send({ error: "Failed to update share settings", message: error.message });
+  }
+};
+
+// 8. Get Branding Settings
+module.exports.getBrandingSettings = async (request, reply) => {
+  try {
+    const orgId = request.user?.orgId;
+    if (!orgId) {
+      return reply.code(400).send({ error: 'Organization ID is required' });
+    }
+
+    const org = await request.server.prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { name: true }
+    });
+
+    let branding = await request.server.prisma.organisationBrandingSetting.findUnique({
+      where: { orgId }
+    });
+
+    if (!branding) {
+      const defaultName = org?.name || "User's Account";
+      const initials = defaultName.slice(0, 2).toUpperCase();
+      branding = await request.server.prisma.organisationBrandingSetting.create({
+        data: {
+          orgId,
+          accountName: defaultName,
+          accountInitials: initials,
+          accentColor: '#5B53FF',
+          reelBackgroundColor: 'None',
+          reelTitleColor: 'None',
+          headerImageMaxMb: 25,
+        }
+      });
+    }
+
+    // Refresh B2 presigned URLs if keys exist
+    if (branding.logoKey && b2Storage.isEnabled()) {
+      branding.logoUrl = await b2Storage.getPresignedUrl(branding.logoKey).catch(() => branding.logoUrl);
+    }
+    if (branding.headerImageKey && b2Storage.isEnabled()) {
+      branding.headerImageUrl = await b2Storage.getPresignedUrl(branding.headerImageKey).catch(() => branding.headerImageUrl);
+    }
+
+    return reply.send({
+      success: true,
+      branding: {
+        accountName: branding.accountName || org?.name || "User's Account",
+        accountInitials: branding.accountInitials || (branding.accountName ? branding.accountName.slice(0, 2).toUpperCase() : 'NO'),
+        logoUrl: branding.logoUrl || null,
+        logoKey: branding.logoKey || null,
+        headerImageUrl: branding.headerImageUrl || null,
+        headerImageKey: branding.headerImageKey || null,
+        headerImageMaxMb: branding.headerImageMaxMb || 25,
+        accentColor: branding.accentColor || '#5B53FF',
+        reelBackgroundColor: branding.reelBackgroundColor || 'None',
+        reelTitleColor: branding.reelTitleColor || 'None',
+        updatedAt: branding.updatedAt,
+      }
+    });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to fetch branding settings", message: error.message });
+  }
+};
+
+// 9. Update Branding Settings
+module.exports.updateBrandingSettings = async (request, reply) => {
+  try {
+    const orgId = request.user?.orgId;
+    if (!orgId) {
+      return reply.code(400).send({ error: 'Organization ID is required' });
+    }
+
+    const { accountName, accentColor, reelBackgroundColor, reelTitleColor } = request.body || {};
+
+    const updateData = {};
+    if (typeof accountName === 'string' && accountName.trim()) {
+      updateData.accountName = accountName.trim();
+      updateData.accountInitials = accountName.trim().slice(0, 2).toUpperCase();
+    }
+    if (typeof accentColor === 'string') updateData.accentColor = accentColor.trim();
+    if (typeof reelBackgroundColor === 'string') updateData.reelBackgroundColor = reelBackgroundColor.trim();
+    if (typeof reelTitleColor === 'string') updateData.reelTitleColor = reelTitleColor.trim();
+
+    const branding = await request.server.prisma.organisationBrandingSetting.upsert({
+      where: { orgId },
+      update: updateData,
+      create: {
+        orgId,
+        ...updateData
+      }
+    });
+
+    return reply.send({
+      success: true,
+      message: 'Branding settings updated successfully in database',
+      branding: {
+        accountName: branding.accountName,
+        accountInitials: branding.accountInitials,
+        logoUrl: branding.logoUrl,
+        logoKey: branding.logoKey,
+        headerImageUrl: branding.headerImageUrl,
+        headerImageKey: branding.headerImageKey,
+        headerImageMaxMb: branding.headerImageMaxMb,
+        accentColor: branding.accentColor,
+        reelBackgroundColor: branding.reelBackgroundColor,
+        reelTitleColor: branding.reelTitleColor,
+        updatedAt: branding.updatedAt,
+      }
+    });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to update branding settings", message: error.message });
+  }
+};
+
+// 10. Upload Branding Header Image (Max 25MB)
+module.exports.uploadBrandingHeader = async (request, reply) => {
+  try {
+    const data = await request.file();
+    if (!data) {
+      return reply.code(400).send({ error: "No header image file uploaded" });
+    }
+
+    const orgId = request.user?.orgId;
+    if (!orgId) {
+      return reply.code(400).send({ error: "Organization ID is required" });
+    }
+
+    const org = await request.server.prisma.organization.findUnique({
+      where: { id: orgId }
+    });
+    if (!org) {
+      return reply.code(404).send({ error: "Organization not found" });
+    }
+
+    const sanitizedOrgName = org.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const ext = path.extname(data.filename) || '.png';
+    const uniqueFilename = `header_${Date.now()}${ext}`;
+    const b2Key = `noah-uploads/${sanitizedOrgName}/branding/${uniqueFilename}`;
+
+    const uploadedAsset = await b2Storage.uploadStream(
+      data.file,
+      b2Key,
+      data.mimetype,
+      { type: 'branding_header', orgId }
+    );
+
+    // Save headerKey and headerUrl to organisation_branding_settings
+    const branding = await request.server.prisma.organisationBrandingSetting.upsert({
+      where: { orgId },
+      update: {
+        headerImageKey: uploadedAsset.key,
+        headerImageUrl: uploadedAsset.url,
+      },
+      create: {
+        orgId,
+        accountName: org.name,
+        accountInitials: org.name ? org.name.slice(0, 2).toUpperCase() : 'NO',
+        headerImageKey: uploadedAsset.key,
+        headerImageUrl: uploadedAsset.url,
+      }
+    });
+
+    return reply.send({
+      success: true,
+      headerImageUrl: uploadedAsset.url,
+      b2Key: uploadedAsset.key,
+      branding
+    });
+  } catch (error) {
+    request.log.error(error);
+    return reply.code(500).send({ error: "Failed to upload branding header image", message: error.message });
   }
 };

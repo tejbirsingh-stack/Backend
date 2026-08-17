@@ -44,6 +44,7 @@ model Organization {
 
   workspaces Workspace[]
   settings   OrganizationSettings?
+  brandingSettings OrganisationBrandingSetting?
 
   @@map("organizations")
 }
@@ -65,6 +66,28 @@ model OrganizationSettings {
   updatedAt         DateTime @default(now()) @updatedAt @db.Timestamptz(6) @map("updated_at")
 
   @@map("organization_settings")
+}
+
+model OrganisationBrandingSetting {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId               String   @unique @map("org_id") @db.Uuid
+  organization        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  
+  accountName         String?  @map("account_name") @db.VarChar(255)
+  accountInitials     String?  @map("account_initials") @db.VarChar(10)
+  logoUrl             String?  @map("logo_url") @db.Text
+  logoKey             String?  @map("logo_key") @db.Text
+  headerImageUrl      String?  @map("header_image_url") @db.Text
+  headerImageKey      String?  @map("header_image_key") @db.Text
+  headerImageMaxMb    Int      @default(25) @map("header_image_max_mb")
+  accentColor         String   @default("#5B53FF") @map("accent_color") @db.VarChar(50)
+  reelBackgroundColor String   @default("None") @map("reel_background_color") @db.VarChar(50)
+  reelTitleColor      String   @default("None") @map("reel_title_color") @db.VarChar(50)
+
+  createdAt           DateTime @default(now()) @db.Timestamptz(6) @map("created_at")
+  updatedAt           DateTime @default(now()) @updatedAt @db.Timestamptz(6) @map("updated_at")
+
+  @@map("organisation_branding_settings")
 }
 
 model User {
