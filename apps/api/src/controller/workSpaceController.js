@@ -25,7 +25,7 @@ module.exports.storeWorkplace = async (request, reply) => {
         const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel, isRestricted } = request.body;
 
         // Default values for granular permissions if not provided
-        const mType = memberType || 'MEMBER';
+        const mType = memberType || MEMBER_TYPES.MEMBER;
         let aLevel = accessLevel || 'FULL_ACCESS';
 
         // Resolve access level string/ID for invited users
@@ -134,7 +134,7 @@ module.exports.storeWorkplace = async (request, reply) => {
             for (const email of inviteEmails) {
                 if (!email || typeof email !== 'string') continue;
 
-                if (mType === 'GUEST') {
+                if (mType === MEMBER_TYPES.GUEST) {
                     // Guest: must exist in DB, belong to a different org, and be active
                     const guestUser = await prisma.user.findFirst({
                         where: { email: email.toLowerCase().trim() }
@@ -152,7 +152,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                         data: {
                             workspaceId: workspace.id,
                             userId: guestUser.id,
-                            memberType: 'GUEST',
+                            memberType: MEMBER_TYPES.GUEST,
                             accessLevelId: aLevelId
                         }
                     }).catch(() => { });
@@ -261,17 +261,36 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             });
         }
 
+        // Check if this user is a cross-org guest (has WorkspaceUser records in workspaces NOT from their org)
+        const guestMemberships = await prisma.workspaceUser.findMany({
+            where: {
+                userId,
+                workspace: orgId ? { orgId: { not: orgId } } : {}
+            },
+            select: { workspaceId: true }
+        });
+        const guestWorkspaceIds = guestMemberships.map(m => m.workspaceId);
+
         let whereCondition = {
-            ...(orgId ? { orgId } : {}),
             OR: [
-                { visibility: VISIBILITY.PUBLIC },
+                // Own-org workspaces (public or member of)
                 {
-                    visibility: VISIBILITY.PRIVATE,
+                    ...(orgId ? { orgId } : {}),
                     OR: [
-                        { users: { some: { userId: userId } } },
-                        { groups: { some: { group: { members: { some: { userId: userId } } } } } }
+                        { visibility: VISIBILITY.PUBLIC },
+                        {
+                            visibility: VISIBILITY.PRIVATE,
+                            OR: [
+                                { users: { some: { userId } } },
+                                { groups: { some: { group: { members: { some: { userId } } } } } }
+                            ]
+                        }
                     ]
-                }
+                },
+                // Cross-org guest: explicitly invited to workspaces from other orgs
+                ...(guestWorkspaceIds.length > 0
+                    ? [{ id: { in: guestWorkspaceIds } }]
+                    : [])
             ]
         };
 
@@ -279,6 +298,22 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             where: whereCondition,
             orderBy: {
                 createdAt: 'desc'
+            },
+            include: {
+                users: {
+                    include: {
+                        user: {
+                            select: { id: true, name: true, email: true, roleRelation: true }
+                        }
+                    }
+                },
+                groups: {
+                    include: {
+                        group: {
+                            include: { members: true }
+                        }
+                    }
+                }
             }
         });
 
@@ -610,8 +645,8 @@ module.exports.addProjectMember = async (request, reply) => {
             return reply.code(404).send({ success: false, message: 'User not found.' });
         }
 
-        const effectiveMemberType = memberType || 'Member';
-        
+        const effectiveMemberType = memberType || MEMBER_TYPES.MEMBER;
+
         let resolvedAccessLevelId = null;
         if (accessLevel) {
             const lvl = await prisma.accessLevel.findFirst({ where: { title: accessLevel } });
@@ -650,7 +685,7 @@ module.exports.addProjectMember = async (request, reply) => {
         if (sendInviteEmail) {
             try {
                 const orgName = project.workspace?.organization?.name || 'Noah Cloud';
-                if (effectiveMemberType === 'Guest') {
+                if (effectiveMemberType?.toUpperCase() === MEMBER_TYPES.GUEST) {
                     await emailService.sendProjectGuestInvite(user.email, {
                         projectName: project.name,
                         organizationName: orgName,
@@ -726,7 +761,7 @@ module.exports.updateProjectMemberAccess = async (request, reply) => {
 module.exports.createProject = async (request, reply) => {
     try {
         const { workspaceId } = request.params;
-        const { name, folderId, defaultTagIds, visibility = 'public', inviteEmails = [], inviteGroupIds = [], inviteAccess = 'Full Access', inviteMemberType = 'Member', sendInviteEmail = false } = request.body;
+        const { name, folderId, defaultTagIds, visibility = 'public', inviteEmails = [], inviteGroupIds = [], inviteAccess = 'Full Access', inviteMemberType = MEMBER_TYPES.MEMBER, sendInviteEmail = false } = request.body;
         const { orgId, id: userId } = request.user;
 
         if (!name) {
@@ -759,7 +794,7 @@ module.exports.createProject = async (request, reply) => {
         }
 
         // Validate guest emails: must be registered on platform but from a DIFFERENT organization
-        if (visibility.toLowerCase() === 'private' && inviteMemberType === 'Guest' && Array.isArray(inviteEmails) && inviteEmails.length > 0) {
+        if (visibility.toLowerCase() === VISIBILITY.PRIVATE && inviteMemberType?.toUpperCase() === MEMBER_TYPES.GUEST && Array.isArray(inviteEmails) && inviteEmails.length > 0) {
             for (const email of inviteEmails) {
                 if (!email || typeof email !== 'string') continue;
                 const cleanEmail = email.toLowerCase().trim();
@@ -833,7 +868,7 @@ module.exports.createProject = async (request, reply) => {
         });
 
         // If visibility is private, handle project invites
-        if (visibility.toLowerCase() === 'private') {
+        if (visibility.toLowerCase() === VISIBILITY.PRIVATE) {
 
             // Get full access ID for the creator
             let fullAccessId = null;
@@ -858,7 +893,7 @@ module.exports.createProject = async (request, reply) => {
                         projectId: project.id,
                         userId: userId,
                         accessLevelId: fullAccessId,
-                        memberType: 'Member',
+                        memberType: MEMBER_TYPES.OWNER,
                     }
                 }).catch(() => { });
             }
@@ -875,7 +910,7 @@ module.exports.createProject = async (request, reply) => {
                     if (!email || typeof email !== 'string') continue;
                     const cleanEmail = email.toLowerCase().trim();
 
-                    if (inviteMemberType === 'Guest') {
+                    if (inviteMemberType?.toUpperCase() === MEMBER_TYPES.GUEST) {
                         // GUEST FLOW: Require user to exist globally, then create ProjectUser and send normal invite
                         let invitedUser = await prisma.user.findUnique({
                             where: { email: cleanEmail }
@@ -1111,7 +1146,19 @@ module.exports.findAllProjects = async (request, reply) => {
 module.exports.findFolderData = async (request, reply) => {
     try {
         const { id } = request.params; // folderId
+        const { projectId } = request.query;
 
+        let effectivePermissions = undefined;
+        if (projectId && request.user) {
+            const project = await prisma.project.findUnique({
+                where: { id: projectId },
+                include: { workspace: true }
+            });
+            if (project) {
+                const { resolveUserProjectPermissions } = require('../lib/rbac-policy');
+                effectivePermissions = await resolveUserProjectPermissions(prisma, request.user, project);
+            }
+        }
 
         const folders = await prisma.folder.findMany({
             where: {
@@ -1158,7 +1205,8 @@ module.exports.findFolderData = async (request, reply) => {
                 folderInfo,
                 media: [], // Deprecated: fetched via pagination API
                 folders,
-                projects
+                projects,
+                ...(effectivePermissions !== undefined ? { effectivePermissions } : {})
             }
         });
 
@@ -1200,7 +1248,7 @@ module.exports.findProjectData = async (request, reply) => {
 
         let effectivePermissions = [];
         if (request.user) {
-            const project = await prisma.project.findUnique({ 
+            const project = await prisma.project.findUnique({
                 where: { id: projectId },
                 include: { workspace: true }
             });

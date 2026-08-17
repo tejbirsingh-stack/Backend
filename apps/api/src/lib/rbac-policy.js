@@ -35,16 +35,21 @@ function isOrgWideRole(roleOrId) {
  * falls back to global org role permissions for public workspaces.
  */
 async function resolveUserWorkspacePermissions(prisma, user, workspace) {
-  // 1. Super Admins / Admins retain their full global permissions everywhere
-  if (isOrgWideRole(user.role || user.roleId)) {
-    return user.permissions && user.permissions.length > 0 ? user.permissions : await getRolePermissions(prisma, user.roleId);
+  const isPrivate = workspace.visibility === 'private' || workspace.visibility === 'PRIVATE';
+  const isOwnOrg = !workspace.orgId || !user.orgId || workspace.orgId === user.orgId;
+
+  // Public workspace + same org → ALWAYS use role-based permissions, for every role
+  if (!isPrivate && isOwnOrg) {
+    return user.permissions && user.permissions.length > 0
+      ? user.permissions
+      : await getRolePermissions(prisma, user.roleId);
   }
 
   const userId = user.id;
   const workspaceId = workspace.id;
   let explicitPerms = [];
 
-  // 2. Gather explicit direct membership permissions
+  // Direct WorkspaceUser membership
   const directMember = await prisma.workspaceUser.findFirst({
     where: { workspaceId, userId },
     select: { accessLevelId: true }
@@ -58,7 +63,7 @@ async function resolveUserWorkspacePermissions(prisma, user, workspace) {
     explicitPerms.push(...accessLevelPerms.map(alp => alp.permission.slug));
   }
 
-  // 3. Gather explicit group membership permissions
+  // WorkspaceGroup membership
   const groupMember = await prisma.workspaceGroup.findFirst({
     where: {
       workspaceId,
@@ -75,14 +80,9 @@ async function resolveUserWorkspacePermissions(prisma, user, workspace) {
     explicitPerms.push(...accessLevelPerms.map(alp => alp.permission.slug));
   }
 
-  // If private, STRICTLY return the union of explicit permissions (empty if none)
-  if (workspace.visibility === 'private' || workspace.visibility === 'PRIVATE') {
-    return [...new Set(explicitPerms)];
-  }
-
-  // 4. Fallback for Public workspaces: Union explicit permissions with global org role permissions
-  const globalPerms = user.permissions && user.permissions.length > 0 ? user.permissions : await getRolePermissions(prisma, user.roleId);
-  return [...new Set([...explicitPerms, ...globalPerms])];
+  // At this point: cross-org guest (public or private workspace)
+  // ONLY return what was explicitly assigned via WorkspaceUser/WorkspaceGroup
+  return [...new Set(explicitPerms)];
 }
 
 /**
@@ -93,15 +93,17 @@ async function resolveUserWorkspacePermissions(prisma, user, workspace) {
  * 3. If Project is Public: return union of explicit project permissions and parent workspace permissions.
  */
 async function resolveUserProjectPermissions(prisma, user, project) {
-  // 1. Super Admins / Admins retain their full global permissions everywhere
-  if (isOrgWideRole(user.role || user.roleId)) {
+  // 1. Super Admins / Admins get full permissions ONLY within their own org.
+  //    Cross-org guests must be checked against ProjectUser.accessLevelId.
+  const isOwnOrgProject = !project.orgId || !user.orgId || project.orgId === user.orgId;
+  if (isOrgWideRole(user.role || user.roleId) && isOwnOrgProject) {
     return user.permissions && user.permissions.length > 0 ? user.permissions : await getRolePermissions(prisma, user.roleId);
   }
 
   const userId = user.id;
   const projectId = project.id;
   let explicitPerms = [];
-  
+
   // Gather explicit direct project membership permissions
   const directMember = await prisma.projectUser.findFirst({
     where: { projectId, userId },
@@ -159,11 +161,87 @@ async function resolveUserProjectPermissions(prisma, user, project) {
   return [...new Set([...explicitPerms, ...workspacePerms])];
 }
 
+/**
+ * Resolves the effective permissions for a user for a specific media asset.
+ * Hierarchy:
+ * 1. Gather all explicit asset-level permissions (direct + group).
+ * 2. If Asset is Private: strictly return explicit asset permissions.
+ * 3. If Asset is Public: return union of explicit asset permissions and contextual (Project or Workspace) permissions.
+ */
+async function resolveUserAssetPermissions(prisma, user, asset, projectContext = null) {
+  // 1. Super Admins / Admins get full permissions ONLY within their own org.
+  //    Cross-org guests must be checked against AssetUser.accessLevelId.
+  const isOwnOrgAsset = !asset.orgId || !user.orgId || asset.orgId === user.orgId;
+  if (isOrgWideRole(user.role || user.roleId) && isOwnOrgAsset) {
+    return user.permissions && user.permissions.length > 0 ? user.permissions : await getRolePermissions(prisma, user.roleId);
+  }
+
+  const userId = user.id;
+  const assetId = asset.id;
+  let explicitPerms = [];
+
+  // Gather explicit direct asset membership permissions
+  const directMember = await prisma.assetUser.findFirst({
+    where: { assetId, userId },
+    select: { accessLevelId: true }
+  });
+
+  if (directMember && directMember.accessLevelId) {
+    const accessLevelPerms = await prisma.accessLevelPermission.findMany({
+      where: { accessLevelId: directMember.accessLevelId },
+      include: { permission: true }
+    });
+    explicitPerms.push(...accessLevelPerms.map(alp => alp.permission.slug));
+  }
+
+  // Gather explicit asset group membership permissions
+  const groupMember = await prisma.assetGroup.findFirst({
+    where: {
+      assetId,
+      group: { members: { some: { userId } } }
+    },
+    select: { accessLevelId: true }
+  });
+
+  if (groupMember && groupMember.accessLevelId) {
+    const accessLevelPerms = await prisma.accessLevelPermission.findMany({
+      where: { accessLevelId: groupMember.accessLevelId },
+      include: { permission: true }
+    });
+    explicitPerms.push(...accessLevelPerms.map(alp => alp.permission.slug));
+  }
+
+  // If the asset is private, STRICTLY return the union of explicit asset permissions
+  if (asset.visibility === 'private' || asset.visibility === 'PRIVATE') {
+    return [...new Set(explicitPerms)];
+  }
+
+  // If the asset is public, fall back to the context permissions (Project or Workspace)
+  let contextualPerms = [];
+  if (projectContext) {
+    contextualPerms = await resolveUserProjectPermissions(prisma, user, projectContext);
+  } else {
+    let workspace = asset.workspace;
+    if (!workspace && asset.workspaceId) {
+      workspace = await prisma.workspace.findUnique({ where: { id: asset.workspaceId } });
+    }
+
+    if (workspace) {
+      contextualPerms = await resolveUserWorkspacePermissions(prisma, user, workspace);
+    } else {
+      contextualPerms = user.permissions && user.permissions.length > 0 ? user.permissions : await getRolePermissions(prisma, user.roleId);
+    }
+  }
+
+  return [...new Set([...explicitPerms, ...contextualPerms])];
+}
+
 module.exports = {
   ROLE_IDS,
   roleHasPermission,
   isOrgWideRole,
   resolveUserWorkspacePermissions,
   resolveUserProjectPermissions,
+  resolveUserAssetPermissions,
   getRolePermissions,
 };

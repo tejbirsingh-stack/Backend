@@ -492,32 +492,8 @@ module.exports.register = async (request, reply) => {
       },
     });
 
-    // Auto-assign the user to the newly created default workspace and run admin auto-assign
+    // Assign Super Admins / Admins to this newly created workspace (which skips public now)
     if (request.newWorkspaceId) {
-      // Get the ID for Full Access
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
-
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: request.newWorkspaceId,
-            userId: user.id
-          }
-        },
-        update: {
-          memberType: MEMBER_TYPES.OWNER,
-          accessLevelId: fullAccessId
-        },
-        create: {
-          workspaceId: request.newWorkspaceId,
-          userId: user.id,
-          memberType: MEMBER_TYPES.OWNER,
-          accessLevelId: fullAccessId
-        }
-      });
-      // Assign Super Admins / Admins now that the first user exists
       await autoAssignAdminsToWorkspace(request.server.prisma, finalOrgId, request.newWorkspaceId);
     }
 
@@ -1422,29 +1398,7 @@ module.exports.googleLogin = async (request, reply) => {
       // Assign Super Admins / Admins
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the user gets access to this new workspace
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: newWorkspace.id,
-            userId: user.id
-          }
-        },
-        update: {
-          memberType: MEMBER_TYPES.OWNER,
-          accessLevelId: fullAccessId
-        },
-        create: {
-          workspaceId: newWorkspace.id,
-          userId: user.id,
-          memberType: MEMBER_TYPES.OWNER,
-          accessLevelId: fullAccessId
-        }
-      });
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -1719,31 +1673,7 @@ module.exports.microsoftLogin = async (request, reply) => {
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace2.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the new user gets access to these workspaces
-      for (const wid of [newWorkspace1.id, newWorkspace2.id]) {
-        await request.server.prisma.workspaceUser.upsert({
-          where: {
-            workspaceId_userId: {
-              workspaceId: wid,
-              userId: user.id
-            }
-          },
-          update: {
-            memberType: MEMBER_TYPES.OWNER,
-            accessLevelId: fullAccessId
-          },
-          create: {
-            workspaceId: wid,
-            userId: user.id,
-            memberType: MEMBER_TYPES.OWNER,
-            accessLevelId: fullAccessId
-          }
-        });
-      }
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -2449,29 +2379,6 @@ module.exports.completeSignup = async (request, reply) => {
 
     // Assign Super Admins / Admins
     await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, workspace.id);
-
-    let fullAccessId = null;
-    const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-    if (foundLevel) fullAccessId = foundLevel.id;
-
-    await request.server.prisma.workspaceUser.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: workspace.id,
-          userId: user.id,
-        }
-      },
-      update: {
-        memberType: MEMBER_TYPES.OWNER,
-        accessLevelId: fullAccessId
-      },
-      create: {
-        workspaceId: workspace.id,
-        userId: user.id,
-        memberType: MEMBER_TYPES.OWNER,
-        accessLevelId: fullAccessId
-      },
-    });
 
     // Automatically create default share settings for the new organization
     await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);

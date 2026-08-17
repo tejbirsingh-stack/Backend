@@ -218,9 +218,164 @@ async function assertWorkspaceAccess(prisma, user, workspaceId) {
   return false;
 }
 
+/**
+ * Automatically assigns default owners to a given private asset based on workspace visibility.
+ * - Public Workspace: Super Admins & Admins become asset owners.
+ * - Private Workspace: Existing Workspace Owners become asset owners.
+ */
+async function autoAssignAdminsToAsset(prisma, orgId, workspaceId, assetId) {
+  if (!orgId || !workspaceId || !assetId) return;
+
+  try {
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { visibility: true }
+    });
+
+    if (!workspace) return;
+
+    let usersToAssign = [];
+
+    if (workspace.visibility === 'public' || workspace.visibility === 'PUBLIC') {
+      // For public workspace, fetch org-wide admins
+      const orgAdmins = await prisma.user.findMany({
+        where: {
+          orgId,
+          roleRelation: {
+            name: { in: ['Super Admin', 'Admin', 'System Admin'] }
+          }
+        },
+        select: { id: true }
+      });
+      usersToAssign = orgAdmins.map(admin => admin.id);
+    } else {
+      // For private workspace, fetch workspace owners
+      const workspaceOwners = await prisma.workspaceUser.findMany({
+        where: {
+          workspaceId,
+          memberType: MEMBER_TYPES.OWNER
+        },
+        select: { userId: true }
+      });
+      usersToAssign = workspaceOwners.map(owner => owner.userId);
+    }
+
+    if (usersToAssign.length > 0) {
+      let fullAccessId = null;
+      const foundLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+      if (foundLevel) fullAccessId = foundLevel.id;
+
+      for (const userId of usersToAssign) {
+        await prisma.assetUser.upsert({
+          where: {
+            assetId_userId: {
+              assetId,
+              userId: userId
+            }
+          },
+          update: {
+            memberType: MEMBER_TYPES.OWNER,
+            accessLevelId: fullAccessId
+          },
+          create: {
+            assetId,
+            userId: userId,
+            memberType: MEMBER_TYPES.OWNER,
+            accessLevelId: fullAccessId
+          }
+        }).catch(err => console.error(`Failed to auto-assign owner ${userId} to asset ${assetId}:`, err));
+      }
+    }
+  } catch (error) {
+    console.error("Error in autoAssignAdminsToAsset:", error);
+  }
+}
+
+/**
+ * Automatically assigns Project Owners as owners of a private asset uploaded within a project context.
+ * Used when visibility = private AND the upload was initiated via a project URL.
+ */
+async function autoAssignProjectOwnersToAsset(prisma, orgId, projectId, assetId) {
+  if (!projectId || !assetId) return;
+
+  try {
+    const projectOwners = await prisma.projectUser.findMany({
+      where: { projectId, memberType: MEMBER_TYPES.OWNER },
+      select: { userId: true }
+    });
+
+    if (projectOwners.length === 0) {
+      // Fallback: no project owners found, use org-wide admins
+      const orgAdmins = await prisma.user.findMany({
+        where: {
+          orgId,
+          roleRelation: { name: { in: ['Super Admin', 'Admin', 'System Admin'] } }
+        },
+        select: { id: true }
+      });
+      projectOwners.push(...orgAdmins.map(a => ({ userId: a.id })));
+    }
+
+    let fullAccessId = null;
+    const foundLevel = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+    if (foundLevel) fullAccessId = foundLevel.id;
+
+    for (const { userId } of projectOwners) {
+      await prisma.assetUser.upsert({
+        where: { assetId_userId: { assetId, userId } },
+        update: { memberType: MEMBER_TYPES.OWNER, accessLevelId: fullAccessId },
+        create: { assetId, userId, memberType: MEMBER_TYPES.OWNER, accessLevelId: fullAccessId }
+      }).catch(err => console.error(`Failed to auto-assign project owner ${userId} to asset ${assetId}:`, err));
+    }
+  } catch (error) {
+    console.error("Error in autoAssignProjectOwnersToAsset:", error);
+  }
+}
+
+/**
+ * Checks if a user can access a specific asset — either via direct AssetUser/AssetGroup membership
+ * OR via regular workspace access. This allows users to access a specific shared file even if
+ * they have no workspace membership (direct share bypass).
+ */
+async function assertAssetOrWorkspaceAccess(prisma, user, assetId, workspaceId) {
+  if (!user?.id) return false;
+
+  // Org-wide admins always have access
+  if (isOrgWideRole(user.role || user.roleId)) return true;
+
+  const userId = user.id;
+
+  // 1. Check direct AssetUser record (explicit share — bypasses workspace check)
+  const directAssetAccess = await prisma.assetUser.findFirst({
+    where: { assetId, userId },
+    select: { userId: true }
+  });
+  if (directAssetAccess) return true;
+
+  // 2. Check AssetGroup membership
+  const groupAssetAccess = await prisma.assetGroup.findFirst({
+    where: {
+      assetId,
+      group: { members: { some: { userId } } }
+    },
+    select: { assetId: true }
+  });
+  if (groupAssetAccess) return true;
+
+  // 3. Fall back to regular workspace access check
+  if (workspaceId) {
+    return assertWorkspaceAccess(prisma, user, workspaceId);
+  }
+
+  return false;
+}
+
 module.exports = {
   autoAssignAdminsToWorkspace,
   autoAssignNewAdminToWorkspaces,
   autoAssignAdminsToProject,
+  autoAssignAdminsToAsset,
+  autoAssignProjectOwnersToAsset,
   assertWorkspaceAccess,
+  assertAssetOrWorkspaceAccess,
 };

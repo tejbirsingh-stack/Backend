@@ -7,6 +7,7 @@ const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
+const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -1640,6 +1641,22 @@ module.exports.getMediaFile = async (request, reply) => {
       }
 
       if (fetchedAsset) {
+        // Access gate for private assets: user must have direct AssetUser access OR workspace access
+        if (fetchedAsset.visibility === 'private' && request.user) {
+          const { assertAssetOrWorkspaceAccess } = require('../services/workspace.service');
+          const hasAccess = await assertAssetOrWorkspaceAccess(
+            request.server.prisma,
+            request.user,
+            fetchedAsset.id,
+            fetchedAsset.workspaceId
+          );
+          if (!hasAccess) {
+            return reply.code(403).send({ success: false, error: 'Access denied to this private asset.' });
+          }
+        } else if (fetchedAsset.visibility === 'private' && !request.user) {
+          // No auth at all for a private asset
+          return reply.code(401).send({ success: false, error: 'Authentication required to access this private asset.' });
+        }
         const originalFile = fetchedAsset.files.find(f => f.fileClass === 'original');
         const proxyFile = fetchedAsset.files.find(f => f.fileClass === 'proxy');
         const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
@@ -1648,6 +1665,41 @@ module.exports.getMediaFile = async (request, reply) => {
         const proxySize = Number(proxyFile?.sizeBytes || 0);
         const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
         const normalizedType = determineAssetType(fetchedAsset, originalFile);
+
+        // Resolve effective permissions based on project or workspace context
+        let effectivePermissions = null;
+        if (request.user) {
+          const { resolveUserAssetPermissions } = require('../lib/rbac-policy');
+
+          const projectId = request.query.projectId;
+          let projectContext = null;
+
+          console.log(`[getMediaFile] userId=${request.user.id} role=${request.user.role} projectId=${projectId} assetVisibility=${fetchedAsset.visibility}`);
+
+          if (projectId) {
+            projectContext = await request.server.prisma.project.findUnique({
+              where: { id: projectId },
+              include: { workspace: true }
+            });
+            console.log(`[getMediaFile] projectContext found:`, projectContext ? `${projectContext.id} visibility=${projectContext.visibility}` : 'null');
+          }
+
+          // Fetch asset with workspace for permission resolution
+          const assetForPerms = {
+            ...fetchedAsset,
+            workspace: fetchedAsset.workspaceId
+              ? await request.server.prisma.workspace.findUnique({ where: { id: fetchedAsset.workspaceId } })
+              : null
+          };
+
+          effectivePermissions = await resolveUserAssetPermissions(
+            request.server.prisma,
+            request.user,
+            assetForPerms,
+            projectContext
+          );
+          console.log(`[getMediaFile] effectivePermissions resolved:`, effectivePermissions);
+        }
 
         const dbTags = (fetchedAsset.assetTags && fetchedAsset.assetTags.length > 0)
           ? fetchedAsset.assetTags.map(at => at.tag?.name).filter(Boolean)
@@ -1677,7 +1729,9 @@ module.exports.getMediaFile = async (request, reply) => {
             tags: tagList,
             metadata: fetchedAsset.metadata || {},
             status: fetchedAsset.status,
+            visibility: fetchedAsset.visibility,
             uploadedBy: fetchedAsset.uploadedBy || null,
+            uploadedByUserId: fetchedAsset.uploadedByUserId || null,
             folder: folderInfo,
             customMetadata: {
               ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
@@ -1689,6 +1743,7 @@ module.exports.getMediaFile = async (request, reply) => {
             },
             transcodingStatus: transcodeJob?.status || "completed",
             compressionStatus: transcodeJob?.status || "completed",
+            effectivePermissions: effectivePermissions || undefined,
           }
         });
       }
@@ -1929,9 +1984,29 @@ module.exports.uploadMediaFile = async (request, reply) => {
               create: {
                 technicalSpecs: specs
               }
-            }
+            },
+            ...(request.query.linkedProjectId ? {
+              sources: {
+                create: {
+                  projectId: request.query.linkedProjectId,
+                  sourceableType: 'ASSET'
+                }
+              }
+            } : {})
           }
         });
+
+        // Auto-assign owners for private uploads based on context
+        if (request.query.visibility === 'private' || request.query.visibility === 'PRIVATE') {
+          const linkedProjectId = request.query.linkedProjectId || request.body?.linkedProjectId;
+          if (linkedProjectId) {
+            // Uploaded via project context → assign project owners
+            await autoAssignProjectOwnersToAsset(request.server.prisma, request.user.orgId, linkedProjectId, newAsset.id);
+          } else {
+            // Uploaded via folder/workspace context → assign workspace owners
+            await autoAssignAdminsToAsset(request.server.prisma, request.user.orgId, uploadWorkspaceId, newAsset.id);
+          }
+        }
 
         // If it's a video, queue a compression job in Redis
         if (isVideo) {
@@ -2794,6 +2869,18 @@ module.exports.completeResumableUpload = async (request, reply) => {
       }
     });
 
+    // Auto-assign owners for private uploads based on context
+    const finalVisibility = request.body.visibility || session.visibility || "public";
+    if (finalVisibility === 'private' || finalVisibility === 'PRIVATE') {
+      if (session.linkedProjectId) {
+        // Uploaded via project context → assign project owners
+        await autoAssignProjectOwnersToAsset(request.server.prisma, request.user.orgId, session.linkedProjectId, newAsset.id);
+      } else {
+        // Uploaded via folder/workspace context → assign workspace owners
+        await autoAssignAdminsToAsset(request.server.prisma, request.user.orgId, uploadWorkspaceId, newAsset.id);
+      }
+    }
+
     if (request.user?.orgId && session.fileSize) {
       try {
         await recordStorageDelta(request.server.prisma, {
@@ -3579,12 +3666,14 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
 
     // Fetch asset access overrides (direct access users)
     const assetUsers = await request.server.prisma.assetUser.findMany({
-      where: { assetId }
+      where: { assetId },
+      include: { accessLevelObj: true }
     });
 
     const assetGroups = await request.server.prisma.assetGroup.findMany({
       where: { assetId },
       include: {
+        accessLevelObj: true,
         group: {
           include: {
             members: {
@@ -3648,6 +3737,7 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       create: {
         assetId,
         userId: targetUserId,
+        memberType: 'Member',
         accessLevelId: aLevelId
       }
     });
