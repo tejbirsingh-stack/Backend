@@ -28,16 +28,7 @@ phases:
       - docker push "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
       - docker push "$ECR_REGISTRY/$ECR_REPO:latest"
       - echo "Deploying to all $ASG_TAG_NAME instances via SSM..."
-      - |
-        COMMAND_ID=$(aws ssm send-command \
-          --region "$AWS_REGION" \
-          --targets "Key=tag:Name,Values=${ASG_TAG_NAME}" \
-          --document-name "AWS-RunShellScript" \
-          --parameters "{\"commands\":[\"aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}\", \"docker pull ${ECR_REGISTRY}/${ECR_REPO}:latest\", \"cd /opt/noah && docker compose up -d backend\"]}" \
-          --output text \
-          --query "Command.CommandId")
-      - echo "SSM Command ID: $COMMAND_ID"
+      - COMMAND_ID=$(aws ssm send-command --region "$AWS_REGION" --targets "Key=tag:Name,Values=${ASG_TAG_NAME}" --document-name "AWS-RunShellScript" --parameters "{\"commands\":[\"aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}\",\"docker pull ${ECR_REGISTRY}/${ECR_REPO}:latest\",\"cd /opt/noah && docker compose up -d backend\"]}" --output text --query "Command.CommandId")
+      - echo "SSM Command ID is $COMMAND_ID"
       - aws ssm wait command-executed --command-id "$COMMAND_ID" --region "$AWS_REGION" || true
-      - |
-        aws ssm list-command-invocations --command-id "$COMMAND_ID" --region "$AWS_REGION" --details \
-          --query 'CommandInvocations[].{Instance:InstanceId,Status:Status,Output:CommandPlugins[0].Output}'
+      - aws ssm list-command-invocations --command-id "$COMMAND_ID" --region "$AWS_REGION" --details --query "CommandInvocations[].{Instance:InstanceId,Status:Status}"
