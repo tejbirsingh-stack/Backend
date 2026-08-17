@@ -47,10 +47,12 @@ async function listItems(prisma, params) {
   const projectConditions = [];
 
   if (view !== 'shared') {
-    if (view !== 'project') {
+    const isSpecificContainer = view === 'project' || view === 'folder';
+
+    if (!isSpecificContainer) {
       assetConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
     }
-    
+
     assetConditions.push(Prisma.sql`(
       "visibility" = 'public' 
       OR ("visibility" = 'private' AND "uploadedByUserId" = ${params.userId}::uuid)
@@ -58,16 +60,21 @@ async function listItems(prisma, params) {
       OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
       OR id IN (
         SELECT "asset_id" FROM "project_sources" WHERE "project_id" IN (
-          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" != 'inactive') AND "visibility" = 'public' AND "workspace_id" = ${workspaceId}
+          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" != 'inactive') AND "visibility" = 'public' ${!isSpecificContainer ? Prisma.sql`AND "workspace_id" = ${workspaceId}` : Prisma.empty}
           UNION
-          SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid
+          SELECT pu."project_id" FROM "project_users" pu
+            INNER JOIN "projects" p ON p.id = pu."project_id"
+            WHERE pu."user_id" = ${params.userId}::uuid ${!isSpecificContainer ? Prisma.sql`AND p."workspace_id" = ${workspaceId}` : Prisma.empty}
           UNION
-          SELECT "project_id" FROM "project_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid)
+          SELECT pg."project_id" FROM "project_groups" pg
+            INNER JOIN "projects" p ON p.id = pg."project_id"
+            WHERE pg."group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid)
+            ${!isSpecificContainer ? Prisma.sql`AND p."workspace_id" = ${workspaceId}` : Prisma.empty}
         )
       )
     )`);
 
-    if (view !== 'project') {
+    if (!isSpecificContainer) {
       folderConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
       projectConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
     }
@@ -286,6 +293,7 @@ async function listItems(prisma, params) {
       include: {
         files: true,
         metadata: true,
+        sources: true,
         assetTags: { include: { tag: true } },
         ...(view === 'shared' ? {
           shareLinks: {
@@ -297,11 +305,14 @@ async function listItems(prisma, params) {
         } : {})
       }
     }) : [],
-    folderIds.length > 0 ? prisma.folder.findMany({ 
+    folderIds.length > 0 ? prisma.folder.findMany({
       where: { id: { in: folderIds } },
-      include: { _count: { select: { children: true, projects: true } } }
+      include: {
+        sources: true,
+        _count: { select: { children: true, projects: true } }
+      }
     }) : [],
-    projectIds.length > 0 ? prisma.project.findMany({ 
+    projectIds.length > 0 ? prisma.project.findMany({
       where: { id: { in: projectIds } },
       include: { _count: { select: { sources: true } } }
     }) : []
@@ -359,6 +370,8 @@ async function listItems(prisma, params) {
         workspaceId: a.workspaceId,
         customMetadata,
         reviewStatus: customMetadata.reviewStatus || 'New',
+        parentFolderId: a.ownerType === 'FOLDER' ? a.ownerId : null,
+        linkedProjectIds: a.sources ? a.sources.map(ps => ps.projectId) : [],
         isSharedByMe: a.uploadedByUserId === params.userId,
         ...(a.shareLinks ? (() => {
           const nowTs = Date.now();
@@ -377,10 +390,10 @@ async function listItems(prisma, params) {
     } else if (raw.type === 'folder') {
       const f = folders.find(x => x.id === raw.id);
       if (!f) return null;
-      
+
       const ac = folderAssetCounts.find(a => a.ownerId === f.id)?._count?._all || 0;
       const itemCount = (f._count?.children || 0) + (f._count?.projects || 0) + ac;
-      
+
       return {
         id: f.id,
         title: f.name,
@@ -389,6 +402,8 @@ async function listItems(prisma, params) {
         createdAt: f.createdAt.toISOString(),
         color: f.color,
         workspaceId: f.workspaceId,
+        parentFolderId: f.parentFolderId || null,
+        linkedProjectIds: f.sources ? f.sources.map(ps => ps.projectId) : [],
         itemCount
       };
     } else if (raw.type === 'project') {

@@ -1939,6 +1939,22 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
         let reqOwnerType = request.query.ownerType || "WORKSPACE";
         let reqOwnerId = request.query.ownerId;
+        if (request.query.linkedProjectId) {
+          try {
+            const project = await request.server.prisma.project.findUnique({
+              where: { id: request.query.linkedProjectId },
+              select: { ownerType: true, workspaceId: true, folderId: true }
+            });
+            if (project) {
+              reqOwnerType = project.ownerType;
+              // If project lives inside a folder, the asset's owner is that folder
+              // If project lives directly in a workspace, the asset's owner is that workspace
+              reqOwnerId = project.ownerType === 'FOLDER' ? project.folderId : project.workspaceId;
+            }
+          } catch (err) {
+            console.error("Failed to fetch project parent info for upload:", err);
+          }
+        }
         if (!reqOwnerId || reqOwnerId === request.user?.orgId) {
           if (request.user?.orgId) {
             const primaryWorkspace = await request.server.prisma.workspace.findFirst({
@@ -2071,6 +2087,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
           storageLocation: "b2",
           folderId: resolved.resolvedOwnerType === 'FOLDER' ? resolved.resolvedOwnerId : null,
           folderName: resolved.resolvedFolderName,
+          workspaceId: newAsset.workspaceId,
         };
 
 
@@ -2807,6 +2824,22 @@ module.exports.completeResumableUpload = async (request, reply) => {
 
     let reqOwnerType = session.ownerType || "WORKSPACE";
     let reqOwnerId = session.ownerId;
+    if (session.linkedProjectId) {
+      try {
+        const project = await request.server.prisma.project.findUnique({
+          where: { id: session.linkedProjectId },
+          select: { ownerType: true, workspaceId: true, folderId: true }
+        });
+        if (project) {
+          reqOwnerType = project.ownerType;
+          // If project lives inside a folder, the asset's owner is that folder
+          // If project lives directly in a workspace, the asset's owner is that workspace
+          reqOwnerId = project.ownerType === 'FOLDER' ? project.folderId : project.workspaceId;
+        }
+      } catch (err) {
+        console.error("Failed to fetch project parent info for chunked upload:", err);
+      }
+    }
     if (!reqOwnerId || reqOwnerId === request.user?.orgId) {
       if (request.user?.orgId) {
         const primaryWorkspace = await request.server.prisma.workspace.findFirst({
@@ -3056,6 +3089,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       storageLocation: "b2",
       folderId: resolved.resolvedOwnerType === 'FOLDER' ? resolved.resolvedOwnerId : null,
       folderName: resolved.resolvedFolderName,
+      workspaceId: newAsset.workspaceId,
     };
 
     return { success: true, asset: fileInfo };

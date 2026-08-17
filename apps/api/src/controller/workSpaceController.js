@@ -475,19 +475,51 @@ module.exports.createFolder = async (request, reply) => {
             });
         }
 
+        let targetWorkspaceId = workspaceId;
+        let targetParentId = parentId;
+
+        // If creating a folder inside a project, it must reside in the project's parent directory
+        if (linkedProjectId) {
+            try {
+                const project = await prisma.project.findUnique({
+                    where: { id: linkedProjectId },
+                    select: { ownerType: true, workspaceId: true, folderId: true }
+                });
+                if (project) {
+                    if (project.ownerType === 'WORKSPACE') {
+                        // Project is directly inside a workspace
+                        targetWorkspaceId = project.workspaceId;
+                        if (!parentId) targetParentId = null;
+                    } else if (project.ownerType === 'FOLDER') {
+                        // Project is inside a folder — new folder goes into that parent folder
+                        if (!parentId) targetParentId = project.folderId;
+                        // Resolve workspace from project's own workspaceId (already stored)
+                        targetWorkspaceId = project.workspaceId;
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to fetch project parent info for folder creation:", err);
+            }
+        }
+
         // Validate parent folder exists (if provided)
-        if (parentId) {
+        if (targetParentId) {
             const parentFolder = await prisma.folder.findUnique({
                 where: {
-                    id: parentId,
+                    id: targetParentId,
                 },
             });
 
             if (!parentFolder) {
                 return reply.code(404).send({
                     success: false,
-                    message: 'Parent folder not found.'
+                    message: 'Parent folder not found.',
                 });
+            }
+
+            // OVERRIDE targetWorkspaceId with the parent folder's workspace ID to prevent workspace bleeding
+            if (parentFolder.workspaceId) {
+                targetWorkspaceId = parentFolder.workspaceId;
             }
         }
 
@@ -495,8 +527,8 @@ module.exports.createFolder = async (request, reply) => {
             data: {
                 name,
                 color,
-                parentId,
-                workspaceId,
+                parentId: targetParentId,
+                workspaceId: targetWorkspaceId,
                 ...(linkedProjectId ? {
                     sources: {
                         create: {
