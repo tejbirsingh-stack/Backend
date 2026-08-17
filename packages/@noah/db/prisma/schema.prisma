@@ -1245,3 +1245,16 @@ model SystemSetting {
 
   @@map("system_settings")
 }
+
+model GlobalAdminSetting {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ssoConfigured         Boolean  @default(false) @map("sso_configured")
+  ssoProvider           String   @default("google, microsoft") @map("sso_provider") @db.VarChar(100)
+  ssoDomain             String?  @map("sso_domain") @db.VarChar(255)
+  sessionTimeoutDays    Int      @default(30) @map("session_timeout_days")
+  contentSecurityPolicy String   @default("*.noahcloud.ai, localhost") @map("content_security_policy") @db.Text
+  createdAt             DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@map("global_admin_settings")
+}

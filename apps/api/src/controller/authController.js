@@ -1212,6 +1212,20 @@ module.exports.googleLogin = async (request, reply) => {
   const clientId = process.env.GOOGLE_CLIENT_ID || "967923512322-0oullb620hh9se1ff0prs8stvbspi829.apps.googleusercontent.com";
   const googleClient = new OAuth2Client(clientId);
 
+  // Global SSO enforcement check
+  try {
+    const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+    if (globalSetting && !globalSetting.ssoConfigured) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Single sign-on (SSO) is disabled by Global Admin.",
+      });
+    }
+  } catch (settingErr) {
+    console.error("Error checking global SSO setting:", settingErr);
+  }
+
   if (!idToken) {
     return reply.status(400).send({
       success: false,
@@ -1511,6 +1525,20 @@ module.exports.googleLogin = async (request, reply) => {
 module.exports.microsoftLogin = async (request, reply) => {
   const { idToken } = request.body;
   const clientId = process.env.MICROSOFT_CLIENT_ID;
+
+  // Global SSO enforcement check
+  try {
+    const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+    if (globalSetting && !globalSetting.ssoConfigured) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Single sign-on (SSO) is disabled by Global Admin.",
+      });
+    }
+  } catch (settingErr) {
+    console.error("Error checking global SSO setting:", settingErr);
+  }
 
   if (!idToken) {
     return reply.status(400).send({

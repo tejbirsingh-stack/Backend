@@ -353,6 +353,24 @@ class AuthService {
 
     if (!session || !session.user) return null;
 
+    // Check global session timeout inactivity limit
+    try {
+      const globalSetting = await prisma.globalAdminSetting.findFirst();
+      const timeoutDays = Number(globalSetting?.sessionTimeoutDays) || 30;
+      const maxInactivityMs = timeoutDays * 24 * 60 * 60 * 1000;
+
+      if (session.lastActiveAt) {
+        const inactiveMs = Date.now() - new Date(session.lastActiveAt).getTime();
+        if (inactiveMs > maxInactivityMs) {
+          // Revoke all sessions for this user due to inactivity timeout
+          await this.revokeAllSessions(session.user.id);
+          return null;
+        }
+      }
+    } catch (err) {
+      console.error("Error checking session inactivity timeout:", err.message);
+    }
+
     const authz = await loadUserAuthzContext(prisma, session.user.id);
     if (authz) {
       session.user.role = authz.role || session.user.roleRelation?.name || 'User';
