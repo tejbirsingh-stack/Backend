@@ -1,13 +1,15 @@
 version: 0.2
+
+env:
+  variables:
+    AWS_REGION: "us-east-2"
+    QA_TAG_NAME: "noah-qa"
+
 phases:
   build:
     commands:
-      - echo "Deploying Backend..."
-      - |
-        aws ssm send-command \
-        --region us-east-2 \
-        --instance-ids i-00c9c1576a9b26183 \
-        --document-name "AWS-RunShellScript" \
-        --parameters '{"commands":["cd /opt/noah-backend && git fetch origin && git reset --hard origin/qa && cd /opt/noah && docker compose up -d --build backend"]}' \
-        --output text \
-        --query "Command.CommandId"
+      - echo "Deploying Backend to QA..."
+      - COMMAND_ID=$(aws ssm send-command --region "$AWS_REGION" --targets "Key=tag:Name,Values=${QA_TAG_NAME}" --document-name "AWS-RunShellScript" --parameters "{\"commands\":[\"cd /opt/noah-backend && git fetch origin && git reset --hard origin/qa\",\"cd /opt/noah && docker compose up -d --build backend\"]}" --output text --query "Command.CommandId")
+      - echo "SSM Command ID is $COMMAND_ID"
+      - sleep 20
+      - aws ssm list-command-invocations --command-id "$COMMAND_ID" --region "$AWS_REGION" --details --query "CommandInvocations[].{Instance:InstanceId,Status:Status}"
