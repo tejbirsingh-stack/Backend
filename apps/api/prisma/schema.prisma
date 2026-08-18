@@ -378,7 +378,6 @@ model AssetUser {
   assetId String @map("asset_id") @db.Uuid
   userId  String @map("user_id") @db.Uuid
   accessLevelId String? @map("access_level_id") @db.Uuid
-  memberType  String @default("Member") @map("member_type") @db.VarChar(50)
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
