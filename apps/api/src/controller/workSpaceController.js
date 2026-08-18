@@ -1,4 +1,5 @@
 const prisma = require('../utils/prisma');
+const { resolveUserProjectPermissions } = require("../lib/rbac-policy");
 const crypto = require('crypto');
 const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
 const emailService = require('../services/email-service');
@@ -7,7 +8,7 @@ const { autoAssignAdminsToWorkspace, autoAssignAdminsToProject, assertWorkspaceA
 const { isOrgWideRole, resolveUserWorkspacePermissions } = require('../lib/rbac-policy');
 const { verifyProjectAccess } = require('../utils/projectAccessUtils');
 const { createNotification, notifyRole } = require('./notificationController');
-const { ACCESS_LEVEL } = require('../lib/rolesPermissions');
+const { ACCESS_LEVEL, MEMBER_TYPES, VISIBILITY } = require('../lib/rolesPermissions');
 const B2StorageService = require('../b2-storage.cjs');
 const { recordStorageDelta } = require('../services/usage-meter.service');
 
@@ -41,10 +42,10 @@ module.exports.storeWorkplace = async (request, reply) => {
             });
         }
 
-        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel } = request.body;
+        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel, isRestricted } = request.body;
 
         // Default values for granular permissions if not provided
-        const mType = memberType || 'MEMBER';
+        const mType = memberType || MEMBER_TYPES.MEMBER;
         let aLevel = accessLevel || 'FULL_ACCESS';
 
         // Resolve access level string/ID for invited users
@@ -123,7 +124,8 @@ module.exports.storeWorkplace = async (request, reply) => {
                 orgId,
                 name: formattedWorkspaceName,
                 description,
-                color
+                color,
+                visibility: isRestricted ? VISIBILITY.PRIVATE : VISIBILITY.PUBLIC
             }
         });
 
@@ -139,6 +141,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                 data: {
                     workspaceId: workspace.id,
                     userId: userId,
+                    memberType: MEMBER_TYPES.OWNER,
                     accessLevelId: creatorAccessLevelId
                 }
             }).catch(err => {
@@ -151,7 +154,7 @@ module.exports.storeWorkplace = async (request, reply) => {
             for (const email of inviteEmails) {
                 if (!email || typeof email !== 'string') continue;
 
-                if (mType === 'GUEST') {
+                if (mType === MEMBER_TYPES.GUEST) {
                     // Guest: must exist in DB, belong to a different org, and be active
                     const guestUser = await prisma.user.findFirst({
                         where: { email: email.toLowerCase().trim() }
@@ -169,7 +172,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                         data: {
                             workspaceId: workspace.id,
                             userId: guestUser.id,
-                            memberType: 'GUEST',
+                            memberType: MEMBER_TYPES.GUEST,
                             accessLevelId: aLevelId
                         }
                     }).catch(() => { });
@@ -278,26 +281,59 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             });
         }
 
-        const orConditions = [
-            {
-                users: {
-                    some: {
-                        userId: userId
-                    }
-                }
-            }
-        ];
+        // Check if this user is a cross-org guest (has WorkspaceUser records in workspaces NOT from their org)
+        const guestMemberships = await prisma.workspaceUser.findMany({
+            where: {
+                userId,
+                workspace: orgId ? { orgId: { not: orgId } } : {}
+            },
+            select: { workspaceId: true }
+        });
+        const guestWorkspaceIds = guestMemberships.map(m => m.workspaceId);
 
-        if (orgId) {
-            orConditions.push({ orgId: orgId });
-        }
+        let whereCondition = {
+            OR: [
+                // Own-org workspaces (public or member of)
+                {
+                    ...(orgId ? { orgId } : {}),
+                    OR: [
+                        { visibility: VISIBILITY.PUBLIC },
+                        {
+                            visibility: VISIBILITY.PRIVATE,
+                            OR: [
+                                { users: { some: { userId } } },
+                                { groups: { some: { group: { members: { some: { userId } } } } } }
+                            ]
+                        }
+                    ]
+                },
+                // Cross-org guest: explicitly invited to workspaces from other orgs
+                ...(guestWorkspaceIds.length > 0
+                    ? [{ id: { in: guestWorkspaceIds } }]
+                    : [])
+            ]
+        };
 
         let workspaces = await prisma.workspace.findMany({
-            where: {
-                OR: orConditions
-            },
+            where: whereCondition,
             orderBy: {
                 createdAt: 'desc'
+            },
+            include: {
+                users: {
+                    include: {
+                        user: {
+                            select: { id: true, name: true, email: true, roleRelation: true }
+                        }
+                    }
+                },
+                groups: {
+                    include: {
+                        group: {
+                            include: { members: true }
+                        }
+                    }
+                }
             }
         });
 
@@ -472,19 +508,51 @@ module.exports.createFolder = async (request, reply) => {
             });
         }
 
+        let targetWorkspaceId = workspaceId;
+        let targetParentId = parentId;
+
+        // If creating a folder inside a project, it must reside in the project's parent directory
+        if (linkedProjectId) {
+            try {
+                const project = await prisma.project.findUnique({
+                    where: { id: linkedProjectId },
+                    select: { ownerType: true, workspaceId: true, folderId: true }
+                });
+                if (project) {
+                    if (project.ownerType === 'WORKSPACE') {
+                        // Project is directly inside a workspace
+                        targetWorkspaceId = project.workspaceId;
+                        if (!parentId) targetParentId = null;
+                    } else if (project.ownerType === 'FOLDER') {
+                        // Project is inside a folder — new folder goes into that parent folder
+                        if (!parentId) targetParentId = project.folderId;
+                        // Resolve workspace from project's own workspaceId (already stored)
+                        targetWorkspaceId = project.workspaceId;
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to fetch project parent info for folder creation:", err);
+            }
+        }
+
         // Validate parent folder exists (if provided)
-        if (parentId) {
+        if (targetParentId) {
             const parentFolder = await prisma.folder.findUnique({
                 where: {
-                    id: parentId,
+                    id: targetParentId,
                 },
             });
 
             if (!parentFolder) {
                 return reply.code(404).send({
                     success: false,
-                    message: 'Parent folder not found.'
+                    message: 'Parent folder not found.',
                 });
+            }
+
+            // OVERRIDE targetWorkspaceId with the parent folder's workspace ID to prevent workspace bleeding
+            if (parentFolder.workspaceId) {
+                targetWorkspaceId = parentFolder.workspaceId;
             }
         }
 
@@ -492,8 +560,8 @@ module.exports.createFolder = async (request, reply) => {
             data: {
                 name,
                 color,
-                parentId,
-                workspaceId,
+                parentId: targetParentId,
+                workspaceId: targetWorkspaceId,
                 ...(linkedProjectId ? {
                     sources: {
                         create: {
@@ -642,16 +710,30 @@ module.exports.addProjectMember = async (request, reply) => {
             return reply.code(404).send({ success: false, message: 'User not found.' });
         }
 
-        const effectiveMemberType = memberType || 'Member';
+        const effectiveMemberType = memberType || MEMBER_TYPES.MEMBER;
 
-        await prisma.projectUser.create({
-            data: {
+        let resolvedAccessLevelId = null;
+        if (accessLevel) {
+            const lvl = await prisma.accessLevel.findFirst({ where: { title: accessLevel } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        } else {
+            const lvl = await prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        }
+
+        await prisma.projectUser.upsert({
+            where: { projectId_userId: { projectId, userId: user.id } },
+            update: {
+                accessLevelId: resolvedAccessLevelId,
+                memberType: effectiveMemberType
+            },
+            create: {
                 projectId,
                 userId: user.id,
-                accessLevel: accessLevel || 'Full Access',
+                accessLevelId: resolvedAccessLevelId,
                 memberType: effectiveMemberType,
             }
-        }).catch(() => { });
+        }).catch((err) => { console.error("Failed to add project member:", err) });
 
         // ALWAYS send in-app notification
         createNotification(
@@ -668,7 +750,7 @@ module.exports.addProjectMember = async (request, reply) => {
         if (sendInviteEmail) {
             try {
                 const orgName = project.workspace?.organization?.name || 'Noah Cloud';
-                if (effectiveMemberType === 'Guest') {
+                if (effectiveMemberType?.toUpperCase() === MEMBER_TYPES.GUEST) {
                     await emailService.sendProjectGuestInvite(user.email, {
                         projectName: project.name,
                         organizationName: orgName,
@@ -744,7 +826,7 @@ module.exports.updateProjectMemberAccess = async (request, reply) => {
 module.exports.createProject = async (request, reply) => {
     try {
         const { workspaceId } = request.params;
-        const { name, folderId, defaultTagIds, visibility = 'public', inviteEmails = [], inviteGroupIds = [], inviteAccess = 'Full Access', inviteMemberType = 'Member', sendInviteEmail = false } = request.body;
+        const { name, folderId, defaultTagIds, visibility = 'public', inviteEmails = [], inviteGroupIds = [], inviteAccess = 'Full Access', inviteMemberType = MEMBER_TYPES.MEMBER, sendInviteEmail = false } = request.body;
         const { orgId, id: userId } = request.user;
 
         if (!name) {
@@ -777,7 +859,7 @@ module.exports.createProject = async (request, reply) => {
         }
 
         // Validate guest emails: must be registered on platform but from a DIFFERENT organization
-        if (visibility.toLowerCase() === 'private' && inviteMemberType === 'Guest' && Array.isArray(inviteEmails) && inviteEmails.length > 0) {
+        if (visibility.toLowerCase() === VISIBILITY.PRIVATE && inviteMemberType?.toUpperCase() === MEMBER_TYPES.GUEST && Array.isArray(inviteEmails) && inviteEmails.length > 0) {
             for (const email of inviteEmails) {
                 if (!email || typeof email !== 'string') continue;
                 const cleanEmail = email.toLowerCase().trim();
@@ -851,7 +933,7 @@ module.exports.createProject = async (request, reply) => {
         });
 
         // If visibility is private, handle project invites
-        if (visibility.toLowerCase() === 'private') {
+        if (visibility.toLowerCase() === VISIBILITY.PRIVATE) {
 
             // Get full access ID for the creator
             let fullAccessId = null;
@@ -876,13 +958,13 @@ module.exports.createProject = async (request, reply) => {
                         projectId: project.id,
                         userId: userId,
                         accessLevelId: fullAccessId,
-                        memberType: 'Member',
+                        memberType: MEMBER_TYPES.OWNER,
                     }
                 }).catch(() => { });
             }
 
-            // Also auto-assign admins for private projects
-            await autoAssignAdminsToProject(prisma, request.user.orgId, project.id);
+            // Also auto-assign admins/owners for private projects
+            await autoAssignAdminsToProject(prisma, request.user.orgId, workspaceId, project.id);
 
             // Add invited emails
             if (Array.isArray(inviteEmails) && inviteEmails.length > 0) {
@@ -893,7 +975,7 @@ module.exports.createProject = async (request, reply) => {
                     if (!email || typeof email !== 'string') continue;
                     const cleanEmail = email.toLowerCase().trim();
 
-                    if (inviteMemberType === 'Guest') {
+                    if (inviteMemberType?.toUpperCase() === MEMBER_TYPES.GUEST) {
                         // GUEST FLOW: Require user to exist globally, then create ProjectUser and send normal invite
                         let invitedUser = await prisma.user.findUnique({
                             where: { email: cleanEmail }
@@ -1086,9 +1168,9 @@ module.exports.findAllProjects = async (request, reply) => {
                 ...(isAdmin ? {} : {
                     status: 'active',
                     OR: [
-                        { visibility: 'public' },
+                        { visibility: VISIBILITY.PUBLIC },
                         {
-                            visibility: 'private',
+                            visibility: VISIBILITY.PRIVATE,
                             OR: [
                                 { users: { some: { userId } } },
                                 { groups: { some: { group: { members: { some: { userId } } } } } }
@@ -1140,7 +1222,19 @@ module.exports.findAllProjects = async (request, reply) => {
 module.exports.findFolderData = async (request, reply) => {
     try {
         const { id } = request.params; // folderId
+        const { projectId } = request.query;
 
+        let effectivePermissions = undefined;
+        if (projectId && request.user) {
+            const project = await prisma.project.findUnique({
+                where: { id: projectId },
+                include: { workspace: true }
+            });
+            if (project) {
+                const { resolveUserProjectPermissions } = require('../lib/rbac-policy');
+                effectivePermissions = await resolveUserProjectPermissions(prisma, request.user, project);
+            }
+        }
 
         const folders = await prisma.folder.findMany({
             where: {
@@ -1187,7 +1281,8 @@ module.exports.findFolderData = async (request, reply) => {
                 folderInfo,
                 media: [], // Deprecated: fetched via pagination API
                 folders,
-                projects
+                projects,
+                ...(effectivePermissions !== undefined ? { effectivePermissions } : {})
             }
         });
 
@@ -1362,12 +1457,24 @@ module.exports.findProjectData = async (request, reply) => {
             where: { id: { in: Array.from(allFolderIds) } }
         }).catch(() => []);
 
+        let effectivePermissions = [];
+        if (request.user) {
+            const project = await prisma.project.findUnique({
+                where: { id: projectId },
+                include: { workspace: true }
+            });
+            if (project) {
+                effectivePermissions = await resolveUserProjectPermissions(prisma, request.user, project);
+            }
+        }
+
         return reply.code(200).send({
             success: true,
             message: 'Project contents fetched successfully.',
             data: {
                 media: assets,
-                folders: completeFolders
+                folders: completeFolders,
+                effectivePermissions
             }
         });
 

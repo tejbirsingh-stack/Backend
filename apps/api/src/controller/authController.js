@@ -7,9 +7,9 @@ const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
-const { autoAssignAdminsToWorkspace } = require("../services/workspace.service");
+const { autoAssignAdminsToWorkspace, autoAssignNewAdminToWorkspaces } = require("../services/workspace.service");
 const { createDefaultWorkspace: createDefaultWorkspaceWithStarterContent } = require("../lib/platform-provision");
-const { ACCESS_LEVEL } = require("../lib/rolesPermissions");
+const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -460,6 +460,7 @@ module.exports.register = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: finalOrgId,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -519,29 +520,8 @@ module.exports.register = async (request, reply) => {
       },
     });
 
-    // Auto-assign the user to the newly created default workspace and run admin auto-assign
+    // Assign Super Admins / Admins to this newly created workspace (which skips public now)
     if (request.newWorkspaceId) {
-      // Get the ID for Full Access
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
-
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: request.newWorkspaceId,
-            userId: user.id
-          }
-        },
-        update: {},
-        create: {
-          workspaceId: request.newWorkspaceId,
-          userId: user.id,
-          memberType: 'MEMBER',
-          accessLevelId: fullAccessId
-        }
-      });
-      // Assign Super Admins / Admins now that the first user exists
       await autoAssignAdminsToWorkspace(request.server.prisma, finalOrgId, request.newWorkspaceId);
     }
 
@@ -784,6 +764,12 @@ module.exports.registerRole = async (request, reply) => {
       },
     });
     user.role = roleObj.name;
+
+    if (['Super Admin', 'Admin', 'System Admin'].includes(user.role)) {
+      if (user.orgId) {
+        await autoAssignNewAdminToWorkspaces(request.server.prisma, user.orgId, user.id);
+      }
+    }
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
@@ -1077,58 +1063,55 @@ module.exports.getMe = async (request, reply) => {
 
 // 8. Forgot Password Handler
 module.exports.forgotPassword = async (request, reply) => {
-  const { email } = request.body;
+  const { email } = request.body || {};
 
   try {
     // Validate input
-    if (!email) {
+    if (!email || typeof email !== "string" || !email.trim()) {
       return reply.status(400).send({
         error: "Bad Request",
         message: "Email is required",
       });
     }
 
-    // Find the user
-    const user = await authService.findUserByEmail(email);
+    const cleanEmail = email.trim().toLowerCase();
 
-    // If user doesn't exist, still return success to prevent email enumeration
+    // Find the user by email in user table
+    const user = await authService.findUserByEmail(cleanEmail);
+
     if (!user) {
-      return {
-        success: true,
-        message:
-          "If an account exists for this email, a password reset link has been sent",
-      };
+      return reply.status(404).send({
+        error: "Not Found",
+        message: "No account found with this email address.",
+      });
     }
 
-    // Check user status
     if (user.status !== "active") {
-      return {
-        success: true,
-        message:
-          "If an account exists for this email, a password reset link has been sent",
-      };
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "This account is inactive or suspended.",
+      });
     }
 
-    // Generate token
+    // Generate dedicated password-reset JWT with 12-hour expiry and unique jti
     const resetToken = await authService.createPasswordResetToken(user.id);
 
-    const frontendUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
+    const frontendUrl =
+      request.headers.origin ||
+      process.env.FRONTEND_URL ||
+      (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:3002");
     const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
-    // Use the email service to send the email
-    // This is a placeholder - you'll need to implement email sending
-    console.log(`Password reset email for ${user.email}: ${resetUrl}`);
-
-    // In production, you would use:
-    await request.server.emailService.sendPasswordReset(user.email, user.name, resetUrl);
+    const emailService = request.server?.emailService || require("../services/email-service");
+    const emailSender = emailService.sendPasswordReset ? emailService : (new (require("../services/email-service"))());
+    await emailSender.sendPasswordReset(user.email, user.name, resetUrl);
 
     logSuccess(ACTIVITY_NAME.FORGOT_PASSWORD, "Password reset link requested.", null, user);
 
-    return {
+    return reply.send({
       success: true,
-      message:
-        "If an account exists for this email, a password reset link has been sent",
-    };
+      message: `Password reset link has been sent to ${user.email}.`,
+    });
   } catch (error) {
     console.error("Forgot password error:", error);
     logError("FORGOT PASSWORD", "Password reset link request failed.", request, error);
@@ -1137,12 +1120,46 @@ module.exports.forgotPassword = async (request, reply) => {
       message: "Failed to process password reset request",
     });
   }
-}
+};
 
-// 9. Reset Password Handle
+// 8b. Validate Reset Token Handler
+module.exports.validateResetToken = async (request, reply) => {
+  const token = request.query?.token || request.body?.token;
+
+  if (!token) {
+    return reply.status(400).send({
+      valid: false,
+      message: "Token is required",
+    });
+  }
+
+  try {
+    const validation = await authService.validatePasswordResetToken(token);
+
+    if (!validation) {
+      return reply.status(400).send({
+        valid: false,
+        message: "This password reset link is invalid or has expired. Please request a new reset link.",
+      });
+    }
+
+    return reply.send({
+      valid: true,
+    });
+  } catch (error) {
+    console.error("Validate reset token error:", error);
+    return reply.status(400).send({
+      valid: false,
+      message: "This password reset link is invalid or has expired. Please request a new reset link.",
+    });
+  }
+};
+
+// 9. Reset Password Handler
 module.exports.resetPassword = async (request, reply) => {
-  const { token, newPassword, password, name } = request.body || {};
-  const finalPassword = newPassword || password;
+  const { token, password, confirmPassword, newPassword } = request.body || {};
+  const finalPassword = password || newPassword;
+  const matchConfirmPassword = confirmPassword || finalPassword;
 
   try {
     // Validate input
@@ -1153,139 +1170,47 @@ module.exports.resetPassword = async (request, reply) => {
       });
     }
 
-    // Verify token and get user ID
-    const userId = await authService.verifyPasswordResetToken(token);
-
-    if (!userId) {
+    if (finalPassword !== matchConfirmPassword) {
       return reply.status(400).send({
         error: "Bad Request",
-        message: "Invalid or expired setup/reset token",
+        message: "Password and confirm password must match",
       });
     }
 
-    // Get the user with organization details
-    const user = await request.server.prisma.user.findUnique({
-      where: { id: userId },
-      include: { organization: true },
+    await authService.resetUserPassword(token, finalPassword);
+
+    return reply.send({
+      success: true,
+      message: "Password updated successfully.",
     });
-
-    if (!user) {
-      return reply.status(400).send({
-        error: "Bad Request",
-        message: "User not found",
-      });
-    }
-
-    // Hash the new password
-    const passwordHash = await authService.hashPassword(finalPassword);
-
-    // Prepare update data: update password, activate status, and set name if provided
-    const updateData = {
-      passwordHash,
-      status: "active",
-      emailVerified: true,
-    };
-    if (name && typeof name === "string" && name.trim().length > 0) {
-      updateData.name = name.trim();
-    }
-
-    // Update the user's account in database
-    const updatedUser = await request.server.prisma.user.update({
-      where: { id: userId },
-      data: updateData,
-      include: { organization: true },
-    });
-
-    // Revoke all active sessions for security upon password change
-    await authService.revokeAllUserSessions(userId);
-
-    // --- HUBSPOT BACKGROUND SYNC BLOCK ---
-    const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
-    const formId = process.env.HUBSPOT_FORM_ID?.trim();
-    const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
-
-    //get first name from name
-    const firstName = name.trim().split(/\s+/)[0];
-    // Automatically create a default workspace for the new user and add them as a member
-    const defaultWorkspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
-      name: `${firstName}-Workspace`,
-      description: "Default workspace for " + name,
-      color: "#4f46e5",
-      orgId: updatedUser?.orgId,
-      orgName: updatedUser?.organization?.name || firstName,
-      uploadedByUserId: updatedUser?.id,
-    });
-    // Add the user as a WorkspaceUser so the workspace appears in their sidebar
-    await request.server.prisma.workspaceUser.create({
-      data: {
-        workspaceId: defaultWorkspace.id,
-        userId: updatedUser.id,
-      }
-    }).catch((err) => console.warn('Could not create WorkspaceUser for default workspace:', err));
-    if (portalId && formId) {
-      const userName = updatedUser.name || updatedUser.email.split('@')[0];
-      const [firstname, ...lastnameParts] = userName.split(" ");
-      const lastname = lastnameParts.join(" ") || "";
-      const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
-
-      const headers = { "Content-Type": "application/json" };
-      if (accessToken) {
-        headers["Authorization"] = `Bearer ${accessToken}`;
-      }
-
-      if (typeof fetch !== 'undefined') {
-        fetch(hubspotEndpoint, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            fields: [
-              { objectTypeId: "0-1", name: "email", value: updatedUser.email },
-              { objectTypeId: "0-1", name: "firstname", value: firstname },
-              { objectTypeId: "0-1", name: "lastname", value: lastname },
-              { objectTypeId: "0-1", name: "company", value: updatedUser.organization ? updatedUser.organization.name : "" },
-              { objectTypeId: "0-1", name: "phone", value: updatedUser.phone || "" },
-            ],
-            context: {
-              pageUri: request.headers.referer || "",
-              pageName: "Account Setup / Password Reset Page",
-              ipAddress: request.ip,
-            },
-            skipValidation: true,
-          }),
-        })
-          .then(async (res) => {
-            if (!res.ok) {
-              const errText = await res.text();
-              console.error("HubSpot Form submit failed response (resetPassword):", errText);
-            } else {
-              console.log("Successfully synced setup/resetPassword to HubSpot Form");
-            }
-          })
-          .catch((err) => {
-            console.error("HubSpot Form API Connection error (resetPassword):", err.message);
-          });
-      }
-    }
-
-    logSuccess(ACTIVITY_NAME.RESET_PASSWORD, "Password reset successfully.", null, updatedUser);
-
-    // Return success
-    return { success: true, message: "Account setup / password reset completed successfully" };
   } catch (error) {
-    console.error("Reset password / account setup error:", error);
-    logError(ACTIVITY_NAME.RESET_PASSWORD, "Password reset failed.", request, error);
-    return reply.status(500).send({
-      error: "Internal Server Error",
-      message: "Failed to setup account / reset password",
+    console.error("Reset password error:", error);
+    return reply.status(400).send({
+      error: "Bad Request",
+      message: error.message || "Failed to reset password",
     });
   }
-}
+};
 
 //10. Google Login Hander
 module.exports.googleLogin = async (request, reply) => {
   const { idToken } = request.body || {};
   const clientId = process.env.GOOGLE_CLIENT_ID || "967923512322-0oullb620hh9se1ff0prs8stvbspi829.apps.googleusercontent.com";
   const googleClient = new OAuth2Client(clientId);
+
+  // Global SSO enforcement check
+  try {
+    const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+    if (globalSetting && !globalSetting.ssoConfigured) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Single sign-on (SSO) is disabled by Global Admin.",
+      });
+    }
+  } catch (settingErr) {
+    console.error("Error checking global SSO setting:", settingErr);
+  }
 
   if (!idToken) {
     return reply.status(400).send({
@@ -1449,6 +1374,7 @@ module.exports.googleLogin = async (request, reply) => {
           description: "Default workspace for " + fullName,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -1456,26 +1382,7 @@ module.exports.googleLogin = async (request, reply) => {
       // Assign Super Admins / Admins
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the user gets access to this new workspace
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: newWorkspace.id,
-            userId: user.id
-          }
-        },
-        update: {},
-        create: {
-          workspaceId: newWorkspace.id,
-          userId: user.id,
-          memberType: 'MEMBER',
-          accessLevelId: fullAccessId
-        }
-      });
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -1586,6 +1493,20 @@ module.exports.googleLogin = async (request, reply) => {
 module.exports.microsoftLogin = async (request, reply) => {
   const { idToken } = request.body;
   const clientId = process.env.MICROSOFT_CLIENT_ID;
+
+  // Global SSO enforcement check
+  try {
+    const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+    if (globalSetting && !globalSetting.ssoConfigured) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Single sign-on (SSO) is disabled by Global Admin.",
+      });
+    }
+  } catch (settingErr) {
+    console.error("Error checking global SSO setting:", settingErr);
+  }
 
   if (!idToken) {
     return reply.status(400).send({
@@ -1736,6 +1657,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -1748,32 +1670,13 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + orgName,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
+          isDefault: true,
         }
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace2.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the new user gets access to these workspaces
-      for (const wid of [newWorkspace1.id, newWorkspace2.id]) {
-        await request.server.prisma.workspaceUser.upsert({
-          where: {
-            workspaceId_userId: {
-              workspaceId: wid,
-              userId: user.id
-            }
-          },
-          update: {},
-          create: {
-            workspaceId: wid,
-            userId: user.id,
-            memberType: 'MEMBER',
-            accessLevelId: fullAccessId
-          }
-        });
-      }
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -2470,31 +2373,19 @@ module.exports.completeSignup = async (request, reply) => {
       });
     }
 
-    const workspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
-      name: formattedWorkspaceName,
-      description: `Workspace for ${formattedWorkspaceName}`,
-      color: "#4f46e5",
-      orgId: organization.id,
-      orgName: organization.name,
-      uploadedByUserId: user.id,
+    const workspace = await request.server.prisma.workspace.create({
+      data: {
+        name: formattedWorkspaceName,
+        description: `Workspace for ${formattedWorkspaceName}`,
+        color: "#4f46e5",
+        orgId: organization.id,
+        visibility: 'public', // <--- Explicitly make it public
+        isDefault: true,
+      },
     });
 
     // Assign Super Admins / Admins
     await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, workspace.id);
-
-    await request.server.prisma.workspaceUser.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: workspace.id,
-          userId: user.id,
-        }
-      },
-      update: {},
-      create: {
-        workspaceId: workspace.id,
-        userId: user.id,
-      },
-    });
 
     // Automatically create default share settings for the new organization
     await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);

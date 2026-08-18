@@ -55,6 +55,10 @@ const {
   updateDefaultContent,
   deleteDefaultContent,
 } = require('../controller/platform-default-content.controller');
+const {
+  getGlobalSecuritySettings,
+  updateGlobalSecuritySettings,
+} = require('../controller/platform-security.controller');
 
 /**
  * Platform Admin API — NOAH operator console.
@@ -130,6 +134,10 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   fastify.post('/default-content', { preHandler: requirePlatformAdmin }, uploadDefaultContent);
   fastify.patch('/default-content/:id', { preHandler: requirePlatformAdmin }, updateDefaultContent);
   fastify.delete('/default-content/:id', { preHandler: requirePlatformAdmin }, deleteDefaultContent);
+
+  // Global Security Settings
+  fastify.get('/security', getGlobalSecuritySettings);
+  fastify.put('/security', { preHandler: requirePlatformAdmin }, updateGlobalSecuritySettings);
 
   done();
 };
