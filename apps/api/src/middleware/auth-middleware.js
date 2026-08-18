@@ -76,6 +76,40 @@ async function authenticate(request, reply) {
           }
 
           if (decoded.id) {
+            // Check global session timeout inactivity limit
+            try {
+              const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+              const timeoutDays = Number(globalSetting?.sessionTimeoutDays) || 30;
+              const maxInactivityMs = timeoutDays * 24 * 60 * 60 * 1000;
+
+              const dbUser = await request.server.prisma.user.findUnique({
+                where: { id: decoded.id },
+                select: { lastActiveAt: true, status: true },
+              });
+
+              if (dbUser?.status !== 'active') {
+                throw new Error("User account is no longer active");
+              }
+
+              if (dbUser?.lastActiveAt) {
+                const inactiveMs = Date.now() - new Date(dbUser.lastActiveAt).getTime();
+                if (inactiveMs > maxInactivityMs) {
+                  // Revoke all sessions across all devices due to inactivity
+                  await request.server.prisma.userSession.updateMany({
+                    where: { userId: decoded.id, revokedAt: null },
+                    data: { revokedAt: new Date() },
+                  }).catch(() => {});
+
+                  throw new Error(`Session expired due to ${timeoutDays} days of inactivity configured by Global Admin.`);
+                }
+              }
+            } catch (timeoutErr) {
+              if (timeoutErr.message.includes("Session expired due to")) {
+                throw timeoutErr;
+              }
+              console.error("Session timeout check warning:", timeoutErr.message);
+            }
+
             const authz = await loadUserAuthzContext(request.server.prisma, decoded.id);
             if (!authz) {
               throw new Error("User account no longer exists or is inactive");

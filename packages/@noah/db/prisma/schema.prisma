@@ -44,6 +44,7 @@ model Organization {
 
   workspaces Workspace[]
   settings   OrganizationSettings?
+  brandingSettings OrganisationBrandingSetting?
 
   @@map("organizations")
 }
@@ -65,6 +66,28 @@ model OrganizationSettings {
   updatedAt         DateTime @default(now()) @updatedAt @db.Timestamptz(6) @map("updated_at")
 
   @@map("organization_settings")
+}
+
+model OrganisationBrandingSetting {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orgId               String   @unique @map("org_id") @db.Uuid
+  organization        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  
+  accountName         String?  @map("account_name") @db.VarChar(255)
+  accountInitials     String?  @map("account_initials") @db.VarChar(10)
+  logoUrl             String?  @map("logo_url") @db.Text
+  logoKey             String?  @map("logo_key") @db.Text
+  headerImageUrl      String?  @map("header_image_url") @db.Text
+  headerImageKey      String?  @map("header_image_key") @db.Text
+  headerImageMaxMb    Int      @default(25) @map("header_image_max_mb")
+  accentColor         String   @default("#5B53FF") @map("accent_color") @db.VarChar(50)
+  reelBackgroundColor String   @default("None") @map("reel_background_color") @db.VarChar(50)
+  reelTitleColor      String   @default("None") @map("reel_title_color") @db.VarChar(50)
+
+  createdAt           DateTime @default(now()) @db.Timestamptz(6) @map("created_at")
+  updatedAt           DateTime @default(now()) @updatedAt @db.Timestamptz(6) @map("updated_at")
+
+  @@map("organisation_branding_settings")
 }
 
 model User {
@@ -136,14 +159,17 @@ model User {
 // Password reset tokens
 model PasswordResetToken {
   id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  token     String    @unique @db.VarChar(255)
+  token     String?   @db.Text
+  jti       String    @unique @default(uuid()) @db.VarChar(255)
   userId    String    @db.Uuid
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime  @db.Timestamptz(6)
   usedAt    DateTime? @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
 
-  @@index([token])
+  @@index([jti])
+  @@index([userId])
   @@map("password_reset_tokens")
 }
 
@@ -1245,4 +1271,17 @@ model SystemSetting {
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@map("system_settings")
+}
+
+model GlobalAdminSetting {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ssoConfigured         Boolean  @default(false) @map("sso_configured")
+  ssoProvider           String   @default("google, microsoft") @map("sso_provider") @db.VarChar(100)
+  ssoDomain             String?  @map("sso_domain") @db.VarChar(255)
+  sessionTimeoutDays    Int      @default(30) @map("session_timeout_days")
+  contentSecurityPolicy String   @default("*.noahcloud.ai, localhost") @map("content_security_policy") @db.Text
+  createdAt             DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@map("global_admin_settings")
 }
