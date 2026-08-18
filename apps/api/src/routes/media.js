@@ -35,6 +35,7 @@ const {
 
 const {
   authenticate,
+  optionalAuthenticate,
   requirePermission,
   requireProjectAccess,
 } = require('../middleware/auth-middleware');
@@ -77,8 +78,8 @@ module.exports = function (fastify, opts, done) {
   //8. Permanently delete a file from B2
   fastify.delete("/:filename/permanent", canDelete, deletePermanently);
 
-  //9. GET /api/media/:filename — file bytes for players
-  fastify.get("/:filename", getMediaFile);
+  //9. GET /api/media/:filename — file bytes for players (optionally authenticated for permission resolution)
+  fastify.get("/:filename", { preHandler: [optionalAuthenticate] }, getMediaFile);
 
   //9.1 POST and PATCH /api/media/:filename/tags — update asset tags
   fastify.post("/:filename/tags", canTags, updateAssetTags);

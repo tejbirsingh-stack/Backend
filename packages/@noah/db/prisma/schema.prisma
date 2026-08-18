@@ -351,10 +351,11 @@ model AssetUser {
   id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   assetId String @map("asset_id") @db.Uuid
   userId  String @map("user_id") @db.Uuid
-  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
+  accessLevelId String? @map("access_level_id") @db.Uuid
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessLevelObj AccessLevel? @relation("AssetUserAccess", fields: [accessLevelId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -369,10 +370,11 @@ model AssetGroup {
   id      String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   assetId String @map("asset_id") @db.Uuid
   groupId String @map("group_id") @db.Uuid
-  accessLevel String @default("Full Access") @map("access_level") @db.VarChar(50)
+  accessLevelId String? @map("access_level_id") @db.Uuid
 
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
   group UserGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  accessLevelObj AccessLevel? @relation("AssetGroupAccess", fields: [accessLevelId], references: [id])
 
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -1215,6 +1217,8 @@ model AccessLevel {
   workspaceGroups WorkspaceGroup[] @relation("WorkspaceGroupAccess")
   projectUsers    ProjectUser[]   @relation("ProjectUserAccess")
   projectGroups   ProjectGroup[]  @relation("ProjectGroupAccess")
+  assetUsers      AssetUser[]     @relation("AssetUserAccess")
+  assetGroups     AssetGroup[]    @relation("AssetGroupAccess")
   permissions     AccessLevelPermission[]
 
   @@map("access_levels")

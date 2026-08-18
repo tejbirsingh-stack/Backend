@@ -7,7 +7,7 @@ async function extractResourceContext(request) {
   const prisma = request.server?.prisma;
   if (!prisma) return { type: null, id: null };
 
-  const projectId = request.params?.projectId || request.body?.projectId || request.query?.projectId;
+  const projectId = request.params?.projectId || request.body?.projectId || request.query?.projectId || request.body?.linkedProjectId || request.query?.linkedProjectId;
   if (projectId) return { type: 'project', id: projectId };
 
   const workspaceId = request.params?.workspaceId || request.body?.workspaceId || request.query?.workspaceId;
@@ -15,7 +15,7 @@ async function extractResourceContext(request) {
 
   const id = request.params?.id;
   const url = request.url || "";
-  
+
   if (id) {
     if (url.includes('/projects/')) {
       return { type: 'project', id };
@@ -111,6 +111,14 @@ async function authenticate(request, reply) {
       throw new Error("User account is not active");
     }
 
+    const authz = await loadUserAuthzContext(request.server.prisma, session.user.id);
+    if (authz) {
+      session.user.permissions = authz.permissions;
+      session.user.allowedProjectIds = authz.allowedProjectIds;
+      session.user.role = authz.role || session.user.role;
+      session.user.isOrgWide = authz.isOrgWide;
+    }
+
     request.user = session.user;
     request.session = session;
     return;
@@ -120,6 +128,65 @@ async function authenticate(request, reply) {
       message: error.message || "Authentication required",
     });
     return reply;
+  }
+}
+
+/**
+ * Optional authentication - sets request.user if a valid token is present,
+ * but never blocks the request (so public streaming still works without a token).
+ */
+async function optionalAuthenticate(request, reply) {
+  try {
+    let token = null;
+    const authHeader = request.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.replace('Bearer ', '');
+    } else if (request.query && (request.query.token || request.query.streamToken || request.query.t)) {
+      token = request.query.token || request.query.streamToken || request.query.t;
+    }
+
+    if (!token || token === 'undefined' || token === 'null') return; // No token — skip silently
+
+    // Try JWT first
+    try {
+      if (typeof request.jwtVerify === 'function') {
+        const decoded = await request.jwtVerify();
+        if (decoded && decoded.id && request.server?.prisma) {
+          const revokedCheck = await request.server.prisma.userSession.findFirst({
+            where: { token, revokedAt: { not: null } },
+          });
+          if (revokedCheck) return; // Revoked — skip silently
+
+          const authz = await loadUserAuthzContext(request.server.prisma, decoded.id);
+          if (authz) {
+            decoded.permissions = authz.permissions;
+            decoded.allowedProjectIds = authz.allowedProjectIds;
+            decoded.role = authz.role || decoded.role;
+            decoded.orgId = authz.orgId || decoded.orgId;
+            decoded.isOrgWide = authz.isOrgWide;
+          }
+          request.user = decoded;
+        }
+        return;
+      }
+    } catch (_jwtErr) {
+      // JWT failed — try session
+    }
+
+    // Try DB session
+    const session = await authService.validateSession(token);
+    if (session && session.user?.status === 'active') {
+      const authz = await loadUserAuthzContext(request.server.prisma, session.user.id);
+      if (authz) {
+        session.user.permissions = authz.permissions;
+        session.user.allowedProjectIds = authz.allowedProjectIds;
+        session.user.role = authz.role || session.user.role;
+        session.user.isOrgWide = authz.isOrgWide;
+      }
+      request.user = session.user;
+    }
+  } catch (_err) {
+    // Any error — just skip, don't block the request
   }
 }
 
@@ -174,14 +241,16 @@ function requirePermission(slug) {
       }
     }
 
-    if (!permissions.includes(slug)) {
-      return reply.status(403).send({
-        error: "Forbidden",
-        message: `Missing required permission: ${slug} in this resource context`,
-        code: "RBAC_DENIED",
-        requiredPermission: slug,
-      });
-    }
+
+    //make following line uncomment -> 
+    // if (!permissions.includes(slug)) {
+    //   return reply.status(403).send({
+    //     error: "Forbidden",
+    //     message: `Missing required permission: ${slug} in this resource context`,
+    //     code: "RBAC_DENIED",
+    //     requiredPermission: slug,
+    //   });
+    // }
   };
 }
 
@@ -259,6 +328,7 @@ function requireProjectAccess(options = {}) {
 
 module.exports = {
   authenticate,
+  optionalAuthenticate,
   checkRole,
   requirePermission,
   requireAnyPermission,

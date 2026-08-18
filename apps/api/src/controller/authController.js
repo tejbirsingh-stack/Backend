@@ -7,9 +7,9 @@ const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
-const { autoAssignAdminsToWorkspace } = require("../services/workspace.service");
+const { autoAssignAdminsToWorkspace, autoAssignNewAdminToWorkspaces } = require("../services/workspace.service");
 const { createDefaultWorkspace: createDefaultWorkspaceWithStarterContent } = require("../lib/platform-provision");
-const { ACCESS_LEVEL } = require("../lib/rolesPermissions");
+const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -460,6 +460,7 @@ module.exports.register = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: finalOrgId,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -519,29 +520,8 @@ module.exports.register = async (request, reply) => {
       },
     });
 
-    // Auto-assign the user to the newly created default workspace and run admin auto-assign
+    // Assign Super Admins / Admins to this newly created workspace (which skips public now)
     if (request.newWorkspaceId) {
-      // Get the ID for Full Access
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
-
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: request.newWorkspaceId,
-            userId: user.id
-          }
-        },
-        update: {},
-        create: {
-          workspaceId: request.newWorkspaceId,
-          userId: user.id,
-          memberType: 'MEMBER',
-          accessLevelId: fullAccessId
-        }
-      });
-      // Assign Super Admins / Admins now that the first user exists
       await autoAssignAdminsToWorkspace(request.server.prisma, finalOrgId, request.newWorkspaceId);
     }
 
@@ -784,6 +764,12 @@ module.exports.registerRole = async (request, reply) => {
       },
     });
     user.role = roleObj.name;
+
+    if (['Super Admin', 'Admin', 'System Admin'].includes(user.role)) {
+      if (user.orgId) {
+        await autoAssignNewAdminToWorkspaces(request.server.prisma, user.orgId, user.id);
+      }
+    }
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
@@ -1449,6 +1435,7 @@ module.exports.googleLogin = async (request, reply) => {
           description: "Default workspace for " + fullName,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -1456,26 +1443,7 @@ module.exports.googleLogin = async (request, reply) => {
       // Assign Super Admins / Admins
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the user gets access to this new workspace
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: newWorkspace.id,
-            userId: user.id
-          }
-        },
-        update: {},
-        create: {
-          workspaceId: newWorkspace.id,
-          userId: user.id,
-          memberType: 'MEMBER',
-          accessLevelId: fullAccessId
-        }
-      });
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -1736,6 +1704,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -1748,32 +1717,13 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + orgName,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
+          isDefault: true,
         }
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace2.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the new user gets access to these workspaces
-      for (const wid of [newWorkspace1.id, newWorkspace2.id]) {
-        await request.server.prisma.workspaceUser.upsert({
-          where: {
-            workspaceId_userId: {
-              workspaceId: wid,
-              userId: user.id
-            }
-          },
-          update: {},
-          create: {
-            workspaceId: wid,
-            userId: user.id,
-            memberType: 'MEMBER',
-            accessLevelId: fullAccessId
-          }
-        });
-      }
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -2470,31 +2420,19 @@ module.exports.completeSignup = async (request, reply) => {
       });
     }
 
-    const workspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
-      name: formattedWorkspaceName,
-      description: `Workspace for ${formattedWorkspaceName}`,
-      color: "#4f46e5",
-      orgId: organization.id,
-      orgName: organization.name,
-      uploadedByUserId: user.id,
+    const workspace = await request.server.prisma.workspace.create({
+      data: {
+        name: formattedWorkspaceName,
+        description: `Workspace for ${formattedWorkspaceName}`,
+        color: "#4f46e5",
+        orgId: organization.id,
+        visibility: 'public', // <--- Explicitly make it public
+        isDefault: true,
+      },
     });
 
     // Assign Super Admins / Admins
     await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, workspace.id);
-
-    await request.server.prisma.workspaceUser.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: workspace.id,
-          userId: user.id,
-        }
-      },
-      update: {},
-      create: {
-        workspaceId: workspace.id,
-        userId: user.id,
-      },
-    });
 
     // Automatically create default share settings for the new organization
     await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);

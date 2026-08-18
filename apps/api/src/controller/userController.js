@@ -1,5 +1,6 @@
 // User and Team Management Controller
 const { roles } = require('../lib');
+const { autoAssignNewAdminToWorkspaces } = require('../services/workspace.service');
 const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
 
@@ -420,6 +421,12 @@ module.exports.updateUserAdmin = async (request, reply) => {
         roleRelation: true
       }
     });
+
+    if (roleId && ['Super Admin', 'Admin', 'System Admin'].includes(updatedUser.role)) {
+      if (updatedUser.orgId) {
+        await autoAssignNewAdminToWorkspaces(request.server.prisma, updatedUser.orgId, updatedUser.id);
+      }
+    }
 
     return reply.send({
       success: true,
