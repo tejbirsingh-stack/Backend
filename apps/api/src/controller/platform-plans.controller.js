@@ -1,5 +1,6 @@
 const prisma = require('../utils/prisma');
 const { writePlatformAudit } = require('../lib/platform-audit');
+const stripeService = require('../services/stripe.service');
 
 function serializePlan(plan) {
   if (!plan) return null;
@@ -76,7 +77,24 @@ async function createPlan(request, reply) {
     if (data.features === undefined) data.features = [];
     if (data.isActive === undefined) data.isActive = true;
 
-    const plan = await prisma.plan.create({ data: { id, ...data } });
+    let plan = await prisma.plan.create({ data: { id, ...data } });
+    
+    // Sync to Stripe
+    try {
+      const stripeSync = await stripeService.syncPlanToStripe(plan);
+      if (stripeSync.monthlyPriceId || stripeSync.yearlyPriceId) {
+        plan = await prisma.plan.update({
+          where: { id: plan.id },
+          data: {
+            monthlyPriceId: stripeSync.monthlyPriceId,
+            yearlyPriceId: stripeSync.yearlyPriceId
+          }
+        });
+      }
+    } catch (stripeErr) {
+      console.error('[Stripe Sync Error] Failed during plan creation:', stripeErr.message);
+    }
+
     await writePlatformAudit({
       activityName: 'Plan created',
       description: `Created plan ${plan.name} (${plan.id})`,
@@ -98,6 +116,21 @@ async function updatePlan(request, reply) {
   try {
     const { planId } = request.params;
     const data = parsePlanBody(request.body);
+    
+    const existingPlan = await prisma.plan.findUnique({ where: { id: planId } });
+    if (!existingPlan) {
+      return reply.status(404).send({ error: 'NotFound', message: 'Plan not found', statusCode: 404 });
+    }
+
+    const mergedPlan = { ...existingPlan, ...data };
+    try {
+      const stripeSync = await stripeService.syncPlanToStripe(mergedPlan);
+      data.monthlyPriceId = stripeSync.monthlyPriceId;
+      data.yearlyPriceId = stripeSync.yearlyPriceId;
+    } catch (stripeErr) {
+      console.error('[Stripe Sync Error] Failed during plan update:', stripeErr.message);
+    }
+
     const plan = await prisma.plan.update({
       where: { id: planId },
       data,
@@ -131,6 +164,14 @@ async function deletePlan(request, reply) {
       });
     }
     const plan = await prisma.plan.delete({ where: { id: planId } });
+
+    // Attempt to archive the plan in Stripe so it disappears from the active catalogue
+    try {
+      await stripeService.archivePlanInStripe(planId);
+    } catch (stripeErr) {
+      console.error('[Stripe Sync Error] Failed to archive plan in Stripe upon deletion:', stripeErr.message);
+    }
+
     await writePlatformAudit({
       activityName: 'Plan deleted',
       description: `Deleted plan ${plan.name} (${plan.id})`,
