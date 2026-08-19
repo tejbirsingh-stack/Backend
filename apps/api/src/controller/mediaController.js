@@ -8,6 +8,7 @@ const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
+const emailService = require('../services/email-service');
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -4046,7 +4047,12 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
     // Fetch asset access overrides (direct access users)
     const assetUsers = await request.server.prisma.assetUser.findMany({
       where: { assetId },
-      include: { accessLevelObj: true }
+      include: { 
+        accessLevelObj: true,
+        user: {
+          select: { id: true, name: true, email: true }
+        }
+      }
     });
 
     const assetGroups = await request.server.prisma.assetGroup.findMany({
@@ -4073,11 +4079,11 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
 module.exports.updateAssetAccessOverride = async (request, reply) => {
   try {
     const { id: assetId, userId: targetUserId } = request.params;
-    const { accessLevel } = request.body;
+    const { accessLevel, sendInviteEmail } = request.body;
 
     const asset = await request.server.prisma.asset.findUnique({
       where: { id: assetId },
-      select: { uploadedByUserId: true, orgId: true }
+      select: { uploadedByUserId: true, orgId: true, title: true }
     });
 
     if (!asset) {
@@ -4116,10 +4122,44 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       create: {
         assetId,
         userId: targetUserId,
-        memberType: 'Member',
         accessLevelId: aLevelId
       }
     });
+
+    const targetUser = await request.server.prisma.user.findUnique({ where: { id: targetUserId } });
+    if (targetUser) {
+      const inviterName = request.user.name || request.user.email;
+      
+      // ALWAYS send in-app notification
+      createNotification(
+        request.server,
+        targetUserId,
+        targetUser.orgId,
+        'asset_invite',
+        'Invited to media asset',
+        `${inviterName} gave you direct access to "${asset.title}"`,
+        assetId
+      ).catch(err => console.error('Failed to create in-app notification:', err));
+
+      if (sendInviteEmail && targetUser.email) {
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const appUrl = `${frontendUrl}/media/${assetId}`;
+
+        // Just sending the standard share invite email as they were granted direct access
+        await emailService.sendShareInvite(targetUser.email, {
+          assetTitle: asset.title,
+          shareUrl: appUrl,
+          senderName: inviterName,
+          permissions: {
+            view: true,
+            comment: accessLevel === 'Can edit' || accessLevel === 'Full Access',
+            download: accessLevel === 'Full Access'
+          }
+        }).catch(err => {
+          console.error("Failed to send asset invite email", err);
+        });
+      }
+    }
 
     return reply.send({ success: true, override });
   } catch (error) {

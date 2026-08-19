@@ -274,13 +274,11 @@ async function autoAssignAdminsToAsset(prisma, orgId, workspaceId, assetId) {
             }
           },
           update: {
-            memberType: MEMBER_TYPES.OWNER,
             accessLevelId: fullAccessId
           },
           create: {
             assetId,
             userId: userId,
-            memberType: MEMBER_TYPES.OWNER,
             accessLevelId: fullAccessId
           }
         }).catch(err => console.error(`Failed to auto-assign owner ${userId} to asset ${assetId}:`, err));
@@ -323,8 +321,8 @@ async function autoAssignProjectOwnersToAsset(prisma, orgId, projectId, assetId)
     for (const { userId } of projectOwners) {
       await prisma.assetUser.upsert({
         where: { assetId_userId: { assetId, userId } },
-        update: { memberType: MEMBER_TYPES.OWNER, accessLevelId: fullAccessId },
-        create: { assetId, userId, memberType: MEMBER_TYPES.OWNER, accessLevelId: fullAccessId }
+        update: { accessLevelId: fullAccessId },
+        create: { assetId, userId, accessLevelId: fullAccessId }
       }).catch(err => console.error(`Failed to auto-assign project owner ${userId} to asset ${assetId}:`, err));
     }
   } catch (error) {
