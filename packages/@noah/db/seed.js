@@ -23,8 +23,8 @@ async function seedDatabase() {
       create: {
         name: "Demo Organization",
         slug: "demo-org",
-        planType: "professional",
-        features: {},
+        // planType: "professional",
+        //features: {},
         metadata: {},
       },
     });
