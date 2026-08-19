@@ -1083,7 +1083,6 @@ model Plan {
   maxUsers           Int      @default(2)
   maxWorkspaces      Int      @default(1)
   maxProjects        Int      @default(1)
-  features           Json     @default("[]") @db.JsonB
   monthlyPriceId     String?  @db.VarChar(255) // Stripe monthly price id
   yearlyPriceId      String?  @db.VarChar(255) // Stripe yearly price id
   isPublic           Boolean  @default(true)
@@ -1094,11 +1093,40 @@ model Plan {
   createdAt          DateTime @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
-  organizations Organization[]
+  organizations      Organization[]
+  featureSelections  PlanFeatureSelection[]
 
   @@index([isPublic, sortOrder])
   @@map("plans")
 }
+
+/// Master catalog of all available plan feature options
+model PlanFeature {
+  id          String   @id @default(uuid()) @db.VarChar(255)
+  name        String   @unique @db.VarChar(200)
+  description String?  @db.Text
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  planSelections PlanFeatureSelection[]
+
+  @@map("plan_features")
+}
+
+/// Join table: which PlanFeatures are selected for each Plan
+model PlanFeatureSelection {
+  planId    String @db.VarChar(255)
+  featureId String @db.VarChar(255)
+
+  plan    Plan        @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature PlanFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@id([planId, featureId])
+  @@map("plan_feature_selections")
+}
+
 
 /// Lightweight landing page CMS (existing table: landing_page_content)
 model LandingPage {
