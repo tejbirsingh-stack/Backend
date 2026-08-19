@@ -2226,11 +2226,6 @@ module.exports.deleteMediaFile = async (request, reply) => {
           }
         }
 
-        // 1. Super Admin: Permanent Delete Directly
-        if (userRole === 'super admin' || userRole === 'superadmin') {
-          return await module.exports.deletePermanently(request, reply);
-        }
-
         const reason = request.body?.reason || request.body?.deletionReason || null;
 
         if (reason && reason.length > 500) {
