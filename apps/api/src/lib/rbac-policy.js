@@ -38,6 +38,13 @@ async function resolveUserWorkspacePermissions(prisma, user, workspace) {
   const isPrivate = workspace.visibility === 'private' || workspace.visibility === 'PRIVATE';
   const isOwnOrg = !workspace.orgId || !user.orgId || workspace.orgId === user.orgId;
 
+  // 1. Super Admins / Admins get full permissions within their own org (for both public and private workspaces)
+  if (isOrgWideRole(user.role || user.roleId) && isOwnOrg) {
+    return user.permissions && user.permissions.length > 0
+      ? user.permissions
+      : await getRolePermissions(prisma, user.roleId);
+  }
+
   // Public workspace + same org → ALWAYS use role-based permissions, for every role
   if (!isPrivate && isOwnOrg) {
     return user.permissions && user.permissions.length > 0

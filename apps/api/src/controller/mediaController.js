@@ -2159,11 +2159,12 @@ module.exports.deleteMediaFile = async (request, reply) => {
     // If it's a database UUID, handle deletion logic based on role
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
       try {
-        // Find the asset first to get uploadedByUserId
-        const assetToUpdate = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+        // Check if the filename ID corresponds to an Asset or a Folder
+        let assetToUpdate = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+        let folderToDelete = null;
 
         if (!assetToUpdate) {
-          return reply.code(404).send({ success: false, error: "Asset not found" });
+          folderToDelete = await request.server.prisma.folder.findUnique({ where: { id: filename } });
         }
 
         const liveUser = await request.server.prisma.user.findUnique({
@@ -2172,6 +2173,37 @@ module.exports.deleteMediaFile = async (request, reply) => {
         });
         const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
         let userRole = rawRoleName.trim().toLowerCase();
+        const roleId = liveUser?.roleId || request.user?.roleId;
+
+        const isSuperAdminOrAdmin =
+          userRole === 'super admin' ||
+          userRole === 'superadmin' ||
+          userRole === 'super_admin' ||
+          userRole === 'admin' ||
+          roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
+          roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+
+        // If target resource is a Folder, enforce Super Admin or Admin role requirement
+        if (folderToDelete) {
+          if (!isSuperAdminOrAdmin) {
+            return reply.code(403).send({
+              success: false,
+              error: "Forbidden",
+              message: "Only Super Admin and Admin roles are authorized to delete folders."
+            });
+          }
+
+          await request.server.prisma.projectSource.deleteMany({ where: { folderId: filename } }).catch(() => null);
+          await request.server.prisma.folderUser.deleteMany({ where: { folderId: filename } }).catch(() => null);
+          await request.server.prisma.favorite.deleteMany({ where: { folderId: filename } }).catch(() => null);
+          await request.server.prisma.folder.delete({ where: { id: filename } });
+
+          return reply.send({ success: true, message: "Folder deleted successfully" });
+        }
+
+        if (!assetToUpdate) {
+          return reply.code(404).send({ success: false, error: "Asset or folder not found" });
+        }
 
         // Check if asset is linked to any project
         const projectSource = await request.server.prisma.projectSource.findFirst({
@@ -2203,6 +2235,29 @@ module.exports.deleteMediaFile = async (request, reply) => {
 
         if (reason && reason.length > 500) {
           return reply.code(400).send({ success: false, error: "Deletion reason cannot exceed 500 characters" });
+        }
+
+        // 2. Admin: Submit for Super Admin review (pending_super_admin status, NOT trash)
+        const isAdminRole = userRole === 'admin' || roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+        if (isAdminRole) {
+          const asset = await request.server.prisma.asset.update({
+            where: { id: filename },
+            data: {
+              status: "pending_super_admin",
+              deletedAt: new Date(),
+              deletedByUserId: request.user.id,
+              deletionReason: reason || `File deletion requested by Admin: '${assetToUpdate.title}'`
+            }
+          });
+
+          const userName = liveUser?.name || liveUser?.email || request.user?.name || 'Admin';
+          await notifyRole(request.server, asset.orgId || request.user?.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) requested deletion for file: '${asset.title}'. Approval needed.`, asset.id);
+
+          return reply.send({
+            success: true,
+            status: "pending_super_admin",
+            message: "File deletion request submitted for Super Admin review."
+          });
         }
 
         // 3. Editor: Soft Delete (goes to Trash normally)
@@ -2459,19 +2514,58 @@ module.exports.getPendingDeletions = async (request, reply) => {
       });
     });
 
-    // 2. Process Standalone assets pending deletion not attached to any project
+    // 2. Process Standalone assets & Folder Deletion Requests
+    const folderRequestMap = new Map();
     const standaloneAssets = [];
+
     assets.forEach((asset) => {
       if (processedAssetIds.has(asset.id)) return;
       const reason = asset.deletionReason || '';
-      if (!reason.includes('Deleted with project') && !reason.includes('Selected deletion from project')) {
+
+      if (reason.includes('Deleted with project') || reason.includes('Selected deletion from project')) {
+        return;
+      }
+
+      const folderMatch = reason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]\s*(.*)/i);
+      if (folderMatch) {
+        const folderId = folderMatch[1];
+        const folderName = folderMatch[2] || 'Folder';
+
+        if (!folderRequestMap.has(folderId)) {
+          folderRequestMap.set(folderId, {
+            id: folderId,
+            title: folderName,
+            status: 'Pending Review',
+            rawStatus: asset.status,
+            deletedAt: asset.deletedAt,
+            deletionReason: reason,
+            deletionType: 'Folder Deletion Request',
+            type: 'folder',
+            isFolderRequest: true,
+            workspaceName: 'Workspace',
+            deletedBy: asset.deletedBy,
+            deletedFiles: []
+          });
+        }
+        folderRequestMap.get(folderId).deletedFiles.push({
+          id: asset.id,
+          title: asset.title || 'Untitled file',
+          type: asset.type || 'file',
+          isFolder: false
+        });
+      } else {
         standaloneAssets.push(asset);
       }
     });
 
+    const formattedFolderRequests = Array.from(folderRequestMap.values()).map(fr => ({
+      ...fr,
+      itemCount: fr.deletedFiles.length
+    }));
+
     return reply.send({
       success: true,
-      data: [...formattedProjects, ...standaloneAssets]
+      data: [...formattedProjects, ...formattedFolderRequests, ...standaloneAssets]
     });
   } catch (error) {
     return reply.code(500).send({ success: false, error: error.message });

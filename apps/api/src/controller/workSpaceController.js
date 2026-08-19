@@ -1224,6 +1224,15 @@ module.exports.findFolderData = async (request, reply) => {
         const { id } = request.params; // folderId
         const { projectId } = request.query;
 
+        const folderInfo = await prisma.folder.findUnique({
+            where: { id },
+            include: { sources: true }
+        });
+
+        if (!folderInfo) {
+            return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
         let effectivePermissions = undefined;
         if (projectId && request.user) {
             const project = await prisma.project.findUnique({
@@ -1233,6 +1242,12 @@ module.exports.findFolderData = async (request, reply) => {
             if (project) {
                 const { resolveUserProjectPermissions } = require('../lib/rbac-policy');
                 effectivePermissions = await resolveUserProjectPermissions(prisma, request.user, project);
+            }
+        } else if (folderInfo.workspaceId && request.user) {
+            const workspace = await prisma.workspace.findUnique({ where: { id: folderInfo.workspaceId } });
+            if (workspace) {
+                const { resolveUserWorkspacePermissions } = require('../lib/rbac-policy');
+                effectivePermissions = await resolveUserWorkspacePermissions(prisma, request.user, workspace);
             }
         }
 
@@ -1269,11 +1284,6 @@ module.exports.findFolderData = async (request, reply) => {
             },
         });
 
-        const folderInfo = await prisma.folder.findUnique({
-            where: { id },
-            include: { sources: true }
-        });
-
         return reply.code(200).send({
             success: true,
             message: 'Folder contents fetched successfully.',
@@ -1282,7 +1292,7 @@ module.exports.findFolderData = async (request, reply) => {
                 media: [], // Deprecated: fetched via pagination API
                 folders,
                 projects,
-                ...(effectivePermissions !== undefined ? { effectivePermissions } : {})
+                effectivePermissions: effectivePermissions || []
             }
         });
 
@@ -1292,6 +1302,385 @@ module.exports.findFolderData = async (request, reply) => {
             success: false,
             message: 'Internal Server Error'
         });
+    }
+};
+
+module.exports.findFolderTreeData = async (request, reply) => {
+    try {
+        const { id } = request.params; // folderId
+
+        const rootFolder = await prisma.folder.findUnique({
+            where: { id },
+            select: { id: true, name: true, workspaceId: true, parentId: true }
+        });
+
+        if (!rootFolder) {
+            return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        // Recursively find all subfolder IDs under rootFolder
+        const allFolderIds = new Set([id]);
+        let currentFolderLevel = [id];
+        while (currentFolderLevel.length > 0) {
+            const childFolders = await prisma.folder.findMany({
+                where: { parentId: { in: currentFolderLevel } },
+                select: { id: true }
+            }).catch(() => []);
+            const childIds = childFolders.map(f => f.id).filter(fId => !allFolderIds.has(fId));
+            if (childIds.length === 0) break;
+            childIds.forEach(fId => allFolderIds.add(fId));
+            currentFolderLevel = childIds;
+        }
+
+        const folderIdList = Array.from(allFolderIds);
+
+        // Fetch all subfolder records
+        const allFolders = await prisma.folder.findMany({
+            where: { id: { in: folderIdList } },
+            select: { id: true, name: true, parentId: true }
+        });
+
+        // Fetch all media assets inside these folders or marked deleted with this folderId
+        const allAssets = await prisma.asset.findMany({
+            where: {
+                status: { notIn: ['trash', 'deleted'] },
+                OR: [
+                    { ownerId: { in: folderIdList } },
+                    { collectionAssets: { some: { collectionId: { in: folderIdList } } } },
+                    { sources: { some: { folderId: { in: folderIdList } } } },
+                    { deletionReason: { contains: id } }
+                ]
+            },
+            select: { id: true, title: true, type: true, ownerType: true, ownerId: true, deletionReason: true }
+        }).catch(() => []);
+
+        // Fetch all projects inside these folders
+        const allProjects = await prisma.project.findMany({
+            where: {
+                status: { notIn: ['inactive', 'trash', 'deleted'] },
+                folderId: { in: folderIdList }
+            },
+            select: { id: true, name: true, folderId: true }
+        }).catch(() => []);
+
+        return reply.code(200).send({
+            success: true,
+            data: {
+                folderInfo: rootFolder,
+                folders: allFolders,
+                projects: allProjects,
+                media: allAssets
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching folder tree data:', error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.deleteFolder = async (request, reply) => {
+    try {
+        const { id } = request.params; // folderId
+        const { isWholeFolder = false, deleteFileIds = [], deleteFolderIds = [], deletionReason, isPermanent = false } = request.body || {};
+
+        const liveUser = await prisma.user.findUnique({
+            where: { id: request.user.id },
+            include: { roleRelation: true }
+        });
+        const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+        const userRole = rawRoleName.trim().toLowerCase();
+        const roleId = liveUser?.roleId || request.user?.roleId;
+
+        const isSuperAdmin =
+            userRole === 'super admin' ||
+            userRole === 'superadmin' ||
+            userRole === 'super_admin' ||
+            roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
+
+        const isAdmin =
+            userRole === 'admin' ||
+            roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401' ||
+            isSuperAdmin;
+
+        if (!isAdmin) {
+            return reply.code(403).send({
+                success: false,
+                error: 'Forbidden',
+                message: 'Only Super Admin and Admin roles are authorized to delete folders.'
+            });
+        }
+
+        const targetFolder = await prisma.folder.findUnique({
+            where: { id },
+            include: { workspace: true }
+        }).catch(() => null);
+
+        const folderName = targetFolder?.name || 'Folder';
+        const orgId = liveUser?.orgId || targetFolder?.workspace?.orgId || request.user?.orgId;
+        const userName = liveUser?.name || liveUser?.email || 'User';
+
+        // Collect all subfolder IDs under targetFolder recursively
+        const allSubfolderIds = new Set([id]);
+        let currentLevel = [id];
+        while (currentLevel.length > 0) {
+            const childFolders = await prisma.folder.findMany({
+                where: { parentId: { in: currentLevel } },
+                select: { id: true }
+            }).catch(() => []);
+            const childIds = childFolders.map(f => f.id).filter(fId => !allSubfolderIds.has(fId));
+            if (childIds.length === 0) break;
+            childIds.forEach(fId => allSubfolderIds.add(fId));
+            currentLevel = childIds;
+        }
+
+        const folderIdList = Array.from(allSubfolderIds);
+
+        // All assets owned by these folders or marked with deletionReason containing this folderId
+        const allFolderAssets = await prisma.asset.findMany({
+            where: {
+                OR: [
+                    { ownerType: 'FOLDER', ownerId: { in: folderIdList } },
+                    { deletionReason: { contains: id } },
+                    { collectionAssets: { some: { collectionId: { in: folderIdList } } } },
+                    { sources: { some: { folderId: { in: folderIdList } } } },
+                    ...(targetFolder?.workspaceId ? [{ workspaceId: targetFolder.workspaceId, ownerId: { in: folderIdList } }] : [])
+                ]
+            },
+            include: {
+                files: true,
+                collectionAssets: true,
+                sources: true
+            }
+        }).catch(() => []);
+
+        if (isSuperAdmin && isPermanent) {
+            // Direct Permanent Delete by Super Admin
+            const targetAssetIds = (isWholeFolder || (!deleteFileIds.length && !deleteFolderIds.length))
+                ? allFolderAssets.map(a => a.id)
+                : Array.from(new Set(deleteFileIds || []));
+
+            const targetFolderIds = (isWholeFolder || (!deleteFileIds.length && !deleteFolderIds.length))
+                ? folderIdList
+                : Array.from(new Set(deleteFolderIds || []));
+
+            const assetsToDelete = allFolderAssets.filter(a => targetAssetIds.includes(a.id) || (isWholeFolder && a.deletionReason && a.deletionReason.includes(id)));
+            const finalAssetIdsToDelete = Array.from(new Set(assetsToDelete.map(a => a.id)));
+
+            for (const asset of assetsToDelete) {
+                let assetSizeBytes = 0;
+                if (asset.files && asset.files.length > 0) {
+                    for (const f of asset.files) {
+                        assetSizeBytes += Number(f.sizeBytes || 0);
+                        if (f.filePath && b2Storage.isEnabled()) {
+                            try {
+                                await b2Storage.deleteFile(f.filePath);
+                                await b2Storage.permanentlyDeleteFile(f.filePath);
+                            } catch (b2Err) {
+                                console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
+                            }
+                        }
+                    }
+                }
+
+                if (assetSizeBytes > 0 && (asset.orgId || orgId)) {
+                    try {
+                        await recordStorageDelta(prisma, {
+                            orgId: asset.orgId || orgId,
+                            deltaBytes: -assetSizeBytes,
+                            assetId: asset.id,
+                            reason: 'permanent_delete',
+                        });
+                    } catch (dErr) {
+                        console.warn('Failed to record storage delta:', dErr.message);
+                    }
+                }
+            }
+
+            if (finalAssetIdsToDelete.length > 0) {
+                await prisma.assetFile.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.assetMetadata.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.assetTag.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.assetUser.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.assetGroup.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.collectionAsset.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.annotation.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.projectSource.deleteMany({ where: { assetId: { in: finalAssetIdsToDelete } } }).catch(() => null);
+                await prisma.asset.deleteMany({ where: { id: { in: finalAssetIdsToDelete } } }).catch(() => null);
+            }
+
+            if (targetFolderIds.length > 0) {
+                await prisma.projectSource.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
+                await prisma.folderUser.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
+                await prisma.favorite.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
+                await prisma.folder.deleteMany({ where: { id: { in: targetFolderIds } } }).catch(() => null);
+            }
+
+            // Restore any unselected assets back to active status
+            const unselectedAssets = allFolderAssets.filter(a => !finalAssetIdsToDelete.includes(a.id));
+            const unselectedAssetIds = unselectedAssets.map(a => a.id);
+
+            if (unselectedAssetIds.length > 0) {
+                await prisma.asset.updateMany({
+                    where: { id: { in: unselectedAssetIds } },
+                    data: {
+                        status: 'active',
+                        deletedAt: null,
+                        deletedByUserId: null,
+                        deletionReason: null
+                    }
+                }).catch(() => null);
+            }
+
+            // Clean up placeholder assets & remaining pending_super_admin assets for this folder request
+            await prisma.asset.deleteMany({
+                where: {
+                    type: 'folder',
+                    ownerId: id,
+                    status: 'pending_super_admin'
+                }
+            }).catch(() => null);
+
+            await prisma.asset.updateMany({
+                where: {
+                    deletionReason: { contains: id },
+                    status: 'pending_super_admin'
+                },
+                data: {
+                    status: 'active',
+                    deletedAt: null,
+                    deletedByUserId: null,
+                    deletionReason: null
+                }
+            }).catch(() => null);
+
+            return reply.code(200).send({
+                success: true,
+                message: 'Folder deletion processed cleanly.'
+            });
+        } else {
+            // Admin deletion request (pending_super_admin status)
+            let assetsToMark = [];
+            if (isWholeFolder) {
+                assetsToMark = allFolderAssets;
+            } else {
+                const selectedFileIdSet = new Set(deleteFileIds || []);
+                const selectedFolderIdSet = new Set(deleteFolderIds || []);
+
+                assetsToMark = allFolderAssets.filter(a => {
+                    if (selectedFileIdSet.has(a.id)) return true;
+                    if (a.ownerId && selectedFolderIdSet.has(a.ownerId)) return true;
+                    if (a.collectionAssets && a.collectionAssets.some(ca => selectedFolderIdSet.has(ca.collectionId))) return true;
+                    if (a.sources && a.sources.some(s => selectedFolderIdSet.has(s.folderId))) return true;
+                    return false;
+                });
+
+                // Fallback: If no asset matched specific selection, mark all assets in the folder
+                if (assetsToMark.length === 0 && allFolderAssets.length > 0) {
+                    assetsToMark = allFolderAssets;
+                }
+            }
+
+            let targetAssetIds = Array.from(new Set(assetsToMark.map(a => a.id)));
+            const validUserId = liveUser?.id || request.user?.id || request.user?.userId;
+            const folderReason = deletionReason || `Deleted with folder: [${id}] ${folderName}`;
+
+            if (targetAssetIds.length > 0) {
+                await prisma.asset.updateMany({
+                    where: { id: { in: targetAssetIds } },
+                    data: {
+                        status: 'pending_super_admin',
+                        deletedAt: new Date(),
+                        ...(validUserId ? { deletedByUserId: validUserId } : {}),
+                        deletionReason: folderReason
+                    }
+                });
+            } else {
+                // Empty folder fallback: create a placeholder asset entry so request is visible in Delete Management
+                try {
+                    await prisma.asset.create({
+                        data: {
+                            orgId: orgId || request.user?.orgId,
+                            title: folderName,
+                            type: 'folder',
+                            status: 'pending_super_admin',
+                            visibility: 'public',
+                            ownerType: 'FOLDER',
+                            ownerId: id,
+                            workspaceId: targetFolder.workspaceId,
+                            deletedAt: new Date(),
+                            ...(validUserId ? { deletedByUserId: validUserId } : {}),
+                            deletionReason: folderReason
+                        }
+                    });
+                } catch (phErr) {
+                    console.warn('Failed to create folder deletion placeholder asset:', phErr.message);
+                }
+            }
+
+            // Also delete subfolders if specific subfolders were deleted
+            if (!isWholeFolder && deleteFolderIds && deleteFolderIds.length > 0) {
+                const subfolderIdsToDelete = deleteFolderIds.filter(fId => fId !== id);
+                if (subfolderIdsToDelete.length > 0) {
+                    await prisma.folder.deleteMany({ where: { id: { in: subfolderIdsToDelete } } }).catch(() => null);
+                }
+            }
+
+            await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Folder Deletion Request', `${userName} (${rawRoleName}) requested folder deletion for '${folderName}'.`, id);
+
+            return reply.code(200).send({
+                success: true,
+                message: 'Folder deletion request submitted for Super Admin review.'
+            });
+        }
+    } catch (error) {
+        console.error('Error in deleteFolder controller:', error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
+module.exports.restoreFolder = async (request, reply) => {
+    try {
+        const { id } = request.params; // folderId
+
+        const allFolderIds = new Set([id]);
+        let currentFolderLevel = [id];
+        while (currentFolderLevel.length > 0) {
+            const childFolders = await prisma.folder.findMany({
+                where: { parentId: { in: currentFolderLevel } },
+                select: { id: true }
+            }).catch(() => []);
+            const childIds = childFolders.map(f => f.id).filter(fId => !allFolderIds.has(fId));
+            if (childIds.length === 0) break;
+            childIds.forEach(fId => allFolderIds.add(fId));
+            currentFolderLevel = childIds;
+        }
+
+        const folderIdList = Array.from(allFolderIds);
+
+        await prisma.asset.updateMany({
+            where: {
+                OR: [
+                    { ownerId: { in: folderIdList } },
+                    { collectionAssets: { some: { collectionId: { in: folderIdList } } } },
+                    { sources: { some: { folderId: { in: folderIdList } } } },
+                    { deletionReason: { contains: id } }
+                ]
+            },
+            data: {
+                status: 'active',
+                deletedAt: null,
+                deletedByUserId: null,
+                deletionReason: null
+            }
+        });
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Folder and its items restored successfully.'
+        });
+    } catch (error) {
+        console.error('Error restoring folder:', error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
 
