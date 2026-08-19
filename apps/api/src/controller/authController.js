@@ -1139,18 +1139,26 @@ module.exports.validateResetToken = async (request, reply) => {
     if (!validation) {
       return reply.status(400).send({
         valid: false,
-        message: "This password reset link is invalid or has expired. Please request a new reset link.",
+        message: "This link is invalid or has expired. Please request a new link.",
       });
     }
 
+    const isInvite = Boolean(
+      validation.user.status === 'inactive' ||
+      validation.user.status === 'pending' ||
+      !validation.user.passwordHash
+    );
+
     return reply.send({
       valid: true,
+      isInvite,
+      userStatus: validation.user.status,
     });
   } catch (error) {
     console.error("Validate reset token error:", error);
     return reply.status(400).send({
       valid: false,
-      message: "This password reset link is invalid or has expired. Please request a new reset link.",
+      message: "This link is invalid or has expired. Please request a new link.",
     });
   }
 };
