@@ -42,7 +42,7 @@ module.exports.storeWorkplace = async (request, reply) => {
             });
         }
 
-        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel, isRestricted } = request.body;
+        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel, isRestricted, sendInviteEmail } = request.body;
 
         // Default values for granular permissions if not provided
         const mType = memberType || MEMBER_TYPES.MEMBER;
@@ -176,6 +176,17 @@ module.exports.storeWorkplace = async (request, reply) => {
                             accessLevelId: aLevelId
                         }
                     }).catch(() => { });
+
+                    // ALWAYS send in-app notification
+                    createNotification(
+                        request.server,
+                        guestUser.id,
+                        guestUser.orgId || orgId,
+                        'workspace_invite',
+                        'Invited to workspace',
+                        `${request.user.name || request.user.email} added you to workspace "${name}"`,
+                        workspace.id
+                    ).catch(err => console.error('Failed to create in-app notification:', err));
                 } else {
                     // Member: must belong to the same org
                     const invitedUser = await prisma.user.findFirst({
@@ -190,6 +201,37 @@ module.exports.storeWorkplace = async (request, reply) => {
                                 accessLevelId: aLevelId
                             }
                         }).catch(() => { });
+
+                        // ALWAYS send in-app notification
+                        createNotification(
+                            request.server,
+                            invitedUser.id,
+                            orgId,
+                            'workspace_invite',
+                            'Invited to workspace',
+                            `${request.user.name || request.user.email} added you to workspace "${name}"`,
+                            workspace.id
+                        ).catch(err => console.error('Failed to create in-app notification:', err));
+                    }
+                }
+                
+                if (sendInviteEmail) {
+                    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+                    const appUrl = `${frontendUrl}`; // Base dashboard URL
+                    const cleanEmail = email.toLowerCase().trim();
+                    if (mType === MEMBER_TYPES.GUEST) {
+                        const orgNameObj = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });
+                        emailService.sendWorkspaceGuestInvite(cleanEmail, {
+                            workspaceName: name,
+                            organizationName: orgNameObj?.name || 'Your Organization',
+                            appUrl
+                        }).catch(() => {});
+                    } else {
+                        emailService.sendWorkspaceMemberInvite(cleanEmail, {
+                            workspaceName: name,
+                            inviterName: request.user.name || request.user.email,
+                            appUrl
+                        }).catch(() => {});
                     }
                 }
             }

@@ -296,6 +296,54 @@ class EmailService {
     `;
     return this.sendEmail({ to, subject, text, html });
   }
+
+  // Send Workspace Guest Invite (standard login required)
+  async sendWorkspaceGuestInvite(to, { workspaceName, organizationName, appUrl }) {
+    const orgName = organizationName || 'An organization';
+    const subject = `${orgName} shared workspace "${workspaceName}" with you`;
+    const text = `Hi,\n\n${workspaceName}, ${orgName} has shared a workspace with you. Please login and view in your Shared with me option.\n\n${appUrl}\n\nThanks,\nNoah Platform`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #4f46e5; margin: 0;">Workspace Shared With You</h2>
+        </div>
+        <p style="font-size: 15px; color: #1e293b;">Hi,</p>
+        <p style="font-size: 15px; color: #334155; line-height: 1.5;">
+          <strong>${workspaceName}</strong>, ${orgName} has shared a workspace with you. Please login and view in your <strong>Shared with me</strong> option.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${appUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 15px;">Login to View</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">You received this invite because your email was shared with a workspace on Noah Platform.</p>
+      </div>
+    `;
+    return this.sendEmail({ to, subject, text, html });
+  }
+
+  // Send Workspace Member Invite (org member — directs to login + workspace)
+  async sendWorkspaceMemberInvite(to, { workspaceName, inviterName, appUrl }) {
+    const subject = `${inviterName || 'Someone'} added you to workspace "${workspaceName}" on Noah`;
+    const text = `Hi,\n\n${inviterName || 'A team member'} has added you to the workspace "${workspaceName}" on Noah. Log in to access it:\n\n${appUrl}\n\nThanks,\nNoah Platform`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #4f46e5; margin: 0;">You've Been Added to a Workspace</h2>
+        </div>
+        <p style="font-size: 15px; color: #1e293b;">Hi,</p>
+        <p style="font-size: 15px; color: #334155; line-height: 1.5;">
+          <strong>${inviterName || 'A team member'}</strong> has added you to the workspace
+          <strong>"${workspaceName}"</strong> on Noah Platform.
+        </p>
+        <div style="text-align: center; margin: 32px 0;">
+          <a href="${appUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 15px;">View Workspace</a>
+        </div>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">Log in to your Noah account to access this workspace.</p>
+      </div>
+    `;
+    return this.sendEmail({ to, subject, text, html });
+  }
 }
 
 module.exports = new EmailService();
