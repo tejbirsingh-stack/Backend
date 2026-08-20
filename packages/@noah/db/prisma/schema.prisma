@@ -41,6 +41,7 @@ model Organization {
   storageSystems   StorageSystem[]
   usageEvents      UsageEvent[]
   usageDailyRollups UsageDailyRollup[]
+  aiAnalysisJobs    AiAnalysisJob[]
 
   workspaces Workspace[]
   settings   OrganizationSettings?
@@ -363,6 +364,8 @@ model Asset {
 
   favorites Favorite[]
   annotationGroups AnnotationGroup[]
+  aiAnalysisJobs       AiAnalysisJob[]
+  aiTranscriptSegments AiTranscriptSegment[]
 
   @@index([orgId])
   @@index([status])
@@ -1313,3 +1316,39 @@ model GlobalAdminSetting {
 
   @@map("global_admin_settings")
 }
+
+model AiAnalysisJob {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId   String   @unique @db.Uuid
+  orgId     String   @db.Uuid
+  status    String   @default("queued") @db.VarChar(50)
+  steps     Json     @default("{}") @db.JsonB
+  error     String?  @db.Text
+  force     Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([status])
+  @@map("ai_analysis_jobs")
+}
+
+model AiTranscriptSegment {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId   String @db.Uuid
+  orgId     String @db.Uuid
+  text      String @db.Text
+  startMs   Int    @map("start_ms")
+  endMs     Int    @map("end_ms")
+  ordinal   Int
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@index([orgId])
+  @@map("ai_transcript_segments")
+}
+

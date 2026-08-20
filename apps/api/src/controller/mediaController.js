@@ -9,6 +9,7 @@ const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
 
+const { enqueueAiAnalyze, isAiEnabled } = require("../services/ai/enqueueAiAnalyze");
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
 
@@ -3375,6 +3376,14 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
             cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
           }
         });
+
+        if (isAiEnabled() && (asset.type === 'video' || asset.type === 'audio')) {
+          try {
+            await enqueueAiAnalyze({ assetId: newAssetId, orgId: asset.orgId, force: false });
+          } catch (aiErr) {
+            console.warn('[AI] Failed to enqueue analyze job:', aiErr && aiErr.message ? aiErr.message : aiErr);
+          }
+        }
 
         if (asset.orgId && proxySize > 0) {
           try {
