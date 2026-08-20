@@ -35,9 +35,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 1,
     maxProjects: 1,
     features: [
-      '1 Project & 1 Workspace',
-      '0 Storage',
-      '5 Members',
       'Basic media library & folders',
       'Share links with view access',
       'Mobile & desktop access',
@@ -59,9 +56,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 2,
     maxProjects: 2,
     features: [
-      '2 Projects & 2 Workspaces',
-      '300 MB Storage',
-      '5 Members',
       'Media library essentials',
       'Share links & file comments',
       'Activity feed & project overview',
@@ -84,9 +78,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 3,
     maxProjects: 3,
     features: [
-      '3 Projects & 3 Workspaces',
-      '15 GB Storage',
-      '10 Members',
       'Review & annotate video/audio',
       'Advanced filters & reporting',
       'Custom labels, priorities & checklists',
@@ -110,9 +101,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 4,
     maxProjects: 4,
     features: [
-      '4 Projects & 4 Workspaces',
-      '20 GB Storage',
-      '15 Members',
       'Dedicated account manager',
       'Custom integrations & automation',
       'SSO & role-based access control',
@@ -148,21 +136,49 @@ async function main() {
   console.log('Platform admin ready:', admin.email);
 
   for (const plan of DEFAULT_PLANS) {
+    const { features, ...planData } = plan;
     const existing = await prisma.plan.findFirst({
       where: { name: { equals: plan.name, mode: 'insensitive' } },
     });
 
+    let currentPlan;
     if (existing) {
-      const updated = await prisma.plan.update({
+      currentPlan = await prisma.plan.update({
         where: { id: existing.id },
-        data: plan,
+        data: planData,
       });
-      console.log(`Plan ready: ${updated.name} (${updated.id})`);
+      console.log(`Plan ready: ${currentPlan.name} (${currentPlan.id})`);
     } else {
-      const created = await prisma.plan.create({
-        data: plan,
+      currentPlan = await prisma.plan.create({
+        data: planData,
       });
-      console.log(`Plan ready: ${created.name} (${created.id})`);
+      console.log(`Plan ready: ${currentPlan.name} (${currentPlan.id})`);
+    }
+
+    for (let i = 0; i < features.length; i++) {
+      const featureName = features[i];
+      const featureRecord = await prisma.planFeature.upsert({
+        where: { name: featureName },
+        update: {},
+        create: {
+          name: featureName,
+          sortOrder: i,
+        },
+      });
+
+      await prisma.planFeatureSelection.upsert({
+        where: {
+          planId_featureId: {
+            planId: currentPlan.id,
+            featureId: featureRecord.id,
+          },
+        },
+        update: {},
+        create: {
+          planId: currentPlan.id,
+          featureId: featureRecord.id,
+        },
+      });
     }
   }
 
