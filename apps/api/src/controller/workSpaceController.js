@@ -425,6 +425,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
             folders = await prisma.folder.findMany({
                 where: {
                     workspaceId: id,
+                    parentId: null,
                 },
                 include: {
                     sources: true,
@@ -1610,9 +1611,25 @@ module.exports.deleteFolder = async (request, reply) => {
                         deletionReason: folderReason
                     }
                 });
-            } else {
-                // Empty folder fallback: create a placeholder asset entry so request is visible in Delete Management
-                try {
+            }
+
+            // Always create/update a FOLDER_REQUEST placeholder asset for Super Admin Delete Management tracking
+            try {
+                const existingReq = await prisma.asset.findFirst({
+                    where: { ownerType: 'FOLDER_REQUEST', ownerId: id }
+                }).catch(() => null);
+
+                if (existingReq) {
+                    await prisma.asset.update({
+                        where: { id: existingReq.id },
+                        data: {
+                            status: 'pending_super_admin',
+                            deletedAt: new Date(),
+                            ...(validUserId ? { deletedByUserId: validUserId } : {}),
+                            deletionReason: folderReason
+                        }
+                    });
+                } else {
                     await prisma.asset.create({
                         data: {
                             orgId: orgId || request.user?.orgId,
@@ -1620,7 +1637,7 @@ module.exports.deleteFolder = async (request, reply) => {
                             type: 'folder',
                             status: 'pending_super_admin',
                             visibility: 'public',
-                            ownerType: 'FOLDER',
+                            ownerType: 'FOLDER_REQUEST',
                             ownerId: id,
                             workspaceId: targetFolder.workspaceId,
                             deletedAt: new Date(),
@@ -1628,9 +1645,9 @@ module.exports.deleteFolder = async (request, reply) => {
                             deletionReason: folderReason
                         }
                     });
-                } catch (phErr) {
-                    console.warn('Failed to create folder deletion placeholder asset:', phErr.message);
                 }
+            } catch (phErr) {
+                console.warn('Failed to create/update folder deletion placeholder asset:', phErr.message);
             }
 
             // Also delete subfolders if specific subfolders were deleted
@@ -1673,8 +1690,22 @@ module.exports.restoreFolder = async (request, reply) => {
 
         const folderIdList = Array.from(allFolderIds);
 
+        // 1. Clean up temporary placeholder folder assets
+        await prisma.asset.deleteMany({
+            where: {
+                type: 'folder',
+                ownerType: 'FOLDER',
+                OR: [
+                    { ownerId: { in: folderIdList } },
+                    { deletionReason: { contains: id } }
+                ]
+            }
+        }).catch(() => null);
+
+        // 2. Restore actual files and assets to active
         await prisma.asset.updateMany({
             where: {
+                type: { not: 'folder' },
                 OR: [
                     { ownerId: { in: folderIdList } },
                     { collectionAssets: { some: { collectionId: { in: folderIdList } } } },
