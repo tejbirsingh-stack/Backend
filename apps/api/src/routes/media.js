@@ -30,7 +30,8 @@ const {
   updateAssetGroupAccessOverride,
   removeAssetGroupAccessOverride,
   getSharedMediaAssets,
-  moveMediaFile
+  moveMediaFile,
+  renameMediaAsset
 } = require('../controller');
 
 const {
@@ -90,6 +91,9 @@ module.exports = function (fastify, opts, done) {
 
   //9.2 PUT /api/media/:id/move - move asset to another folder/workspace
   fastify.put("/:id/move", canTags, moveMediaFile);
+
+  //9.3 PUT /api/media/:id/rename - rename an asset
+  fastify.put("/:id/rename", canTags, renameMediaAsset);
 
   //10. Upload media asset
   fastify.post("/upload", canUpload, uploadMediaFile);

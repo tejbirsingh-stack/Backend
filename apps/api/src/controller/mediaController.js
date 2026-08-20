@@ -4380,3 +4380,37 @@ module.exports.moveMediaFile = async (request, reply) => {
     return reply.code(500).send({ success: false, message: 'Internal Server Error' });
   }
 };
+
+module.exports.renameMediaAsset = async (request, reply) => {
+  try {
+    const assetId = request.params.id;
+    const { title } = request.body;
+
+    if (!title || !title.trim()) {
+      return reply.code(400).send({ success: false, error: 'Title is required' });
+    }
+
+    const orgId = request.user?.orgId;
+    if (!orgId) {
+      return reply.code(403).send({ success: false, error: "No organization attached to user." });
+    }
+
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId }
+    });
+
+    if (!asset || asset.orgId !== orgId) {
+      return reply.code(404).send({ success: false, error: "Media asset not found" });
+    }
+
+    const updatedAsset = await request.server.prisma.asset.update({
+      where: { id: assetId },
+      data: { title: title.trim() }
+    });
+
+    return reply.send({ success: true, asset: updatedAsset });
+  } catch (error) {
+    console.error("Failed to rename media asset:", error);
+    return reply.code(500).send({ success: false, error: error.message });
+  }
+};
