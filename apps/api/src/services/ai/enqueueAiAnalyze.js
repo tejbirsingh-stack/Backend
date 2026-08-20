@@ -12,13 +12,20 @@ const aiAnalyzeQueue = new Queue('ai-analyze', {
   connection: queueRedisConnection,
 });
 
+const { isAiEnabledFromEnv, isAiEnabledForOrg } = require('./aiEntitlement');
+const prisma = require('../../utils/prisma');
+
 function isAiEnabled() {
-  return String(process.env.AI_ENABLED || '').toLowerCase() === 'true';
+  return isAiEnabledFromEnv();
 }
 
 async function enqueueAiAnalyze({ assetId, orgId, force = false }) {
   if (!assetId) {
     throw new Error('assetId is required to enqueue AI analysis');
+  }
+
+  if (!(await isAiEnabledForOrg(orgId, prisma))) {
+    return false;
   }
 
   await aiAnalyzeQueue.add(
@@ -36,5 +43,6 @@ async function enqueueAiAnalyze({ assetId, orgId, force = false }) {
 module.exports = {
   aiAnalyzeQueue,
   isAiEnabled,
+  isAiEnabledForOrg,
   enqueueAiAnalyze,
 };

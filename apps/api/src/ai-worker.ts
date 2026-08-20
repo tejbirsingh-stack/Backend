@@ -5,6 +5,10 @@ import { PrismaClient } from '@prisma/client';
 // @ts-ignore
 import B2StorageService from './b2-storage.cjs';
 import { transcribeProxy } from './services/ai/assemblyai.js';
+import { embedTranscriptForAsset } from './services/ai/embedTranscript.js';
+// CJS entitlement helper
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { isAiEnabledForOrg } = require('./services/ai/aiEntitlement.js');
 
 const redisConnection = new Redis({
   host: process.env.REDIS_HOST || 'localhost',
@@ -96,13 +100,13 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
       orgId,
       status: 'processing',
       force,
-      steps: { asr: 'queued' },
+      steps: { asr: 'queued', embeddings: 'queued' },
     },
     update: {
       status: 'processing',
       force,
       error: null,
-      steps: { asr: 'queued' },
+      steps: { asr: 'queued', embeddings: 'queued' },
     },
   });
 
@@ -114,7 +118,23 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
   };
 
   try {
+    if (!(await isAiEnabledForOrg(orgId, prisma))) {
+      await prisma.aiAnalysisJob.update({
+        where: { id: analysisJob.id },
+        data: { status: 'completed', steps, error: null },
+      });
+      return;
+    }
+
     steps.asr = await processAsrStep(assetId, orgId, force);
+    if (steps.asr === 'completed' || steps.asr === 'skipped') {
+      try {
+        steps.embeddings = await embedTranscriptForAsset(prisma, assetId, orgId, force);
+      } catch (embedErr: any) {
+        steps.embeddings = 'failed';
+        console.error('[AI] embeddings step failed:', embedErr?.message || embedErr);
+      }
+    }
     await prisma.aiAnalysisJob.update({
       where: { id: analysisJob.id },
       data: { status: 'completed', steps, error: null },

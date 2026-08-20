@@ -42,6 +42,7 @@ model Organization {
   usageEvents      UsageEvent[]
   usageDailyRollups UsageDailyRollup[]
   aiAnalysisJobs    AiAnalysisJob[]
+  aiEmbeddings      AiEmbedding[]
 
   workspaces Workspace[]
   settings   OrganizationSettings?
@@ -366,6 +367,7 @@ model Asset {
   annotationGroups AnnotationGroup[]
   aiAnalysisJobs       AiAnalysisJob[]
   aiTranscriptSegments AiTranscriptSegment[]
+  aiEmbeddings         AiEmbedding[]
 
   @@index([orgId])
   @@index([status])
@@ -1350,5 +1352,23 @@ model AiTranscriptSegment {
   @@index([assetId])
   @@index([orgId])
   @@map("ai_transcript_segments")
+}
+
+model AiEmbedding {
+  id         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId    String                       @db.Uuid
+  orgId      String                       @db.Uuid
+  sourceType String                       @map("source_type") @db.VarChar(50)
+  chunkText  String                       @map("chunk_text") @db.Text
+  startMs    Int?                         @map("start_ms")
+  endMs      Int?                         @map("end_ms")
+  embedding  Unsupported("vector(1536)")
+
+  asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@index([orgId])
+  @@map("ai_embeddings")
 }
 

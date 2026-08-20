@@ -9,7 +9,7 @@ const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
 
-const { enqueueAiAnalyze, isAiEnabled } = require("../services/ai/enqueueAiAnalyze");
+const { enqueueAiAnalyze, isAiEnabledForOrg } = require("../services/ai/enqueueAiAnalyze");
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
 
@@ -3377,7 +3377,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
           }
         });
 
-        if (isAiEnabled() && (asset.type === 'video' || asset.type === 'audio')) {
+        if ((asset.type === 'video' || asset.type === 'audio') && await isAiEnabledForOrg(asset.orgId, request.server.prisma)) {
           try {
             await enqueueAiAnalyze({ assetId: newAssetId, orgId: asset.orgId, force: false });
           } catch (aiErr) {

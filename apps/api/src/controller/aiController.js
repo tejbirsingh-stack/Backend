@@ -1,4 +1,4 @@
-const { enqueueAiAnalyze, isAiEnabled } = require('../services/ai/enqueueAiAnalyze');
+const { enqueueAiAnalyze, isAiEnabledForOrg } = require('../services/ai/enqueueAiAnalyze');
 
 function orgIdFromUser(request) {
   return request.user?.orgId;
@@ -28,13 +28,15 @@ module.exports.getAiStatus = async function getAiStatus(request, reply) {
     where: { assetId },
   });
 
+  const aiEnabled = await isAiEnabledForOrg(orgId, request.server.prisma);
+
   return reply.send({
     success: true,
     assetId,
     status: job?.status || 'idle',
     steps: job?.steps || {},
     error: job?.error || null,
-    aiEnabled: isAiEnabled(),
+    aiEnabled,
   });
 };
 
@@ -55,14 +57,14 @@ module.exports.retryAiAnalyze = async function retryAiAnalyze(request, reply) {
     return reply.status(400).send({ success: false, error: 'AI transcript is only available for video and audio.' });
   }
 
-  if (!isAiEnabled()) {
-    return reply.status(400).send({ success: false, error: 'AI_ENABLED is false' });
+  if (!(await isAiEnabledForOrg(orgId, request.server.prisma))) {
+    return reply.status(403).send({ success: false, error: 'AI is not enabled for this organization.' });
   }
 
   await request.server.prisma.aiAnalysisJob.upsert({
     where: { assetId },
-    create: { assetId, orgId, status: 'queued', force, steps: { asr: 'queued' } },
-    update: { status: 'queued', force, error: null, steps: { asr: 'queued' } },
+    create: { assetId, orgId, status: 'queued', force, steps: { asr: 'queued', embeddings: 'queued' } },
+    update: { status: 'queued', force, error: null, steps: { asr: 'queued', embeddings: 'queued' } },
   });
 
   await enqueueAiAnalyze({ assetId, orgId, force });
@@ -80,6 +82,17 @@ module.exports.getTranscript = async function getTranscript(request, reply) {
   const asset = await loadAssetForOrg(request.server.prisma, assetId, orgId);
   if (!asset) {
     return reply.status(404).send({ success: false, error: 'Media asset not found' });
+  }
+
+  if (!(await isAiEnabledForOrg(orgId, request.server.prisma))) {
+    return reply.send({
+      success: true,
+      assetId,
+      status: 'idle',
+      asr: 'idle',
+      error: null,
+      segments: [],
+    });
   }
 
   const job = await request.server.prisma.aiAnalysisJob.findUnique({
@@ -118,30 +131,18 @@ module.exports.searchTranscript = async function searchTranscript(request, reply
     return reply.send({ success: true, items: [], total: 0, page, pageSize });
   }
 
-  const segments = await request.server.prisma.aiTranscriptSegment.findMany({
-    where: {
-      orgId,
-      text: { contains: q, mode: 'insensitive' },
-    },
-    orderBy: { startMs: 'asc' },
-    take: pageSize,
-    skip: (page - 1) * pageSize,
-    select: {
-      assetId: true,
-      text: true,
-      startMs: true,
-      endMs: true,
-    },
+  if (!(await isAiEnabledForOrg(orgId, request.server.prisma))) {
+    return reply.send({ success: true, items: [], total: 0, page, pageSize });
+  }
+
+  const { hybridSearch } = await import('../services/ai/search.js');
+  const result = await hybridSearch({
+    prisma: request.server.prisma,
+    orgId,
+    q,
+    page,
+    pageSize,
   });
 
-  const items = segments.map((s) => ({
-    assetId: s.assetId,
-    score: 1,
-    matchType: 'transcript',
-    startMs: s.startMs,
-    endMs: s.endMs,
-    snippet: s.text,
-  }));
-
-  return reply.send({ success: true, items, total: items.length, page, pageSize });
+  return reply.send({ success: true, ...result });
 };
