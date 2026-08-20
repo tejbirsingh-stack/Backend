@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { handleMediaRedirectOrServe } = require('./mediaController');
 const { broadcastToRoom } = require('./realtimeController');
+const { resolveOrgBranding } = require('../services/branding.service');
 const B2StorageService = require('../b2-storage.cjs');
 
 const b2Storage = new B2StorageService({
@@ -168,6 +169,8 @@ async function createShareLink(req, reply) {
       const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
       const shareUrl = `${appBaseUrl.replace(/\/$/, '')}/s/${recipientToken}`;
 
+      const orgBranding = await resolveOrgBranding(prisma, orgId);
+
       await emailService.sendShareInvite(email.trim(), {
         assetTitle: asset.originalName || asset.title || 'Media File',
         shareUrl,
@@ -176,6 +179,8 @@ async function createShareLink(req, reply) {
         hasPassword: Boolean(passwordHash),
         password: finalPassword ? finalPassword.trim() : null,
         senderName: user.name || user.email || 'NOAH Team Member',
+        orgLogoUrl: orgBranding?.logoUrl || null,
+        orgName: orgBranding?.accountName || null,
       });
     }
 
@@ -445,6 +450,8 @@ async function resendShareLinkInvite(req, reply) {
 
     const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
 
+    const orgBranding = await resolveOrgBranding(prisma, shareLink.orgId);
+
     for (const recipient of shareLink.recipients) {
       const shareUrl = `${appBaseUrl.replace(/\/$/, '')}/s/${recipient.token}`;
       await emailService.sendShareInvite(recipient.email, {
@@ -454,6 +461,8 @@ async function resendShareLinkInvite(req, reply) {
         permissions: shareLink.permissions,
         hasPassword: Boolean(shareLink.passwordHash),
         senderName: user.name || user.email || 'NOAH Team Member',
+        orgLogoUrl: orgBranding?.logoUrl || null,
+        orgName: orgBranding?.accountName || null,
       });
     }
 

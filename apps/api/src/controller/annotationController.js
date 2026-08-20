@@ -1,6 +1,7 @@
 // Get Annotations Media 
 const emailService = require('../services/email-service');
 const { createNotification } = require('./notificationController');
+const { resolveOrgBranding } = require('../services/branding.service');
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -182,6 +183,8 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
 
 
 
+                    const orgBranding = await resolveOrgBranding(request.server.prisma, orgId);
+
                     if (allUsersToNotify.length > 0) {
                         for (const u of allUsersToNotify) {
                             await emailService.sendMentionNotificationEmail(
@@ -190,7 +193,8 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                                 commenterName,
                                 videoName,
                                 commentText,
-                                videoUrl
+                                videoUrl,
+                                { orgLogoUrl: orgBranding?.logoUrl, orgName: orgBranding?.accountName }
                             );
                             await createNotification(
                                 request.server,
@@ -213,7 +217,8 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
                                     commenterName,
                                     videoName,
                                     commentText,
-                                    videoUrl
+                                    videoUrl,
+                                    { orgLogoUrl: orgBranding?.logoUrl, orgName: orgBranding?.accountName }
                                 );
                             }
                             await createNotification(
@@ -341,6 +346,8 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
 
 
 
+                    const orgBranding = await resolveOrgBranding(request.server.prisma, request.user?.orgId);
+
                     if (allUsersToNotify.length > 0) {
                         for (const u of allUsersToNotify) {
                             await emailService.sendMentionNotificationEmail(
@@ -349,7 +356,8 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                                 commenterName,
                                 videoName,
                                 commentText,
-                                videoUrl
+                                videoUrl,
+                                { orgLogoUrl: orgBranding?.logoUrl, orgName: orgBranding?.accountName }
                             );
                             await createNotification(
                                 request.server,
@@ -372,7 +380,8 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
                                     commenterName,
                                     videoName,
                                     commentText,
-                                    videoUrl
+                                    videoUrl,
+                                    { orgLogoUrl: orgBranding?.logoUrl, orgName: orgBranding?.accountName }
                                 );
                             }
                             await createNotification(

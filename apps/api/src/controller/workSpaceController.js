@@ -11,6 +11,7 @@ const { createNotification, notifyRole } = require('./notificationController');
 const { ACCESS_LEVEL, MEMBER_TYPES, VISIBILITY } = require('../lib/rolesPermissions');
 const B2StorageService = require('../b2-storage.cjs');
 const { recordStorageDelta } = require('../services/usage-meter.service');
+const { resolveOrgBranding } = require('../services/branding.service');
 
 const b2Storage = new B2StorageService({
     keyId: process.env.B2_KEY_ID,
@@ -686,10 +687,13 @@ module.exports.addProjectMember = async (request, reply) => {
 
                         // Send email only if sendInviteEmail is checked
                         if (sendInviteEmail && memberUser.email) {
+                            const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId);
                             emailService.sendProjectMemberInvite(memberUser.email, {
                                 projectName: project.name,
                                 inviterName,
-                                appUrl: `${appUrl.replace(/\/$/, '')}/home`
+                                appUrl: `${appUrl.replace(/\/$/, '')}/home`,
+                                orgLogoUrl: orgBranding?.logoUrl,
+                                orgName: orgBranding?.accountName,
                             }).catch(err => console.error('Failed to send group member invite email:', err));
                         }
                     }
@@ -749,18 +753,22 @@ module.exports.addProjectMember = async (request, reply) => {
         // Fire email ONLY if sendInviteEmail is true
         if (sendInviteEmail) {
             try {
-                const orgName = project.workspace?.organization?.name || 'Noah Cloud';
+                const orgBranding = await resolveOrgBranding(prisma, user.orgId || orgId || project.workspace?.orgId);
+                const orgName = orgBranding?.accountName || project.workspace?.organization?.name || 'Noah Cloud';
                 if (effectiveMemberType?.toUpperCase() === MEMBER_TYPES.GUEST) {
                     await emailService.sendProjectGuestInvite(user.email, {
                         projectName: project.name,
                         organizationName: orgName,
-                        appUrl: `${appUrl.replace(/\/$/, '')}/home`
+                        appUrl: `${appUrl.replace(/\/$/, '')}/home`,
+                        orgLogoUrl: orgBranding?.logoUrl,
                     }).catch(err => console.error('Failed to send guest invite email:', err));
                 } else {
                     await emailService.sendProjectMemberInvite(user.email, {
                         projectName: project.name,
                         inviterName,
-                        appUrl: `${appUrl.replace(/\/$/, '')}/home`
+                        appUrl: `${appUrl.replace(/\/$/, '')}/home`,
+                        orgLogoUrl: orgBranding?.logoUrl,
+                        orgName: orgBranding?.accountName,
                     }).catch(err => console.error('Failed to send member invite email:', err));
                 }
             } catch (e) {
@@ -1005,12 +1013,14 @@ module.exports.createProject = async (request, reply) => {
                             // Fire non-blocking email only if sendInviteEmail is true
                             if (sendInviteEmail) {
                                 const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });
-                                const organizationName = org ? org.name : 'An organization';
+                                const orgBranding = await resolveOrgBranding(prisma, orgId);
+                                const organizationName = orgBranding?.accountName || (org ? org.name : 'An organization');
 
                                 emailService.sendProjectGuestInvite(cleanEmail, {
                                     projectName: project.name,
                                     organizationName,
-                                    appUrl: `${appUrl.replace(/\/$/, '')}/home`
+                                    appUrl: `${appUrl.replace(/\/$/, '')}/home`,
+                                    orgLogoUrl: orgBranding?.logoUrl,
                                 }).catch(err => console.error('Failed to send guest invite:', err));
                             }
                         }
@@ -1043,10 +1053,13 @@ module.exports.createProject = async (request, reply) => {
 
                             // Fire non-blocking email only if sendInviteEmail is true
                             if (sendInviteEmail) {
+                                const orgBranding = await resolveOrgBranding(prisma, orgId);
                                 emailService.sendProjectMemberInvite(cleanEmail, {
                                     projectName: project.name,
                                     inviterName,
-                                    appUrl: `${appUrl.replace(/\/$/, '')}/home`
+                                    appUrl: `${appUrl.replace(/\/$/, '')}/home`,
+                                    orgLogoUrl: orgBranding?.logoUrl,
+                                    orgName: orgBranding?.accountName,
                                 }).catch(err => console.error('Failed to send member invite:', err));
                             }
                         }
@@ -1096,10 +1109,13 @@ module.exports.createProject = async (request, reply) => {
 
                                 // Send email to group member only if sendInviteEmail is checked
                                 if (sendInviteEmail && memberUser.email) {
+                                    const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId);
                                     emailService.sendProjectMemberInvite(memberUser.email, {
                                         projectName: project.name,
                                         inviterName,
-                                        appUrl: `${appUrl.replace(/\/$/, '')}/home`
+                                        appUrl: `${appUrl.replace(/\/$/, '')}/home`,
+                                        orgLogoUrl: orgBranding?.logoUrl,
+                                        orgName: orgBranding?.accountName,
                                     }).catch(err => console.error('Failed to send group member invite:', err));
                                 }
                             }

@@ -10,6 +10,7 @@ const { ensureDefaultOrganizationSettings } = require("../services/organization.
 const { autoAssignAdminsToWorkspace, autoAssignNewAdminToWorkspaces } = require("../services/workspace.service");
 const { createDefaultWorkspace: createDefaultWorkspaceWithStarterContent } = require("../lib/platform-provision");
 const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
+const { resolveOrgBranding } = require("../services/branding.service");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -263,7 +264,11 @@ module.exports.login = async (request, reply) => {
         });
 
         // 4. Send the email using our new email service function
-        await request.server.emailService.sendMfaCode(user.email, user.name || "User", otpCode);
+        const orgBranding = await resolveOrgBranding(request.server.prisma, user.orgId);
+        await request.server.emailService.sendMfaCode(user.email, user.name || "User", otpCode, {
+          orgLogoUrl: orgBranding?.logoUrl,
+          orgName: orgBranding?.accountName,
+        });
         logSuccess(ACTIVITY_NAME.USER_LOGIN, "MFA OTP sent successfully during login.", null, user);  //Log user activity
 
         // console.log('check'); return;
@@ -587,7 +592,11 @@ module.exports.register = async (request, reply) => {
       const frontendUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
       const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
       const emailService = request.server.emailService || require("../services/email-service");
-      await emailService.sendEmailVerification(user.email, user.name || "User", verificationUrl);
+      const orgBranding = await resolveOrgBranding(request.server.prisma, user.orgId);
+      await emailService.sendEmailVerification(user.email, user.name || "User", verificationUrl, {
+        orgLogoUrl: orgBranding?.logoUrl,
+        orgName: orgBranding?.accountName,
+      });
     } catch (emailErr) {
       console.error("Failed to send verification email during registration:", emailErr);
     }
@@ -1104,7 +1113,11 @@ module.exports.forgotPassword = async (request, reply) => {
 
     const emailService = request.server?.emailService || require("../services/email-service");
     const emailSender = emailService.sendPasswordReset ? emailService : (new (require("../services/email-service"))());
-    await emailSender.sendPasswordReset(user.email, user.name, resetUrl);
+    const orgBranding = await resolveOrgBranding(request.server.prisma, user.orgId);
+    await emailSender.sendPasswordReset(user.email, user.name, resetUrl, {
+      orgLogoUrl: orgBranding?.logoUrl,
+      orgName: orgBranding?.accountName,
+    });
 
     logSuccess(ACTIVITY_NAME.FORGOT_PASSWORD, "Password reset link requested.", null, user);
 
@@ -2028,7 +2041,11 @@ module.exports.sendSignupOtp = async (request, reply) => {
     const emailService = request.server.emailService || require("../services/email-service");
     if (emailService && typeof emailService.sendMfaCode === "function") {
       try {
-        await emailService.sendMfaCode(normalizedEmail, "New Member", otpCode);
+        const orgBranding = await resolveOrgBranding(request.server.prisma, pendingOrg.id);
+        await emailService.sendMfaCode(normalizedEmail, "New Member", otpCode, {
+          orgLogoUrl: orgBranding?.logoUrl,
+          orgName: orgBranding?.accountName,
+        });
       } catch (eErr) {
         console.warn("Could not send OTP email via emailService:", eErr.message);
       }
