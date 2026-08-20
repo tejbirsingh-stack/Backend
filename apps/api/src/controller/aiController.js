@@ -99,6 +99,7 @@ module.exports.getTranscript = async function getTranscript(request, reply) {
     assetId,
     status: job?.status || (segments.length ? 'completed' : 'idle'),
     asr: asrStep || (segments.length ? 'completed' : 'idle'),
+    error: job?.error || null,
     segments,
   });
 };
