@@ -88,6 +88,19 @@ async function createPlan(request, reply) {
     if (data.storageQuotaBytes === undefined) data.storageQuotaBytes = BigInt(5 * 1024 ** 3);
     if (data.isActive === undefined) data.isActive = true;
 
+    if (!data.sortOrder || data.sortOrder <= 0) {
+      const aggregate = await prisma.plan.aggregate({
+        _max: { sortOrder: true },
+      });
+      data.sortOrder = (aggregate._max.sortOrder ?? 0) + 1;
+    } else {
+      // Shifting
+      await prisma.plan.updateMany({
+        where: { sortOrder: { gte: data.sortOrder } },
+        data: { sortOrder: { increment: 1 } },
+      });
+    }
+
     // Extract featureIds before creating plan
     const featureIds = Array.isArray(body.featureIds) ? body.featureIds : [];
 
@@ -108,7 +121,7 @@ async function createPlan(request, reply) {
         },
       },
     });
-    
+
     // Sync to Stripe
     try {
       const stripeSync = await stripeService.syncPlanToStripe(plan);
@@ -153,7 +166,7 @@ async function updatePlan(request, reply) {
     const { planId } = request.params;
     const body = request.body || {};
     const data = parsePlanBody(body);
-    
+
     const existingPlan = await prisma.plan.findUnique({
       where: { id: planId },
       include: {
@@ -162,6 +175,23 @@ async function updatePlan(request, reply) {
     });
     if (!existingPlan) {
       return reply.status(404).send({ error: 'NotFound', message: 'Plan not found', statusCode: 404 });
+    }
+
+    if (data.sortOrder !== undefined && data.sortOrder !== existingPlan.sortOrder) {
+      const oldOrder = existingPlan.sortOrder;
+      const newOrder = data.sortOrder;
+
+      if (newOrder < oldOrder) {
+        await prisma.plan.updateMany({
+          where: { sortOrder: { gte: newOrder, lt: oldOrder }, id: { not: existingPlan.id } },
+          data: { sortOrder: { increment: 1 } },
+        });
+      } else if (newOrder > oldOrder) {
+        await prisma.plan.updateMany({
+          where: { sortOrder: { gt: oldOrder, lte: newOrder }, id: { not: existingPlan.id } },
+          data: { sortOrder: { decrement: 1 } },
+        });
+      }
     }
 
     const mergedPlan = { ...existingPlan, ...data };
