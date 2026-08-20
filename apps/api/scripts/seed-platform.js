@@ -5,6 +5,7 @@
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const { PrismaClient } = require('@prisma/client');
+const Stripe = require('stripe');
 
 try {
   require('dotenv').config({ path: path.join(__dirname, '../.env') });
@@ -13,6 +14,78 @@ try {
 }
 
 const prisma = new PrismaClient();
+
+/**
+ * Get or create a Stripe price for a given product and interval.
+ * Uses the plan's human-readable slug as the stable Stripe Product ID so it's
+ * the same across all environments (local, QA, prod) for the same Stripe account.
+ */
+async function syncPlanToStripe(stripe, plan) {
+  if (!stripe) return {}; // Skip if no Stripe key configured
+
+  const productId = plan.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  // Upsert Stripe Product
+  let product;
+  try {
+    product = await stripe.products.retrieve(productId);
+    product = await stripe.products.update(productId, {
+      name: plan.name,
+      description: plan.description || undefined,
+      active: plan.isActive !== false,
+    });
+  } catch (err) {
+    if (err.code === 'resource_missing' || err.statusCode === 404) {
+      product = await stripe.products.create({
+        id: productId,
+        name: plan.name,
+        description: plan.description || undefined,
+        active: plan.isActive !== false,
+      });
+    } else {
+      console.warn(`[Stripe] Could not sync product "${plan.name}": ${err.message}`);
+      return {};
+    }
+  }
+
+  const findOrCreatePrice = async (cents, interval, existingPriceId) => {
+    if (!cents || cents <= 0) return null;
+    if (existingPriceId) {
+      try {
+        const existing = await stripe.prices.retrieve(existingPriceId);
+        if (
+          existing.unit_amount === cents &&
+          existing.recurring?.interval === interval &&
+          existing.product === product.id &&
+          existing.active
+        ) {
+          return existing.id; // Already correct, reuse
+        }
+        await stripe.prices.update(existingPriceId, { active: false }).catch(() => {});
+      } catch (e) { /* will create a new one */ }
+    }
+    // Search for an existing active price with matching amount on this product
+    try {
+      const list = await stripe.prices.list({ product: product.id, active: true, limit: 20 });
+      const match = list.data.find(
+        p => p.unit_amount === cents && p.recurring?.interval === interval
+      );
+      if (match) return match.id;
+    } catch (e) { /* ignore */ }
+    const price = await stripe.prices.create({
+      product: product.id,
+      unit_amount: cents,
+      currency: 'usd',
+      recurring: { interval },
+    });
+    return price.id;
+  };
+
+  const monthlyPriceId = await findOrCreatePrice(plan.monthlyPriceCents, 'month', plan.monthlyPriceId);
+  const yearlyPriceId = await findOrCreatePrice(plan.yearlyPriceCents, 'year', plan.yearlyPriceId);
+
+  return { monthlyPriceId, yearlyPriceId };
+}
 
 const PLATFORM_ADMIN = {
   email: 'platformadmin@noahcloud.ai',
@@ -118,6 +191,23 @@ const DEFAULT_PLANS = [
 async function main() {
   const passwordHash = await bcrypt.hash(PLATFORM_ADMIN.password, 10);
 
+  // Initialise Stripe (optional — if no key is configured, plan sync is skipped gracefully)
+  let stripe = null;
+  try {
+    const setting = await prisma.systemSetting.findFirst({
+      where: { key: { in: ['TEST_STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY'] } },
+    }).catch(() => null);
+    const stripeKey = setting?.value || process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+    if (stripeKey) {
+      stripe = new Stripe(stripeKey, { apiVersion: '2023-10-16' });
+      console.log('Stripe initialised — plans will be synced automatically.');
+    } else {
+      console.warn('No Stripe key found — skipping Stripe sync. Run Save in Platform Admin to sync later.');
+    }
+  } catch (e) {
+    console.warn('Stripe init failed:', e.message);
+  }
+
   const admin = await prisma.platformAdmin.upsert({
     where: { email: PLATFORM_ADMIN.email },
     create: {
@@ -147,11 +237,32 @@ async function main() {
         where: { id: existing.id },
         data: planData,
       });
-      console.log(`Plan ready: ${currentPlan.name} (${currentPlan.id})`);
     } else {
       currentPlan = await prisma.plan.create({
         data: planData,
       });
+    }
+
+    // Auto-sync to Stripe so price IDs are always up-to-date without manual admin action
+    if (stripe && (currentPlan.monthlyPriceCents > 0 || currentPlan.yearlyPriceCents > 0)) {
+      try {
+        const { monthlyPriceId, yearlyPriceId } = await syncPlanToStripe(stripe, currentPlan);
+        if (monthlyPriceId || yearlyPriceId) {
+          currentPlan = await prisma.plan.update({
+            where: { id: currentPlan.id },
+            data: {
+              ...(monthlyPriceId ? { monthlyPriceId } : {}),
+              ...(yearlyPriceId ? { yearlyPriceId } : {}),
+            },
+          });
+          console.log(`Plan ready + Stripe synced: ${currentPlan.name} (monthly: ${monthlyPriceId ?? 'n/a'}, yearly: ${yearlyPriceId ?? 'n/a'})`);
+        } else {
+          console.log(`Plan ready: ${currentPlan.name} (no Stripe prices — free tier)`);
+        }
+      } catch (stripeErr) {
+        console.warn(`Plan ready: ${currentPlan.name} — Stripe sync failed: ${stripeErr.message}`);
+      }
+    } else {
       console.log(`Plan ready: ${currentPlan.name} (${currentPlan.id})`);
     }
 

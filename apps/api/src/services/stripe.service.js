@@ -150,7 +150,7 @@ class StripeService {
   async syncPlanToStripe(planData) {
     try {
       const stripe = await getStripe();
-      const productId = planData.id; // slug used as Stripe Product ID
+      const productId = planData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); // Use deterministic slug as Stripe Product ID
 
       // 1. Sync Product
       let product;
@@ -348,7 +348,7 @@ class StripeService {
     try {
       const stripe = await getStripe();
       return await stripe.checkout.sessions.retrieve(sessionId, {
-        expand: ['line_items', 'customer', 'invoice'],
+        expand: ['line_items', 'customer', 'invoice', 'subscription', 'subscription.latest_invoice'],
       });
     } catch (error) {
       console.error('[StripeService] Error retrieving checkout session:', error);
