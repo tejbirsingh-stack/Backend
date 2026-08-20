@@ -1,5 +1,6 @@
 const prisma = require('../utils/prisma');
 const { writePlatformAudit } = require('../lib/platform-audit');
+const stripeService = require('../services/stripe.service');
 
 function serializePlan(plan) {
   if (!plan) return null;
@@ -8,7 +9,11 @@ function serializePlan(plan) {
     slug: plan.id,
     annualPriceCents: plan.yearlyPriceCents,
     storageQuotaBytes: plan.storageQuotaBytes?.toString?.() ?? String(plan.storageQuotaBytes ?? 0),
-    features: Array.isArray(plan.features) ? plan.features : plan.features || [],
+    showProjectQuota: plan.showProjectQuota ?? true,
+    showStorageQuota: plan.showStorageQuota ?? true,
+    showMemberQuota: plan.showMemberQuota ?? true,
+    // Expose features as a flat array of feature objects { id, name, sortOrder }
+    features: (plan.featureSelections || []).map((sel) => sel.feature).filter(Boolean),
   };
 }
 
@@ -24,7 +29,11 @@ function parsePlanBody(body = {}) {
   if (body.maxUsers !== undefined) data.maxUsers = parseInt(body.maxUsers, 10) || 1;
   if (body.maxWorkspaces !== undefined) data.maxWorkspaces = parseInt(body.maxWorkspaces, 10) || 1;
   if (body.maxProjects !== undefined) data.maxProjects = parseInt(body.maxProjects, 10) || 1;
-  if (body.features !== undefined) data.features = body.features;
+  if (body.showProjectQuota !== undefined) data.showProjectQuota = Boolean(body.showProjectQuota);
+  if (body.showStorageQuota !== undefined) data.showStorageQuota = Boolean(body.showStorageQuota);
+  if (body.showMemberQuota !== undefined) data.showMemberQuota = Boolean(body.showMemberQuota);
+  // featureIds replaces the old features JsonB field
+  // We handle feature syncing separately in create/update
   if (body.monthlyPriceId !== undefined || body.stripeMonthlyPriceId !== undefined) {
     data.monthlyPriceId = body.monthlyPriceId ?? body.stripeMonthlyPriceId ?? null;
   }
@@ -45,6 +54,12 @@ async function listPlans(request, reply) {
     const plans = await prisma.plan.findMany({
       where: publicOnly ? { isPublic: true, isActive: true } : undefined,
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      include: {
+        featureSelections: {
+          include: { feature: true },
+          orderBy: { feature: { sortOrder: 'asc' } },
+        },
+      },
     });
     return { success: true, plans: plans.map(serializePlan) };
   } catch (error) {
@@ -60,23 +75,62 @@ async function listPlans(request, reply) {
 async function createPlan(request, reply) {
   try {
     const body = request.body || {};
-    const id = String(body.id || body.slug || '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, '-');
+    // Let Prisma auto-generate a UUID if an ID isn't explicitly provided
+    const explicitId = body.id && body.id.trim() !== '' ? body.id.trim() : null;
     const data = parsePlanBody(body);
-    if (!id || !data.name) {
+    if (!data.name) {
       return reply.status(400).send({
         error: 'ValidationError',
-        message: 'id/slug and name are required',
+        message: 'name is required',
         statusCode: 400,
       });
     }
     if (data.storageQuotaBytes === undefined) data.storageQuotaBytes = BigInt(5 * 1024 ** 3);
-    if (data.features === undefined) data.features = [];
     if (data.isActive === undefined) data.isActive = true;
 
-    const plan = await prisma.plan.create({ data: { id, ...data } });
+    // Extract featureIds before creating plan
+    const featureIds = Array.isArray(body.featureIds) ? body.featureIds : [];
+
+    const createData = { ...data };
+    if (explicitId) {
+      createData.id = explicitId;
+    }
+    if (featureIds.length > 0) {
+      createData.featureSelections = { create: featureIds.map((featureId) => ({ featureId })) };
+    }
+
+    let plan = await prisma.plan.create({
+      data: createData,
+      include: {
+        featureSelections: {
+          include: { feature: true },
+          orderBy: { feature: { sortOrder: 'asc' } },
+        },
+      },
+    });
+    
+    // Sync to Stripe
+    try {
+      const stripeSync = await stripeService.syncPlanToStripe(plan);
+      if (stripeSync.monthlyPriceId || stripeSync.yearlyPriceId) {
+        plan = await prisma.plan.update({
+          where: { id: plan.id },
+          data: {
+            monthlyPriceId: stripeSync.monthlyPriceId,
+            yearlyPriceId: stripeSync.yearlyPriceId
+          },
+          include: {
+            featureSelections: {
+              include: { feature: true },
+              orderBy: { feature: { sortOrder: 'asc' } },
+            },
+          },
+        });
+      }
+    } catch (stripeErr) {
+      console.error('[Stripe Sync Error] Failed during plan creation:', stripeErr.message);
+    }
+
     await writePlatformAudit({
       activityName: 'Plan created',
       description: `Created plan ${plan.name} (${plan.id})`,
@@ -97,10 +151,48 @@ async function createPlan(request, reply) {
 async function updatePlan(request, reply) {
   try {
     const { planId } = request.params;
-    const data = parsePlanBody(request.body);
+    const body = request.body || {};
+    const data = parsePlanBody(body);
+    
+    const existingPlan = await prisma.plan.findUnique({
+      where: { id: planId },
+      include: {
+        featureSelections: { include: { feature: true } },
+      },
+    });
+    if (!existingPlan) {
+      return reply.status(404).send({ error: 'NotFound', message: 'Plan not found', statusCode: 404 });
+    }
+
+    const mergedPlan = { ...existingPlan, ...data };
+    try {
+      const stripeSync = await stripeService.syncPlanToStripe(mergedPlan);
+      data.monthlyPriceId = stripeSync.monthlyPriceId;
+      data.yearlyPriceId = stripeSync.yearlyPriceId;
+    } catch (stripeErr) {
+      console.error('[Stripe Sync Error] Failed during plan update:', stripeErr.message);
+    }
+
+    // Sync featureSelections if featureIds provided
+    const featureIds = Array.isArray(body.featureIds) ? body.featureIds : null;
+
     const plan = await prisma.plan.update({
       where: { id: planId },
-      data,
+      data: {
+        ...data,
+        ...(featureIds !== null && {
+          featureSelections: {
+            deleteMany: {},
+            create: featureIds.map((featureId) => ({ featureId })),
+          },
+        }),
+      },
+      include: {
+        featureSelections: {
+          include: { feature: true },
+          orderBy: { feature: { sortOrder: 'asc' } },
+        },
+      },
     });
     await writePlatformAudit({
       activityName: 'Plan updated',
@@ -131,6 +223,14 @@ async function deletePlan(request, reply) {
       });
     }
     const plan = await prisma.plan.delete({ where: { id: planId } });
+
+    // Attempt to archive the plan in Stripe so it disappears from the active catalogue
+    try {
+      await stripeService.archivePlanInStripe(planId);
+    } catch (stripeErr) {
+      console.error('[Stripe Sync Error] Failed to archive plan in Stripe upon deletion:', stripeErr.message);
+    }
+
     await writePlatformAudit({
       activityName: 'Plan deleted',
       description: `Deleted plan ${plan.name} (${plan.id})`,
@@ -153,6 +253,13 @@ async function listPublicPlans(_request, reply) {
     const plans = await prisma.plan.findMany({
       where: { isPublic: true, isActive: true },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+      include: {
+        featureSelections: {
+          where: { feature: { isActive: true } },
+          include: { feature: true },
+          orderBy: { feature: { sortOrder: 'asc' } },
+        },
+      },
     });
     return { success: true, plans: plans.map(serializePlan) };
   } catch (error) {

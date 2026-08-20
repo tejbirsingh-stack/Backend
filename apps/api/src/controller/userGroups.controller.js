@@ -155,6 +155,29 @@ module.exports.deleteUserGroup = async (request, reply) => {
   try {
     const { id } = request.params;
     
+    // Verify Super Admin role
+    let currentUserRole = request.user?.role || "";
+    if (request.user?.id) {
+      const liveUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        include: { roleRelation: true },
+      });
+      if (liveUser && liveUser.roleRelation && liveUser.roleRelation.name) {
+        currentUserRole = liveUser.roleRelation.name;
+      } else if (liveUser && liveUser.role) {
+        currentUserRole = liveUser.role;
+      }
+    }
+    const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
+
+    if (normalizedRole !== "superadmin") {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Access denied. Only Super Admin can delete user groups.",
+      });
+    }
+
     // Group members will be cascade deleted due to Prisma schema
     await request.server.prisma.userGroup.delete({
       where: { id }

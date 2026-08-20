@@ -27,6 +27,12 @@ const {
   listPublicPlans,
 } = require('../controller/platform-plans.controller');
 const {
+  listPlanFeatures,
+  createPlanFeature,
+  updatePlanFeature,
+  deletePlanFeature,
+} = require('../controller/platform-plan-features.controller');
+const {
   getBillingOverview,
   overrideSubscription,
   getUsageOverview,
@@ -99,6 +105,12 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   fastify.post('/plans', { preHandler: requirePlatformAdmin }, createPlan);
   fastify.patch('/plans/:planId', { preHandler: requirePlatformAdmin }, updatePlan);
   fastify.delete('/plans/:planId', { preHandler: requirePlatformAdmin }, deletePlan);
+
+  // Plan feature catalog
+  fastify.get('/plan-features', { preHandler: requirePlatformAdmin }, listPlanFeatures);
+  fastify.post('/plan-features', { preHandler: requirePlatformAdmin }, createPlanFeature);
+  fastify.patch('/plan-features/:featureId', { preHandler: requirePlatformAdmin }, updatePlanFeature);
+  fastify.delete('/plan-features/:featureId', { preHandler: requirePlatformAdmin }, deletePlanFeature);
 
   fastify.get('/billing/overview', { preHandler: requirePlatformAdmin }, getBillingOverview);
   fastify.patch(
