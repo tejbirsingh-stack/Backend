@@ -2185,6 +2185,14 @@ module.exports.deleteMediaFile = async (request, reply) => {
 
         // If target resource is a Folder, enforce Super Admin or Admin role requirement
         if (folderToDelete) {
+          if (folderToDelete.name && folderToDelete.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+              success: false,
+              error: "BadRequest",
+              message: "The Restore folder is a protected system folder and cannot be deleted."
+            });
+          }
+
           if (!isSuperAdminOrAdmin) {
             return reply.code(403).send({
               success: false,
@@ -4085,14 +4093,14 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
 
     let aLevelId = accessLevel;
     if (aLevelId) {
-        const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
-        if (!foundLevel) {
-            const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
-            aLevelId = fallbackLevel ? fallbackLevel.id : null;
-        }
-    } else {
-        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
+      const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
+      if (!foundLevel) {
+        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
         aLevelId = fallbackLevel ? fallbackLevel.id : null;
+      }
+    } else {
+      const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
+      aLevelId = fallbackLevel ? fallbackLevel.id : null;
     }
 
     const override = await request.server.prisma.assetUser.upsert({
@@ -4177,14 +4185,14 @@ module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
 
     let aLevelId = accessLevel;
     if (aLevelId) {
-        const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
-        if (!foundLevel) {
-            const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
-            aLevelId = fallbackLevel ? fallbackLevel.id : null;
-        }
-    } else {
-        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
+      const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
+      if (!foundLevel) {
+        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
         aLevelId = fallbackLevel ? fallbackLevel.id : null;
+      }
+    } else {
+      const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
+      aLevelId = fallbackLevel ? fallbackLevel.id : null;
     }
 
     const override = await request.server.prisma.assetGroup.upsert({

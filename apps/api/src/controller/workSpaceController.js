@@ -1541,6 +1541,14 @@ module.exports.deleteFolder = async (request, reply) => {
             include: { workspace: true }
         }).catch(() => null);
 
+        if (targetFolder && targetFolder.name && targetFolder.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+                success: false,
+                error: 'BadRequest',
+                message: 'The Restore folder is a protected system folder and cannot be deleted.'
+            });
+        }
+
         const folderName = targetFolder?.name || 'Folder';
         const orgId = liveUser?.orgId || targetFolder?.workspace?.orgId || request.user?.orgId;
         const userName = liveUser?.name || liveUser?.email || 'User';
@@ -2223,6 +2231,14 @@ module.exports.updateFolder = async (request, reply) => {
             });
         }
 
+        const existingFolder = await prisma.folder.findUnique({ where: { id } });
+        if (existingFolder && existingFolder.name && existingFolder.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+                success: false,
+                message: 'The Restore folder is a protected system folder and cannot be renamed.'
+            });
+        }
+
         const folder = await prisma.folder.update({
             where: { id },
             data: { name }
@@ -2260,6 +2276,13 @@ module.exports.moveFolder = async (request, reply) => {
 
         if (!folder) {
             return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        if (folder.name && folder.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+                success: false,
+                message: 'The Restore folder is a protected system folder and cannot be moved.'
+            });
         }
 
         let newWorkspaceId = targetWorkspaceId || folder.workspaceId;
