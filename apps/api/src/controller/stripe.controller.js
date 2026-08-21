@@ -80,6 +80,7 @@ async function recordPaymentEvent({
           orgId: orgId || paymentLog.orgId,
           userId: userId || paymentLog.userId,
           stripeCustomerId: stripeCustomerId || paymentLog.stripeCustomerId,
+          stripePaymentIntentId: stripePaymentIntentId || paymentLog.stripePaymentIntentId,
           stripeSubscriptionId: stripeSubscriptionId || paymentLog.stripeSubscriptionId,
           status: status !== 'PENDING' ? status : paymentLog.status,
           amountCents: amountCents || paymentLog.amountCents,
@@ -125,6 +126,20 @@ class StripeController {
 
       const org = await prisma.organization.findUnique({ where: { id: orgId } });
       if (!org) return reply.code(404).send({ error: 'Organization not found' });
+
+      // Auto-heal dirty seed state: if plan was deleted directly in DB, the foreign key might be violated on next update
+      if (org.currentPlanId) {
+        const planExists = await prisma.plan.findUnique({ where: { id: org.currentPlanId } });
+        if (!planExists) {
+          console.warn(`[Stripe] Auto-healing invalid currentPlanId for org ${org.id}`);
+          await prisma.organization.update({
+            where: { id: org.id },
+            data: { currentPlanId: null, subscriptionStatus: null },
+          });
+          org.currentPlanId = null;
+          org.subscriptionStatus = null;
+        }
+      }
 
       let customerId = org.stripeCustomerId;
       if (customerId) {
@@ -221,7 +236,7 @@ class StripeController {
               where: { id: org.id },
               data: {
                 currentPlanId: isDowngrade ? org.currentPlanId : (matchingPlan.id !== 'custom' ? matchingPlan.id : undefined),
-                subscriptionStatus: isDowngrade ? 'canceling' : 'active',
+                subscriptionStatus: 'active',
                 planExpiresAt: expiresAt,
                 metadata: {
                   ...(typeof org.metadata === 'object' ? org.metadata : {}),
@@ -248,6 +263,7 @@ class StripeController {
               userId: request.user?.id || null,
               stripeCustomerId: customerId,
               stripeSubscriptionId: updatedSub.id,
+              stripePaymentIntentId: (typeof latestInvoice?.payment_intent === 'object' ? latestInvoice.payment_intent.id : latestInvoice?.payment_intent) || null,
               eventType: isDowngrade ? 'subscription_downgrade_scheduled' : 'subscription_prorated_upgrade',
               status: 'SUCCESS',
               amountCents: amountPaidCents,
@@ -449,7 +465,7 @@ class StripeController {
         stripeCustomerId: customerId,
         stripeSessionId: session.id,
         eventType: 'checkout_session_created',
-        status: 'SUCCESS',
+        status: 'PENDING',
         planId: priceId,
         metadata: { checkoutUrl: session.url },
       });
@@ -1100,6 +1116,13 @@ class StripeController {
                     orgId: org.id,
                     stripeCustomerId: customerId,
                     stripeSessionId: session.id,
+                    stripePaymentIntentId: session.payment_intent 
+                      ? String(session.payment_intent) 
+                      : (fullSession?.invoice?.payment_intent 
+                          ? String(fullSession.invoice.payment_intent) 
+                          : (fullSession?.subscription?.latest_invoice?.payment_intent 
+                              ? String(fullSession.subscription.latest_invoice.payment_intent) 
+                              : null)),
                     stripeSubscriptionId: String(session.subscription || ''),
                     eventType: 'webhook_checkout_completed',
                     status: 'SUCCESS',
