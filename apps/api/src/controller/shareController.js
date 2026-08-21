@@ -5,6 +5,7 @@ const fs = require('fs');
 const { handleMediaRedirectOrServe } = require('./mediaController');
 const { broadcastToRoom } = require('./realtimeController');
 const { resolveOrgBranding } = require('../services/branding.service');
+const { createNotification } = require('./notificationController');
 const B2StorageService = require('../b2-storage.cjs');
 
 const b2Storage = new B2StorageService({
@@ -550,6 +551,37 @@ async function validateShareToken(req, reply) {
       data: { lastAccessedAt: new Date() },
     });
 
+    // Share link view notification logic with privacy toggle check
+    let shouldNotify = true;
+    let viewerName = 'Someone';
+    
+    if (req.user) {
+      viewerName = req.user.name || req.user.email || 'A user';
+      const viewerDb = await prisma.user.findUnique({ where: { id: req.user.id }});
+      if (viewerDb && viewerDb.shareLinkActivityEnabled === false) {
+        shouldNotify = false;
+      }
+    }
+
+    if (shouldNotify) {
+      const creatorId = shareLink.createdById || asset.uploadedByUserId;
+      if (creatorId && creatorId !== req.user?.id) {
+        try {
+          await createNotification(
+            req.server,
+            creatorId,
+            shareLink.orgId,
+            'share_link_viewed',
+            'Share Link Viewed',
+            `${viewerName} viewed your shared link: ${shareLink.name || asset.title || 'Media'}`,
+            asset.id
+          );
+        } catch (notifErr) {
+          req.log.warn('Failed to send share link view notification: ', notifErr.message);
+        }
+      }
+    }
+
     let logoUrl = null;
     if (shareLink.permissions?.watermark !== false) {
       logoUrl = shareLink.organization?.metadata?.logoUrl || null;
@@ -707,6 +739,39 @@ async function getShareStream(req, reply) {
     }
 
     const isDownload = req.query?.download === 'true';
+
+    if (isDownload) {
+      let shouldNotify = true;
+      let viewerName = 'Someone';
+      
+      if (req.user) {
+        viewerName = req.user.name || req.user.email || 'A user';
+        const viewerDb = await prisma.user.findUnique({ where: { id: req.user.id }});
+        if (viewerDb && viewerDb.shareLinkActivityEnabled === false) {
+          shouldNotify = false;
+        }
+      }
+
+      if (shouldNotify) {
+        const creatorId = shareLink.createdById || asset.uploadedByUserId;
+        if (creatorId && creatorId !== req.user?.id) {
+          try {
+            await createNotification(
+              req.server,
+              creatorId,
+              shareLink.orgId,
+              'share_link_downloaded',
+              'Share Link Downloaded',
+              `${viewerName} downloaded your shared link: ${shareLink.name || asset.title || 'Media'}`,
+              asset.id
+            );
+          } catch (notifErr) {
+            req.log.warn('Failed to send share link download notification: ', notifErr.message);
+          }
+        }
+      }
+    }
+
     return await handleMediaRedirectOrServe(req, reply, asset.id, isDownload);
   } catch (error) {
     req.log.error(error);

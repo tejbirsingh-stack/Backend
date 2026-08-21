@@ -196,8 +196,8 @@ module.exports.getRoles = async (request, reply) => {
 
 module.exports.updateProfile = async (request, reply) => {
   try {
-    const { name, timezone } = request.body;
-    
+    const { name, timezone, shareLinkActivityEnabled } = request.body;
+
     if (!request.user || !request.user.id) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
@@ -206,7 +206,8 @@ module.exports.updateProfile = async (request, reply) => {
       where: { id: request.user.id },
       data: {
         ...(name !== undefined ? { name } : {}),
-        ...(timezone !== undefined ? { timezone } : {})
+        ...(timezone !== undefined ? { timezone } : {}),
+        ...(shareLinkActivityEnabled !== undefined ? { shareLinkActivityEnabled } : {})
       }
     });
 
@@ -252,10 +253,10 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
     const sanitizedOrgName = user.organization.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const sanitizedEmail = user.email.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     const folderName = `${sanitizedEmail}_${userId}`;
-    
+
     const ext = path.extname(data.filename) || '.png';
     const uniqueFilename = `profile_${Date.now()}${ext}`;
-    
+
     // Path: noah-uploads / [organization name] / Profile Photo / [Username_emailid_uniqueid] / [filename]
     const b2Key = `noah-uploads/${sanitizedOrgName}/Profile Photo/${folderName}/${uniqueFilename}`;
 
@@ -303,7 +304,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
 module.exports.getAvatar = async (request, reply) => {
   try {
     const { id } = request.params;
-    
+
     const user = await request.server.prisma.user.findUnique({
       where: { id },
       select: { avatarKey: true, avatarUrl: true }
@@ -339,7 +340,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
   try {
     const { id } = request.params;
     const { email, roleId } = request.body;
-    
+
     // 1. Verify Super Admin role
     let currentUserRole = request.user?.role || "";
     if (request.user?.id) {
@@ -408,7 +409,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
         }
       });
       if (!targetRole) {
-         return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
+        return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
       }
       dataToUpdate.roleId = targetRole.id;
       dataToUpdate.role = targetRole.name;
@@ -441,7 +442,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
 module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
   try {
     const { userIds, action } = request.body; // action: 'active', 'inactive', 'delete'
-    
+
     // 1. Verify Super Admin or Admin role
     let currentUserRole = request.user?.role || "";
     if (request.user?.id) {
