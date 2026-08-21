@@ -453,11 +453,21 @@ class StripeController {
       }
 
       const baseUrl = getFrontendUrl(request);
+      const { successUrl, cancelUrl } = request.body || {};
+      
+      const finalSuccessUrl = successUrl 
+        ? `${baseUrl}${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}` 
+        : `${baseUrl}/home/settings/accounts/plan?success=true&session_id={CHECKOUT_SESSION_ID}`;
+        
+      const finalCancelUrl = cancelUrl 
+        ? `${baseUrl}${cancelUrl}` 
+        : `${baseUrl}/home/settings/accounts/plan?canceled=true`;
+
       const session = await stripeService.createCheckoutSession(
         customerId,
         checkoutPriceId,
-        `${baseUrl}/home/settings/accounts/plan?success=true&session_id={CHECKOUT_SESSION_ID}`,
-        `${baseUrl}/home/settings/accounts/plan?canceled=true`
+        finalSuccessUrl,
+        finalCancelUrl
       );
 
       // Log Payment Audit Event

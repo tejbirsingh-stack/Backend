@@ -12,6 +12,7 @@ function serializePlan(plan) {
     showProjectQuota: plan.showProjectQuota ?? true,
     showStorageQuota: plan.showStorageQuota ?? true,
     showMemberQuota: plan.showMemberQuota ?? true,
+    hasAI: plan.hasAI ?? false,
     // Expose features as a flat array of feature objects { id, name, sortOrder }
     features: (plan.featureSelections || []).map((sel) => sel.feature).filter(Boolean),
   };
@@ -42,6 +43,7 @@ function parsePlanBody(body = {}) {
   }
   if (body.isPublic !== undefined) data.isPublic = Boolean(body.isPublic);
   if (body.isFeatured !== undefined) data.isFeatured = Boolean(body.isFeatured);
+  if (body.hasAI !== undefined) data.hasAI = Boolean(body.hasAI);
   if (body.isActive !== undefined) data.isActive = Boolean(body.isActive);
   if (body.sortOrder !== undefined) data.sortOrder = parseInt(body.sortOrder, 10) || 0;
   if (body.ctaLabel !== undefined) data.ctaLabel = body.ctaLabel;
@@ -125,10 +127,11 @@ async function createPlan(request, reply) {
     // Sync to Stripe
     try {
       const stripeSync = await stripeService.syncPlanToStripe(plan);
-      if (stripeSync.monthlyPriceId || stripeSync.yearlyPriceId) {
+      if (stripeSync.stripeProductId || stripeSync.monthlyPriceId || stripeSync.yearlyPriceId) {
         plan = await prisma.plan.update({
           where: { id: plan.id },
           data: {
+            stripeProductId: stripeSync.stripeProductId,
             monthlyPriceId: stripeSync.monthlyPriceId,
             yearlyPriceId: stripeSync.yearlyPriceId
           },
@@ -197,6 +200,7 @@ async function updatePlan(request, reply) {
     const mergedPlan = { ...existingPlan, ...data };
     try {
       const stripeSync = await stripeService.syncPlanToStripe(mergedPlan);
+      data.stripeProductId = stripeSync.stripeProductId;
       data.monthlyPriceId = stripeSync.monthlyPriceId;
       data.yearlyPriceId = stripeSync.yearlyPriceId;
     } catch (stripeErr) {
@@ -256,7 +260,7 @@ async function deletePlan(request, reply) {
 
     // Attempt to archive the plan in Stripe so it disappears from the active catalogue
     try {
-      await stripeService.archivePlanInStripe(planId);
+      await stripeService.archivePlanInStripe(plan.stripeProductId || planId);
     } catch (stripeErr) {
       console.error('[Stripe Sync Error] Failed to archive plan in Stripe upon deletion:', stripeErr.message);
     }

@@ -37,6 +37,7 @@ async function getBillingOverview(request, reply) {
       subscriptionStatus: { subscriptionStatus: sortDir },
       users: { users: { _count: sortDir } },
       updatedAt: { updatedAt: sortDir },
+      stripeCustomerId: { stripeCustomerId: sortDir },
     };
     const orderBy = SORT_MAP[sortBy] || { updatedAt: 'desc' };
 
@@ -92,6 +93,11 @@ async function getBillingOverview(request, reply) {
         include: {
           currentPlan: true,
           _count: { select: { users: true } },
+          users: {
+            orderBy: { createdAt: 'asc' },
+            take: 1,
+            select: { email: true },
+          },
         },
       }),
       prisma.organization.count({ where: whereClause }),
@@ -119,6 +125,7 @@ async function getBillingOverview(request, reply) {
             id: org.id,
             name: org.name,
             slug: org.slug,
+            ownerEmail: org.users?.[0]?.email || org.slug,
             planType: org.currentPlan?.name ? org.currentPlan.name.toLowerCase() : 'free',
             status: org.status,
             subscriptionStatus: resolvedStatus,
@@ -294,6 +301,17 @@ async function getPlatformPaymentLogs(request, reply) {
     const orgId = request.query?.orgId || '';
     const createdFrom = request.query?.createdFrom || '';
     const createdTo = request.query?.createdTo || '';
+    const sortBy = String(request.query?.sortBy || 'createdAt');
+    const sortDir = String(request.query?.sortDir || 'desc') === 'asc' ? 'asc' : 'desc';
+
+    const SORT_MAP = {
+      org: { organization: { name: sortDir } },
+      amount: { amountCents: sortDir },
+      status: { status: sortDir },
+      paymentId: { stripePaymentIntentId: sortDir },
+      createdAt: { createdAt: sortDir },
+    };
+    const orderBy = SORT_MAP[sortBy] || { createdAt: 'desc' };
 
     const where = {};
     if (q) {
@@ -319,7 +337,7 @@ async function getPlatformPaymentLogs(request, reply) {
     const [logs, total, failed30Days] = await Promise.all([
       prisma.paymentLog.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         take: limit,
         skip: offset,
         include: {

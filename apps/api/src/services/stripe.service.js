@@ -150,7 +150,9 @@ class StripeService {
   async syncPlanToStripe(planData) {
     try {
       const stripe = await getStripe();
-      const productId = planData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); // Use deterministic slug as Stripe Product ID
+      // Use stored stripeProductId if available (rename-safe), fall back to slug for new plans
+      const slugId = planData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const productId = planData.stripeProductId || slugId;
 
       // 1. Sync Product
       let product;
@@ -164,7 +166,7 @@ class StripeService {
       } catch (error) {
         if (error.code === 'resource_missing' || error.statusCode === 404) {
           product = await stripe.products.create({
-            id: productId,
+            id: slugId, // always create with slug-based ID
             name: planData.name,
             description: planData.description || undefined,
             active: planData.isActive,
