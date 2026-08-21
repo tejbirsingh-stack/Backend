@@ -1342,6 +1342,44 @@ module.exports.downloadFile = async (request, reply) => {
         } else {
           b2Key = proxy ? proxy.filePath : original?.filePath;
         }
+
+        // Notification logic for explicitly shared downloads
+        if (request.user) {
+          try {
+            const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+              where: { assetId: asset.id, userId: request.user.id }
+            }) || await request.server.prisma.assetGroup.findFirst({
+              where: {
+                assetId: asset.id,
+                group: { members: { some: { userId: request.user.id } } }
+              }
+            });
+
+            if (isExplicitlyShared) {
+              const viewerDb = await request.server.prisma.user.findUnique({
+                where: { id: request.user.id },
+                select: { shareLinkActivityEnabled: true }
+              });
+
+              if (viewerDb && viewerDb.shareLinkActivityEnabled !== false) {
+                const creatorId = asset.uploadedByUserId;
+                if (creatorId && creatorId !== request.user.id) {
+                  await createNotification(
+                    request.server,
+                    creatorId,
+                    asset.orgId,
+                    'media_downloaded',
+                    'Media Downloaded',
+                    `${request.user.name || request.user.email || 'A user'} downloaded your shared media: ${asset.title}`,
+                    asset.id
+                  );
+                }
+              }
+            }
+          } catch (notifErr) {
+            console.warn('Failed to send explicit share download notification:', notifErr.message);
+          }
+        }
       }
     }
 
@@ -1719,6 +1757,42 @@ module.exports.getMediaFile = async (request, reply) => {
             projectContext
           );
           console.log(`[getMediaFile] effectivePermissions resolved:`, effectivePermissions);
+
+          // Internal explicit share notification logic
+          try {
+            const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+              where: { assetId: fetchedAsset.id, userId: request.user.id }
+            }) || await request.server.prisma.assetGroup.findFirst({
+              where: {
+                assetId: fetchedAsset.id,
+                group: { members: { some: { userId: request.user.id } } }
+              }
+            });
+
+            if (isExplicitlyShared) {
+              const viewerDb = await request.server.prisma.user.findUnique({
+                where: { id: request.user.id },
+                select: { shareLinkActivityEnabled: true }
+              });
+
+              if (viewerDb && viewerDb.shareLinkActivityEnabled !== false) {
+                const creatorId = fetchedAsset.uploadedByUserId;
+                if (creatorId && creatorId !== request.user.id) {
+                  await createNotification(
+                    request.server,
+                    creatorId,
+                    fetchedAsset.orgId,
+                    'media_viewed',
+                    'Media Viewed',
+                    `${request.user.name || request.user.email || 'A user'} viewed your shared media: ${fetchedAsset.title}`,
+                    fetchedAsset.id
+                  );
+                }
+              }
+            }
+          } catch (notifErr) {
+            console.warn('Failed to send explicit share view notification:', notifErr.message);
+          }
         }
 
         const dbTags = (fetchedAsset.assetTags && fetchedAsset.assetTags.length > 0)

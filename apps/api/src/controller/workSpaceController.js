@@ -215,7 +215,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                         ).catch(err => console.error('Failed to create in-app notification:', err));
                     }
                 }
-                
+
                 if (sendInviteEmail) {
                     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
                     const appUrl = `${frontendUrl}`; // Base dashboard URL
@@ -226,13 +226,13 @@ module.exports.storeWorkplace = async (request, reply) => {
                             workspaceName: name,
                             organizationName: orgNameObj?.name || 'Your Organization',
                             appUrl
-                        }).catch(() => {});
+                        }).catch(() => { });
                     } else {
                         emailService.sendWorkspaceMemberInvite(cleanEmail, {
                             workspaceName: name,
                             inviterName: request.user.name || request.user.email,
                             appUrl
-                        }).catch(() => {});
+                        }).catch(() => { });
                     }
                 }
             }
@@ -2030,7 +2030,7 @@ module.exports.updateProject = async (request, reply) => {
         if (!projectToUpdate) {
             return reply.code(404).send({ success: false, message: 'Project not found.' });
         }
-        
+
         const activeWorkspaceId = workspaceId || projectToUpdate.workspaceId;
 
         if (name !== undefined) {

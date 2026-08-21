@@ -106,6 +106,7 @@ model User {
   roleId      String?   @db.Uuid
   roleRelation Role?    @relation(fields: [roleId], references: [id], onDelete: SetNull)
   preferences Json     @default("{}") @db.JsonB
+  shareLinkActivityEnabled Boolean @default(true) @map("share_link_activity_enabled")
   mfaSecret   String?   @db.VarChar(255) // Secret key for TOTP MFA
   mfaEnabled  Boolean   @default(false)  // Whether MFA is enabled
   emailOTP    String?   @db.VarChar(10)  // Store Email OTP code
