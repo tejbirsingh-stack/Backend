@@ -1395,6 +1395,115 @@ module.exports.findFolderTreeData = async (request, reply) => {
     }
 };
 
+/**
+ * Helper function to handle unselected folders and files when a parent folder or project is permanently deleted by Super Admin.
+ * - Creates or reuses a single "Restore" folder at top level of the workspace.
+ * - Moves top-most unselected folders (whose parent is deleted) into "Restore" folder.
+ * - Moves top-most unselected files (whose parent folder is deleted) into "Restore" folder.
+ * - Leaves nested unselected items inside their unselected parent folder.
+ * - Clears deletion status/fields for all unselected items to make them active again.
+ */
+async function handleUnselectedItemsPreservation(prisma, { workspaceId, targetFolderIds, finalAssetIdsToDelete, allFolderIds, allFolderAssets }) {
+    if (!workspaceId) return;
+
+    const deletedFolderIdSet = new Set(targetFolderIds || []);
+    const deletedAssetIdSet = new Set(finalAssetIdsToDelete || []);
+
+    const unselectedFolderIds = (allFolderIds || []).filter(fId => !deletedFolderIdSet.has(fId));
+    const unselectedAssetIds = (allFolderAssets || []).map(a => a.id).filter(aId => !deletedAssetIdSet.has(aId));
+
+    if (unselectedFolderIds.length === 0 && unselectedAssetIds.length === 0) {
+        return;
+    }
+
+    // 1. Get or Create "Restore" folder in this workspace
+    let restoreFolder = await prisma.folder.findFirst({
+        where: {
+            workspaceId: workspaceId,
+            parentId: null,
+            name: 'Restore'
+        }
+    }).catch(() => null);
+
+    if (!restoreFolder) {
+        restoreFolder = await prisma.folder.create({
+            data: {
+                name: 'Restore',
+                workspaceId: workspaceId,
+                parentId: null,
+                color: '#3b82f6'
+            }
+        }).catch(() => null);
+    }
+
+    if (!restoreFolder) {
+        console.error('[Restore Folder Error] Could not find or create Restore folder');
+        return;
+    }
+
+    // 2. Process Unselected Folders
+    if (unselectedFolderIds.length > 0) {
+        const unselectedFolders = await prisma.folder.findMany({
+            where: { id: { in: unselectedFolderIds } }
+        }).catch(() => []);
+
+        for (const folder of unselectedFolders) {
+            // Check if folder's parent is deleted (or root being deleted)
+            const isParentDeleted = !folder.parentId || deletedFolderIdSet.has(folder.parentId);
+            if (isParentDeleted) {
+                // Top-most unselected folder: Move to Restore folder
+                await prisma.folder.update({
+                    where: { id: folder.id },
+                    data: { parentId: restoreFolder.id }
+                }).catch(() => null);
+            }
+        }
+    }
+
+    // 3. Process Unselected Assets
+    if (unselectedAssetIds.length > 0) {
+        const unselectedAssets = (allFolderAssets || []).filter(a => unselectedAssetIds.includes(a.id));
+
+        for (const asset of unselectedAssets) {
+            // Extract parent folder ID of asset
+            let parentFolderId = asset.ownerType === 'FOLDER' ? asset.ownerId : (asset.folderId || null);
+            if (!parentFolderId && asset.deletionReason) {
+                const match = asset.deletionReason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]/i);
+                if (match) parentFolderId = match[1];
+            }
+
+            const isParentDeleted = !parentFolderId || deletedFolderIdSet.has(parentFolderId);
+
+            if (isParentDeleted) {
+                // Top-most unselected asset: Move to Restore folder & reactivate
+                await prisma.asset.update({
+                    where: { id: asset.id },
+                    data: {
+                        status: 'active',
+                        deletedAt: null,
+                        deletedByUserId: null,
+                        deletionReason: null,
+                        ownerType: 'FOLDER',
+                        ownerId: restoreFolder.id,
+                        workspaceId: workspaceId
+                    }
+                }).catch(() => null);
+            } else {
+                // Asset parent folder is preserved: Keep inside its parent folder & reactivate
+                await prisma.asset.update({
+                    where: { id: asset.id },
+                    data: {
+                        status: 'active',
+                        deletedAt: null,
+                        deletedByUserId: null,
+                        deletionReason: null
+                    }
+                }).catch(() => null);
+            }
+        }
+    }
+}
+
 module.exports.deleteFolder = async (request, reply) => {
     try {
         const { id } = request.params; // folderId
@@ -1482,6 +1591,17 @@ module.exports.deleteFolder = async (request, reply) => {
 
             const assetsToDelete = allFolderAssets.filter(a => targetAssetIds.includes(a.id) || (isWholeFolder && a.deletionReason && a.deletionReason.includes(id)));
             const finalAssetIdsToDelete = Array.from(new Set(assetsToDelete.map(a => a.id)));
+
+            const workspaceId = targetFolder?.workspaceId || liveUser?.workspaceId;
+
+            // Preserve unselected items and move top-most unselected items to Restore folder if parent deleted
+            await handleUnselectedItemsPreservation(prisma, {
+                workspaceId,
+                targetFolderIds,
+                finalAssetIdsToDelete,
+                allFolderIds: folderIdList,
+                allFolderAssets
+            });
 
             for (const asset of assetsToDelete) {
                 let assetSizeBytes = 0;
@@ -2594,6 +2714,34 @@ module.exports.deleteProject = async (request, reply) => {
                     currentFolderLevel = childIds;
                 }
                 const targetFolderIds = Array.from(selectedFolderSet);
+                const workspaceId = targetProject?.workspaceId || liveUser?.workspaceId;
+
+                const { assets: allProjectAssets } = await getAllProjectAssetIdsAndObjects(prisma, id);
+                const projectFolderSources = await prisma.projectSource.findMany({
+                    where: { projectId: id, sourceableType: 'FOLDER' },
+                    select: { folderId: true }
+                }).catch(() => []);
+                const initialFolderIds = new Set(projectFolderSources.map(s => s.folderId).filter(Boolean));
+                const allProjectFolderIds = new Set(initialFolderIds);
+                let currentProjFolderLevel = Array.from(initialFolderIds);
+                while (currentProjFolderLevel.length > 0) {
+                    const childFolders = await prisma.folder.findMany({
+                        where: { parentId: { in: currentProjFolderLevel } },
+                        select: { id: true }
+                    }).catch(() => []);
+                    const childIds = childFolders.map(f => f.id).filter(fId => !allProjectFolderIds.has(fId));
+                    if (childIds.length === 0) break;
+                    childIds.forEach(fId => allProjectFolderIds.add(fId));
+                    currentProjFolderLevel = childIds;
+                }
+
+                await handleUnselectedItemsPreservation(prisma, {
+                    workspaceId,
+                    targetFolderIds,
+                    finalAssetIdsToDelete: targetAssetIds,
+                    allFolderIds: Array.from(allProjectFolderIds),
+                    allFolderAssets: allProjectAssets
+                });
 
                 if (targetAssetIds.length === 0 && targetFolderIds.length === 0) {
                     const pendingAssets = await prisma.asset.findMany({
