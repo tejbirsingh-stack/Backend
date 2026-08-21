@@ -1185,6 +1185,25 @@ class StripeController {
           }
           break;
         }
+        case 'checkout.session.expired': {
+          const session = event.data.object;
+          const customerId = session.customer;
+
+          if (customerId) {
+            const orgs = await prisma.organization.findMany({ where: { stripeCustomerId: customerId } });
+            for (const org of orgs) {
+              await recordPaymentEvent({
+                orgId: org.id,
+                stripeCustomerId: customerId,
+                stripeSessionId: session.id,
+                eventType: 'checkout.session.expired',
+                status: 'FAILED',
+                failureReason: 'Checkout abandoned or expired',
+              });
+            }
+          }
+          break;
+        }
         case 'invoice.payment_failed': {
           const invoice = event.data.object;
           const customerId = invoice.customer;
