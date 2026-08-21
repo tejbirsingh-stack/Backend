@@ -233,9 +233,13 @@ async function main() {
 
     let currentPlan;
     if (existing) {
+      // Preserve existing Stripe price IDs so we don't generate new prices on every seed run
+      const updateData = { ...planData };
+      if (existing.monthlyPriceId) delete updateData.monthlyPriceId;
+      if (existing.yearlyPriceId) delete updateData.yearlyPriceId;
       currentPlan = await prisma.plan.update({
         where: { id: existing.id },
-        data: planData,
+        data: updateData,
       });
     } else {
       currentPlan = await prisma.plan.create({

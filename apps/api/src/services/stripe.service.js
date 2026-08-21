@@ -196,6 +196,15 @@ class StripeService {
           }
         }
 
+        // Before creating, search for an existing active price with the same amount on this product
+        try {
+          const list = await stripe.prices.list({ product: product.id, active: true, limit: 20 });
+          const match = list.data.find(
+            (p) => p.unit_amount === cents && p.recurring?.interval === interval
+          );
+          if (match) return match.id;
+        } catch (_e) { /* ignore list errors */ }
+
         // Create new price
         const price = await stripe.prices.create({
           product: product.id,
