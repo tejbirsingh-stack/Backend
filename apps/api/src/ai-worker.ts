@@ -6,6 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import B2StorageService from './b2-storage.cjs';
 import { transcribeProxy } from './services/ai/assemblyai.js';
 import { embedTranscriptForAsset } from './services/ai/embedTranscript.js';
+import { highlightTranscriptForAsset } from './services/ai/highlightTranscript.js';
 // CJS entitlement helper
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { isAiEnabledForOrg } = require('./services/ai/aiEntitlement.js');
@@ -100,13 +101,13 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
       orgId,
       status: 'processing',
       force,
-      steps: { asr: 'queued', embeddings: 'queued' },
+      steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' },
     },
     update: {
       status: 'processing',
       force,
       error: null,
-      steps: { asr: 'queued', embeddings: 'queued' },
+      steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' },
     },
   });
 
@@ -128,6 +129,12 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
 
     steps.asr = await processAsrStep(assetId, orgId, force);
     if (steps.asr === 'completed' || steps.asr === 'skipped') {
+      try {
+        steps.highlights = await highlightTranscriptForAsset(prisma, assetId, orgId, force);
+      } catch (highlightErr: any) {
+        steps.highlights = 'failed';
+        console.error('[AI] highlights step failed:', highlightErr?.message || highlightErr);
+      }
       try {
         steps.embeddings = await embedTranscriptForAsset(prisma, assetId, orgId, force);
       } catch (embedErr: any) {

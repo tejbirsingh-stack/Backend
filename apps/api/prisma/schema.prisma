@@ -43,6 +43,7 @@ model Organization {
   usageDailyRollups UsageDailyRollup[]
   aiAnalysisJobs    AiAnalysisJob[]
   aiEmbeddings      AiEmbedding[]
+  aiHighlights      AiHighlight[]
 
   workspaces Workspace[]
   settings   OrganizationSettings?
@@ -368,6 +369,7 @@ model Asset {
   aiAnalysisJobs       AiAnalysisJob[]
   aiTranscriptSegments AiTranscriptSegment[]
   aiEmbeddings         AiEmbedding[]
+  aiHighlight          AiHighlight?
 
   @@index([orgId])
   @@index([status])
@@ -1373,5 +1375,21 @@ model AiEmbedding {
   @@index([assetId])
   @@index([orgId])
   @@map("ai_embeddings")
+}
+
+model AiHighlight {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId   String   @unique @db.Uuid
+  orgId     String   @db.Uuid
+  summary   String   @db.Text
+  tags      Json     @default("[]") @db.JsonB
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("ai_highlights")
 }
 

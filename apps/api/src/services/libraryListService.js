@@ -15,6 +15,7 @@ async function listItems(prisma, params) {
     dateFrom,
     dateTo,
     tagIds = '',
+    aiTags = '',
     reviewStatus = 'all',
   } = params;
 
@@ -198,6 +199,21 @@ async function listItems(prisma, params) {
     }
   }
 
+  if (aiTags) {
+    const selectedAiTags = String(aiTags)
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (selectedAiTags.length > 0) {
+      // AND: asset.aiTags JsonB array must contain every selected tag
+      assetConditions.push(
+        Prisma.sql`"aiTags" @> ${JSON.stringify(selectedAiTags)}::jsonb`,
+      );
+      folderConditions.push(Prisma.sql`false`);
+      projectConditions.push(Prisma.sql`false`);
+    }
+  }
+
   if (reviewStatus && reviewStatus !== 'all') {
     if (reviewStatus === 'New') {
       // Default status: missing metadata, empty value, or explicitly "New"
@@ -295,6 +311,7 @@ async function listItems(prisma, params) {
         files: true,
         metadata: true,
         sources: true,
+        aiHighlight: { select: { summary: true, tags: true } },
         assetTags: { include: { tag: true } },
         ...(view === 'shared' ? {
           shareLinks: {
@@ -356,6 +373,18 @@ async function listItems(prisma, params) {
             : a.metadata.customProperties;
       }
 
+      const aiTagList = Array.isArray(a.aiTags)
+        ? a.aiTags.filter((t) => typeof t === 'string')
+        : Array.isArray(a.aiHighlight?.tags)
+          ? a.aiHighlight.tags.filter((t) => typeof t === 'string')
+          : [];
+      const userSummary =
+        (typeof customMetadata.summary === 'string' && customMetadata.summary.trim()) ||
+        '';
+      const aiSummary =
+        (typeof a.aiHighlight?.summary === 'string' && a.aiHighlight.summary.trim()) ||
+        '';
+
       return {
         id: a.id,
         title: a.title,
@@ -367,6 +396,8 @@ async function listItems(prisma, params) {
         thumbnail: `/api/media/${encodeURIComponent(a.id)}/thumbnail`,
         uploadedBy: a.uploadedByUserId || null,
         tags: dbTags,
+        aiTags: aiTagList,
+        summary: userSummary || aiSummary || undefined,
         status: a.status,
         workspaceId: a.workspaceId,
         customMetadata,

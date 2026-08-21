@@ -4,7 +4,7 @@ import { embedTexts, toPgVectorLiteral } from './openai.js';
 export type AiSearchHit = {
   assetId: string;
   score: number;
-  matchType: 'semantic' | 'transcript' | 'title';
+  matchType: 'semantic' | 'transcript' | 'title' | 'highlight';
   startMs?: number;
   endMs?: number;
   snippet?: string;
@@ -56,6 +56,50 @@ async function searchByTranscript(prisma: PrismaClient, orgId: string, q: string
     endMs: s.endMs,
     snippet: s.text,
   }));
+}
+
+async function searchByHighlight(prisma: PrismaClient, orgId: string, q: string): Promise<AiSearchHit[]> {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return [];
+
+  const rows = await prisma.$queryRaw<
+    Array<{ asset_id: string; summary: string; tags: unknown; created_at: Date }>
+  >(Prisma.sql`
+    SELECT
+      h."assetId"::text AS asset_id,
+      h.summary,
+      h.tags,
+      a."createdAt" AS created_at
+    FROM "ai_highlights" h
+    INNER JOIN "assets" a ON a.id = h."assetId"
+    WHERE h."orgId" = ${orgId}::uuid
+      AND a."orgId" = ${orgId}::uuid
+      AND a.status = 'active'
+      AND (
+        h.summary ILIKE ${`%${q}%`}
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(COALESCE(h.tags, '[]'::jsonb)) AS tag
+          WHERE tag ILIKE ${`%${q}%`}
+        )
+      )
+    ORDER BY a."createdAt" DESC
+    LIMIT 50
+  `);
+
+  return rows.map((row) => {
+    const tags = Array.isArray(row.tags)
+      ? row.tags.filter((t): t is string => typeof t === 'string')
+      : [];
+    const tagHit = tags.find((t) => t.toLowerCase().includes(needle));
+    return {
+      assetId: row.asset_id,
+      score: 1,
+      matchType: 'highlight' as const,
+      snippet: tagHit || row.summary,
+      createdAt: row.created_at,
+    };
+  });
 }
 
 async function searchByEmbedding(prisma: PrismaClient, orgId: string, q: string): Promise<AiSearchHit[]> {
@@ -124,11 +168,17 @@ function mergeAndRank(hits: AiSearchHit[], page: number, pageSize: number): {
       }
     } else {
       current.keyword = 1;
-      if (hit.matchType === 'transcript' && current.matchType !== 'semantic') {
+      if (hit.matchType === 'transcript' && current.matchType !== 'semantic' && current.matchType !== 'highlight') {
         current.matchType = 'transcript';
         current.snippet = hit.snippet;
         current.startMs = hit.startMs;
         current.endMs = hit.endMs;
+      } else if (
+        hit.matchType === 'highlight' &&
+        (current.matchType === 'title' || current.matchType === 'highlight' || !current.snippet)
+      ) {
+        current.matchType = 'highlight';
+        current.snippet = hit.snippet || current.snippet;
       }
     }
     if (hit.createdAt && (!current.createdAt || hit.createdAt > current.createdAt)) {
@@ -168,12 +218,17 @@ export async function hybridSearch(params: HybridSearchParams): Promise<{
   pageSize: number;
 }> {
   const { prisma, orgId, q, page, pageSize } = params;
-  const [titleHits, transcriptHits, semanticHits] = await Promise.all([
+  const [titleHits, transcriptHits, highlightHits, semanticHits] = await Promise.all([
     searchByTitle(prisma, orgId, q).catch(() => [] as AiSearchHit[]),
     searchByTranscript(prisma, orgId, q).catch(() => [] as AiSearchHit[]),
+    searchByHighlight(prisma, orgId, q).catch(() => [] as AiSearchHit[]),
     searchByEmbedding(prisma, orgId, q),
   ]);
-  const merged = mergeAndRank([...titleHits, ...transcriptHits, ...semanticHits], page, pageSize);
+  const merged = mergeAndRank(
+    [...titleHits, ...transcriptHits, ...highlightHits, ...semanticHits],
+    page,
+    pageSize,
+  );
   const ids = merged.items.map((item) => item.assetId);
   if (ids.length > 0) {
     const assets = await prisma.asset.findMany({

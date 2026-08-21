@@ -63,8 +63,8 @@ module.exports.retryAiAnalyze = async function retryAiAnalyze(request, reply) {
 
   await request.server.prisma.aiAnalysisJob.upsert({
     where: { assetId },
-    create: { assetId, orgId, status: 'queued', force, steps: { asr: 'queued', embeddings: 'queued' } },
-    update: { status: 'queued', force, error: null, steps: { asr: 'queued', embeddings: 'queued' } },
+    create: { assetId, orgId, status: 'queued', force, steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' } },
+    update: { status: 'queued', force, error: null, steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' } },
   });
 
   await enqueueAiAnalyze({ assetId, orgId, force });
@@ -145,4 +145,81 @@ module.exports.searchTranscript = async function searchTranscript(request, reply
   });
 
   return reply.send({ success: true, ...result });
+};
+
+module.exports.getHighlights = async function getHighlights(request, reply) {
+  const orgId = orgIdFromUser(request);
+  if (!orgId) {
+    return reply.status(403).send({ success: false, error: 'No organization attached to user.' });
+  }
+
+  const assetId = request.params.id;
+  const asset = await loadAssetForOrg(request.server.prisma, assetId, orgId);
+  if (!asset) {
+    return reply.status(404).send({ success: false, error: 'Media asset not found' });
+  }
+
+  if (!(await isAiEnabledForOrg(orgId, request.server.prisma))) {
+    return reply.send({
+      success: true,
+      assetId,
+      status: 'idle',
+      summary: null,
+      tags: [],
+    });
+  }
+
+  const job = await request.server.prisma.aiAnalysisJob.findUnique({
+    where: { assetId },
+  });
+  const highlight = await request.server.prisma.aiHighlight.findUnique({
+    where: { assetId },
+    select: { summary: true, tags: true },
+  });
+
+  const highlightsStep =
+    job?.steps && typeof job.steps === 'object' ? job.steps.highlights : undefined;
+  const tags = Array.isArray(highlight?.tags)
+    ? highlight.tags.filter((t) => typeof t === 'string')
+    : Array.isArray(asset.aiTags)
+      ? asset.aiTags.filter((t) => typeof t === 'string')
+      : [];
+
+  return reply.send({
+    success: true,
+    assetId,
+    status: highlight ? 'completed' : (highlightsStep || job?.status || 'idle'),
+    summary: highlight?.summary || null,
+    tags,
+  });
+};
+
+module.exports.listAiTags = async function listAiTags(request, reply) {
+  const orgId = orgIdFromUser(request);
+  if (!orgId) {
+    return reply.status(403).send({ success: false, error: 'No organization attached to user.' });
+  }
+
+  if (!(await isAiEnabledForOrg(orgId, request.server.prisma))) {
+    return reply.send({ success: true, tags: [] });
+  }
+
+  const rows = await request.server.prisma.$queryRaw`
+    SELECT DISTINCT tag
+    FROM "assets",
+    LATERAL jsonb_array_elements_text(COALESCE("aiTags", '[]'::jsonb)) AS tag
+    WHERE "orgId" = ${orgId}::uuid
+      AND ("status" IS NULL OR "status" NOT IN ('trash', 'deleted'))
+      AND "deletedAt" IS NULL
+      AND jsonb_typeof(COALESCE("aiTags", '[]'::jsonb)) = 'array'
+      AND length(trim(tag)) > 0
+    ORDER BY tag ASC
+    LIMIT 200
+  `;
+
+  const tags = (rows || [])
+    .map((r) => (typeof r.tag === 'string' ? r.tag.trim() : ''))
+    .filter(Boolean);
+
+  return reply.send({ success: true, tags });
 };
