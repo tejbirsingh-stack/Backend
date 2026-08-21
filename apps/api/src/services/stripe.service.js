@@ -150,7 +150,9 @@ class StripeService {
   async syncPlanToStripe(planData) {
     try {
       const stripe = await getStripe();
-      const productId = planData.id; // slug used as Stripe Product ID
+      // Use stored stripeProductId if available (rename-safe), fall back to slug for new plans
+      const slugId = planData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const productId = planData.stripeProductId || slugId;
 
       // 1. Sync Product
       let product;
@@ -164,7 +166,7 @@ class StripeService {
       } catch (error) {
         if (error.code === 'resource_missing' || error.statusCode === 404) {
           product = await stripe.products.create({
-            id: productId,
+            id: slugId, // always create with slug-based ID
             name: planData.name,
             description: planData.description || undefined,
             active: planData.isActive,
@@ -195,6 +197,15 @@ class StripeService {
             // Ignore retrieve/update errors and just create a new one
           }
         }
+
+        // Before creating, search for an existing active price with the same amount on this product
+        try {
+          const list = await stripe.prices.list({ product: product.id, active: true, limit: 20 });
+          const match = list.data.find(
+            (p) => p.unit_amount === cents && p.recurring?.interval === interval
+          );
+          if (match) return match.id;
+        } catch (_e) { /* ignore list errors */ }
 
         // Create new price
         const price = await stripe.prices.create({
@@ -348,7 +359,7 @@ class StripeService {
     try {
       const stripe = await getStripe();
       return await stripe.checkout.sessions.retrieve(sessionId, {
-        expand: ['line_items', 'customer', 'invoice'],
+        expand: ['line_items', 'customer', 'invoice', 'subscription', 'subscription.latest_invoice'],
       });
     } catch (error) {
       console.error('[StripeService] Error retrieving checkout session:', error);

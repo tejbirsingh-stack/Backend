@@ -2356,8 +2356,13 @@ module.exports.getPendingDeletions = async (request, reply) => {
 
     const orgId = liveUser?.orgId || request.user?.orgId;
 
-    const isSuperAdmin = userRole === 'super admin' || userRole === 'superadmin';
-    const isAdmin = userRole === 'admin' || isSuperAdmin;
+    const roleId = liveUser?.roleId || request.user?.roleId;
+    const isSuperAdmin =
+      userRole === 'super admin' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin' ||
+      roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
+    const isAdmin = userRole === 'admin' || isSuperAdmin || roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
 
     if (!isAdmin) {
       return reply.code(403).send({ success: false, error: 'Unauthorized to view pending deletions' });
@@ -2542,20 +2547,43 @@ module.exports.getPendingDeletions = async (request, reply) => {
             deletedFiles: []
           });
         }
-        folderRequestMap.get(folderId).deletedFiles.push({
-          id: asset.id,
-          title: asset.title || 'Untitled file',
-          type: asset.type || 'file',
-          isFolder: false
-        });
+        const isFolderPlaceholder = asset.ownerType === 'FOLDER_REQUEST' || (asset.type === 'folder' && asset.title.trim().toLowerCase() === folderName.trim().toLowerCase());
+        const isDirectFile = String(asset.ownerId) === String(folderId) && asset.ownerType === 'FOLDER';
+        if (isDirectFile && !isFolderPlaceholder) {
+          folderRequestMap.get(folderId).deletedFiles.push({
+            id: asset.id,
+            title: asset.title || 'Untitled item',
+            type: asset.type || 'file',
+            isFolder: asset.type === 'folder'
+          });
+        }
       } else {
         standaloneAssets.push(asset);
       }
     });
 
-    const formattedFolderRequests = Array.from(folderRequestMap.values()).map(fr => ({
-      ...fr,
-      itemCount: fr.deletedFiles.length
+    const formattedFolderRequests = await Promise.all(Array.from(folderRequestMap.values()).map(async fr => {
+      const childFolders = await request.server.prisma.folder.findMany({
+        where: { parentId: fr.id },
+        select: { id: true, name: true }
+      }).catch(() => []);
+
+      const existingFileIds = new Set(fr.deletedFiles.map(f => f.id));
+      childFolders.forEach(cf => {
+        if (!existingFileIds.has(cf.id)) {
+          fr.deletedFiles.unshift({
+            id: cf.id,
+            title: cf.name || 'Subfolder',
+            type: 'folder',
+            isFolder: true
+          });
+        }
+      });
+
+      return {
+        ...fr,
+        itemCount: fr.deletedFiles.length
+      };
     }));
 
     return reply.send({
@@ -2636,6 +2664,35 @@ module.exports.rejectDelete = async (request, reply) => {
 
       let updateData = {};
       let message = "";
+
+      if (existingAsset.type === 'folder') {
+        const targetFolderId = existingAsset.ownerId || existingAsset.id;
+        await request.server.prisma.asset.deleteMany({
+          where: {
+            type: 'folder',
+            ownerType: 'FOLDER',
+            OR: [{ ownerId: targetFolderId }, { deletionReason: { contains: targetFolderId } }]
+          }
+        }).catch(() => null);
+
+        await request.server.prisma.asset.updateMany({
+          where: {
+            type: { not: 'folder' },
+            OR: [
+              { ownerId: targetFolderId },
+              { deletionReason: { contains: targetFolderId } }
+            ]
+          },
+          data: {
+            status: 'active',
+            deletedAt: null,
+            deletedByUserId: null,
+            deletionReason: null
+          }
+        });
+
+        return reply.send({ success: true, message: 'Folder and inner items restored to Active' });
+      }
 
       if (userRole === 'super admin' || userRole === 'superadmin') {
         // Super Admin rejects → fully restore to active, clear all deletion fields

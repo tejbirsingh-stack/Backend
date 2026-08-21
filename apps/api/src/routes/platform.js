@@ -36,6 +36,9 @@ const {
   getBillingOverview,
   overrideSubscription,
   getUsageOverview,
+  getPlatformPaymentLogs,
+  getPaymentLogEvents,
+  getPaymentLogOrgs,
 } = require('../controller/platform-billing.controller');
 const {
   listModerationFlags,
@@ -113,6 +116,9 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   fastify.delete('/plan-features/:featureId', { preHandler: requirePlatformAdmin }, deletePlanFeature);
 
   fastify.get('/billing/overview', { preHandler: requirePlatformAdmin }, getBillingOverview);
+  fastify.get('/billing/logs', { preHandler: requirePlatformAdmin }, getPlatformPaymentLogs);
+  fastify.get('/billing/logs/orgs', { preHandler: requirePlatformAdmin }, getPaymentLogOrgs);
+  fastify.get('/billing/logs/:logId/events', { preHandler: requirePlatformAdmin }, getPaymentLogEvents);
   fastify.patch(
     '/billing/organizations/:orgId',
     { preHandler: requirePlatformAdmin },

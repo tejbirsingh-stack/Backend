@@ -1086,10 +1086,12 @@ model Plan {
   showProjectQuota   Boolean  @default(true)
   showStorageQuota   Boolean  @default(true)
   showMemberQuota    Boolean  @default(true)
+  stripeProductId    String?  @db.VarChar(255) // Stripe Product ID (stable, rename-safe)
   monthlyPriceId     String?  @db.VarChar(255) // Stripe monthly price id
   yearlyPriceId      String?  @db.VarChar(255) // Stripe yearly price id
   isPublic           Boolean  @default(true)
   isFeatured         Boolean  @default(false)
+  hasAI              Boolean  @default(false)
   sortOrder          Int      @default(0)
   ctaLabel           String?  @db.VarChar(100)
   isActive           Boolean  @default(true)
