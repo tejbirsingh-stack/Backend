@@ -84,7 +84,7 @@ async function syncPlanToStripe(stripe, plan) {
   const monthlyPriceId = await findOrCreatePrice(plan.monthlyPriceCents, 'month', plan.monthlyPriceId);
   const yearlyPriceId = await findOrCreatePrice(plan.yearlyPriceCents, 'year', plan.yearlyPriceId);
 
-  return { monthlyPriceId, yearlyPriceId };
+  return { stripeProductId: product.id, monthlyPriceId, yearlyPriceId };
 }
 
 const PLATFORM_ADMIN = {
@@ -227,9 +227,18 @@ async function main() {
 
   for (const plan of DEFAULT_PLANS) {
     const { features, ...planData } = plan;
-    const existing = await prisma.plan.findFirst({
-      where: { name: { equals: plan.name, mode: 'insensitive' } },
+    const planSlug = plan.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    
+    // Search by stripeProductId first (stable slug), fallback to name
+    let existing = await prisma.plan.findFirst({
+      where: { stripeProductId: planSlug },
     });
+    
+    if (!existing) {
+      existing = await prisma.plan.findFirst({
+        where: { name: { equals: plan.name, mode: 'insensitive' } },
+      });
+    }
 
     let currentPlan;
     if (existing) {
@@ -247,22 +256,19 @@ async function main() {
       });
     }
 
-    // Auto-sync to Stripe so price IDs are always up-to-date without manual admin action
-    if (stripe && (currentPlan.monthlyPriceCents > 0 || currentPlan.yearlyPriceCents > 0)) {
+    // Auto-sync ALL plans to Stripe (even free ones) so stripeProductId is always stored — rename-safe
+    if (stripe) {
       try {
-        const { monthlyPriceId, yearlyPriceId } = await syncPlanToStripe(stripe, currentPlan);
-        if (monthlyPriceId || yearlyPriceId) {
-          currentPlan = await prisma.plan.update({
-            where: { id: currentPlan.id },
-            data: {
-              ...(monthlyPriceId ? { monthlyPriceId } : {}),
-              ...(yearlyPriceId ? { yearlyPriceId } : {}),
-            },
-          });
-          console.log(`Plan ready + Stripe synced: ${currentPlan.name} (monthly: ${monthlyPriceId ?? 'n/a'}, yearly: ${yearlyPriceId ?? 'n/a'})`);
-        } else {
-          console.log(`Plan ready: ${currentPlan.name} (no Stripe prices — free tier)`);
+        const { stripeProductId, monthlyPriceId, yearlyPriceId } = await syncPlanToStripe(stripe, currentPlan);
+        // Always save stripeProductId; only save price IDs if they exist
+        const syncData = {};
+        if (stripeProductId) syncData.stripeProductId = stripeProductId;
+        if (monthlyPriceId) syncData.monthlyPriceId = monthlyPriceId;
+        if (yearlyPriceId) syncData.yearlyPriceId = yearlyPriceId;
+        if (Object.keys(syncData).length > 0) {
+          currentPlan = await prisma.plan.update({ where: { id: currentPlan.id }, data: syncData });
         }
+        console.log(`Plan ready + Stripe synced: ${currentPlan.name} (product: ${stripeProductId ?? 'n/a'}, monthly: ${monthlyPriceId ?? 'n/a'}, yearly: ${yearlyPriceId ?? 'n/a'})`);
       } catch (stripeErr) {
         console.warn(`Plan ready: ${currentPlan.name} — Stripe sync failed: ${stripeErr.message}`);
       }
