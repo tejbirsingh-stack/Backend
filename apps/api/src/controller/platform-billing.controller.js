@@ -152,27 +152,62 @@ async function overrideSubscription(request, reply) {
 async function getUsageOverview(request, reply) {
   try {
     const q = String(request.query?.q || '').trim();
+    const status = request.query?.status ? String(request.query.status) : undefined;
+    const planId = request.query?.planId ? String(request.query.planId) : undefined;
+    const subscriptionStatus = request.query?.subscriptionStatus ? String(request.query.subscriptionStatus) : undefined;
+    const minStorageBytes = request.query?.minStorageBytes ? String(request.query.minStorageBytes) : undefined;
+    const maxStorageBytes = request.query?.maxStorageBytes ? String(request.query.maxStorageBytes) : undefined;
 
-    const orgs = await prisma.organization.findMany({
-      where: q
+    const limit = Math.min(parseInt(request.query?.limit || '50', 10) || 50, 200);
+    const offset = parseInt(request.query?.offset || '0', 10) || 0;
+    const sortBy = request.query?.sortBy ? String(request.query.sortBy) : 'storageUsedBytes';
+    const sortDir = request.query?.sortDir === 'asc' ? 'asc' : 'desc';
+
+    const where = {
+      ...(status ? { status } : {}),
+      ...(planId ? (planId === 'none' ? { currentPlanId: null } : { currentPlanId: planId }) : {}),
+      ...(subscriptionStatus ? (subscriptionStatus === 'none' ? { subscriptionStatus: null } : { subscriptionStatus }) : {}),
+      ...(minStorageBytes || maxStorageBytes
+        ? {
+            storageUsedBytes: {
+              ...(minStorageBytes ? { gte: BigInt(minStorageBytes) } : {}),
+              ...(maxStorageBytes ? { lte: BigInt(maxStorageBytes) } : {}),
+            },
+          }
+        : {}),
+      ...(q
         ? {
             OR: [
               { name: { contains: q, mode: 'insensitive' } },
               { slug: { contains: q, mode: 'insensitive' } },
-              { planType: { contains: q, mode: 'insensitive' } },
+              { currentPlan: { name: { contains: q, mode: 'insensitive' } } },
             ],
           }
-        : undefined,
-      orderBy: { storageUsedBytes: 'desc' },
-      take: 50,
-      include: {
-        currentPlan: true,
-        _count: { select: { users: true, assets: true, workspaces: true } },
-      },
-    });
+        : {}),
+    };
+
+    let orderBy = { storageUsedBytes: sortDir };
+    if (sortBy === 'name') orderBy = { name: sortDir };
+    else if (sortBy === 'status') orderBy = { status: sortDir };
+    else if (sortBy === 'plan') orderBy = { currentPlan: { name: sortDir } };
+
+    const [orgs, total] = await Promise.all([
+      prisma.organization.findMany({
+        where,
+        orderBy,
+        take: limit,
+        skip: offset,
+        include: {
+          currentPlan: true,
+          _count: { select: { users: true, assets: true, workspaces: true } },
+        },
+      }),
+      prisma.organization.count({ where }),
+    ]);
 
     return {
       success: true,
+      total,
       usage: orgs.map((org) => {
         const currentPlan = org.currentPlan || {};
         return {

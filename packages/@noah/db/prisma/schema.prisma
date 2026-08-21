@@ -1088,6 +1088,9 @@ model Plan {
   maxUsers           Int      @default(2)
   maxWorkspaces      Int      @default(1)
   maxProjects        Int      @default(1)
+  showProjectQuota   Boolean  @default(true)
+  showStorageQuota   Boolean  @default(true)
+  showMemberQuota    Boolean  @default(true)
   monthlyPriceId     String?  @db.VarChar(255) // Stripe monthly price id
   yearlyPriceId      String?  @db.VarChar(255) // Stripe yearly price id
   isPublic           Boolean  @default(true)

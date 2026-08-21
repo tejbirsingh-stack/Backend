@@ -7,6 +7,14 @@ const ROLE_IDS = {
   COLLABORATOR: 'ffeec394-0e40-49e1-aed3-61962118d73e',
 };
 
+const DEFAULT_ROLE_PERMISSIONS_FALLBACK = {
+  [ROLE_IDS.SUPER_ADMIN]: ['upload_media', 'manage_root_folders', 'view_workspace', 'edit_media', 'delete_media', 'share_media', 'manage_workspace', 'manage_projects', 'manage_users', 'view_search_media', 'download_stream_media', 'manage_trash', 'edit_metadata_tags', 'timeline_annotations', 'annotation_privacy', 'create_share_links'],
+  [ROLE_IDS.ADMIN]: ['upload_media', 'manage_root_folders', 'view_workspace', 'edit_media', 'delete_media', 'share_media', 'manage_workspace', 'manage_projects', 'manage_users', 'view_search_media', 'download_stream_media', 'manage_trash', 'edit_metadata_tags', 'timeline_annotations', 'annotation_privacy', 'create_share_links'],
+  [ROLE_IDS.EDITOR]: ['upload_media', 'view_search_media', 'download_stream_media', 'manage_trash', 'edit_metadata_tags', 'timeline_annotations', 'annotation_privacy', 'create_share_links'],
+  [ROLE_IDS.COLLABORATOR]: ['view_search_media', 'download_stream_media', 'timeline_annotations', 'annotation_privacy'],
+  [ROLE_IDS.VIEWER]: ['view_search_media', 'download_stream_media']
+};
+
 /**
  * Fetches the global org-role permissions dynamically from the database.
  */
@@ -15,8 +23,10 @@ async function getRolePermissions(prisma, roleId) {
   const rolePerms = await prisma.rolePermission.findMany({
     where: { roleId },
     include: { permission: true }
-  });
-  return rolePerms.map(rp => rp.permission.slug);
+  }).catch(() => []);
+  const dbSlugs = rolePerms.map(rp => rp.permission.slug);
+  if (dbSlugs.length > 0) return dbSlugs;
+  return DEFAULT_ROLE_PERMISSIONS_FALLBACK[roleId] || [];
 }
 
 async function roleHasPermission(prisma, roleId, permissionSlug) {
@@ -37,6 +47,17 @@ function isOrgWideRole(roleOrId) {
 async function resolveUserWorkspacePermissions(prisma, user, workspace) {
   const isPrivate = workspace.visibility === 'private' || workspace.visibility === 'PRIVATE';
   const isOwnOrg = !workspace.orgId || !user.orgId || workspace.orgId === user.orgId;
+
+  // 1. Super Admins / Admins get full permissions within their own org (for both public and private workspaces)
+  if (isOrgWideRole(user.role || user.roleId) && isOwnOrg) {
+    let perms = user.permissions && user.permissions.length > 0
+      ? user.permissions
+      : await getRolePermissions(prisma, user.roleId);
+    if (!perms || perms.length === 0) {
+      perms = ['upload_media', 'manage_root_folders', 'view_workspace', 'edit_media', 'delete_media', 'share_media', 'manage_workspace', 'manage_projects', 'manage_users'];
+    }
+    return perms;
+  }
 
   // Public workspace + same org → ALWAYS use role-based permissions, for every role
   if (!isPrivate && isOwnOrg) {
