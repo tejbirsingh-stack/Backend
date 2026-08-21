@@ -12,6 +12,7 @@ function serializePlan(plan) {
     showProjectQuota: plan.showProjectQuota ?? true,
     showStorageQuota: plan.showStorageQuota ?? true,
     showMemberQuota: plan.showMemberQuota ?? true,
+    hasAI: plan.hasAI ?? false,
     // Expose features as a flat array of feature objects { id, name, sortOrder }
     features: (plan.featureSelections || []).map((sel) => sel.feature).filter(Boolean),
   };
@@ -42,6 +43,7 @@ function parsePlanBody(body = {}) {
   }
   if (body.isPublic !== undefined) data.isPublic = Boolean(body.isPublic);
   if (body.isFeatured !== undefined) data.isFeatured = Boolean(body.isFeatured);
+  if (body.hasAI !== undefined) data.hasAI = Boolean(body.hasAI);
   if (body.isActive !== undefined) data.isActive = Boolean(body.isActive);
   if (body.sortOrder !== undefined) data.sortOrder = parseInt(body.sortOrder, 10) || 0;
   if (body.ctaLabel !== undefined) data.ctaLabel = body.ctaLabel;

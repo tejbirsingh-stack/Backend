@@ -2003,6 +2003,8 @@ module.exports.sendSignupOtp = async (request, reply) => {
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
+    let targetOrgId = null;
+
     if (existingUser) {
       await request.server.prisma.user.update({
         where: { id: existingUser.id },
@@ -2011,6 +2013,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
           emailOtpExpiresAt: expiresAt,
         },
       });
+      targetOrgId = existingUser.orgId;
     } else {
       // Create a new organization for pending registration using email domain
       const derivedOrgName = formatDomainToOrgName(normalizedEmail);
@@ -2035,13 +2038,14 @@ module.exports.sendSignupOtp = async (request, reply) => {
           orgId: pendingOrg.id,
         },
       });
+      targetOrgId = pendingOrg.id;
     }
 
     // Send OTP email
     const emailService = request.server.emailService || require("../services/email-service");
     if (emailService && typeof emailService.sendMfaCode === "function") {
       try {
-        const orgBranding = await resolveOrgBranding(request.server.prisma, pendingOrg.id);
+        const orgBranding = targetOrgId ? await resolveOrgBranding(request.server.prisma, targetOrgId) : null;
         await emailService.sendMfaCode(normalizedEmail, "New Member", otpCode, {
           orgLogoUrl: orgBranding?.logoUrl,
           orgName: orgBranding?.accountName,
