@@ -35,6 +35,10 @@ async function stripeRoutes(fastify, options) {
   fastify.post('/cancel-scheduled-downgrade', { preHandler: [fastify.authenticate] }, stripeController.cancelScheduledDowngrade);
 
   fastify.get('/invoices', { preHandler: [fastify.authenticate] }, stripeController.getInvoices);
+
+  fastify.get('/invoices/:invoiceId/download-pdf', { preHandler: [fastify.authenticate] }, stripeController.downloadCustomInvoicePdf);
+
+  fastify.get('/download-invoice-pdf', { preHandler: [fastify.authenticate] }, stripeController.downloadCustomInvoicePdf);
 }
 
 module.exports = stripeRoutes;

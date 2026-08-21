@@ -453,6 +453,21 @@ class StripeService {
   }
 
   /**
+   * Retrieve a single Stripe Invoice by ID
+   * @param {string} invoiceId
+   */
+  async retrieveInvoice(invoiceId) {
+    try {
+      const stripe = await getStripe();
+      if (!invoiceId) return null;
+      return await stripe.invoices.retrieve(invoiceId);
+    } catch (error) {
+      console.error('[StripeService] Error retrieving invoice:', error);
+      return null;
+    }
+  }
+
+  /**
    * Verify a Stripe Webhook Signature
    * @param {string} payload - The raw request body
    * @param {string} signature - The Stripe signature header
