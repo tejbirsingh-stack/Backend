@@ -30,18 +30,23 @@ class B2StorageService {
     // Initialize S3 client for B2 (S3-compatible)
     this.s3Client = null;
     this.bucket = null;
+    this.endpoint = null;
     this.enabled = false;
 
     // Check if B2 configuration is provided
     if (config && config.keyId && config.applicationKey && config.bucketName) {
+      this.endpoint = config.endpoint || 'https://s3.us-west-002.backblazeb2.com';
       this.s3Client = new S3Client({
         region: config.region || 'us-west-002',
-        endpoint: config.endpoint || 'https://s3.us-west-002.backblazeb2.com',
+        endpoint: this.endpoint,
         credentials: {
           accessKeyId: config.keyId,
           secretAccessKey: config.applicationKey,
         },
         forcePathStyle: true, // Required for B2
+        // B2 doesn't support AWS checksum extensions — disable them
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+        responseChecksumValidation: 'WHEN_REQUIRED',
       });
 
       this.bucket = config.bucketName;
@@ -49,7 +54,7 @@ class B2StorageService {
 
       console.log('✅ B2 Storage Service initialized');
       console.log(`  Bucket: ${this.bucket}`);
-      console.log(`  Endpoint: ${config.endpoint || 'https://s3.us-west-002.backblazeb2.com'}`);
+      console.log(`  Endpoint: ${this.endpoint}`);
     } else {
       console.log('⚠️ B2 Storage Service disabled - missing configuration');
     }
@@ -185,6 +190,23 @@ class B2StorageService {
       return null;
     }
   }
+
+  /**
+   * Get direct public URL for a file in public bucket/endpoint
+   */
+  getPublicUrl(key) {
+    if (!key) return null;
+    if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
+      return key;
+    }
+    if (this.endpoint && this.bucket) {
+      const cleanEndpoint = this.endpoint.replace(/\/$/, '');
+      const cleanKey = String(key).replace(/^\//, '');
+      return `${cleanEndpoint}/${this.bucket}/${cleanKey}`;
+    }
+    return null;
+  }
+
 
   /**
    * Get presigned URL for uploading a file (PUT)

@@ -733,7 +733,7 @@ module.exports.addProjectMember = async (request, reply) => {
 
                         // Send email only if sendInviteEmail is checked
                         if (sendInviteEmail && memberUser.email) {
-                            const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId);
+                            const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId, { forEmail: true });
                             emailService.sendProjectMemberInvite(memberUser.email, {
                                 projectName: project.name,
                                 inviterName,
@@ -799,7 +799,7 @@ module.exports.addProjectMember = async (request, reply) => {
         // Fire email ONLY if sendInviteEmail is true
         if (sendInviteEmail) {
             try {
-                const orgBranding = await resolveOrgBranding(prisma, user.orgId || orgId || project.workspace?.orgId);
+                const orgBranding = await resolveOrgBranding(prisma, user.orgId || orgId || project.workspace?.orgId, { forEmail: true });
                 const orgName = orgBranding?.accountName || project.workspace?.organization?.name || 'Noah Cloud';
                 if (effectiveMemberType?.toUpperCase() === MEMBER_TYPES.GUEST) {
                     await emailService.sendProjectGuestInvite(user.email, {
@@ -1061,7 +1061,7 @@ module.exports.createProject = async (request, reply) => {
                             // Fire non-blocking email only if sendInviteEmail is true
                             if (sendInviteEmail) {
                                 const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });
-                                const orgBranding = await resolveOrgBranding(prisma, orgId);
+                                const orgBranding = await resolveOrgBranding(prisma, orgId, { forEmail: true });
                                 const organizationName = orgBranding?.accountName || (org ? org.name : 'An organization');
 
                                 emailService.sendProjectGuestInvite(cleanEmail, {
@@ -1101,7 +1101,7 @@ module.exports.createProject = async (request, reply) => {
 
                             // Fire non-blocking email only if sendInviteEmail is true
                             if (sendInviteEmail) {
-                                const orgBranding = await resolveOrgBranding(prisma, orgId);
+                                const orgBranding = await resolveOrgBranding(prisma, orgId, { forEmail: true });
                                 emailService.sendProjectMemberInvite(cleanEmail, {
                                     projectName: project.name,
                                     inviterName,
@@ -1157,7 +1157,7 @@ module.exports.createProject = async (request, reply) => {
 
                                 // Send email to group member only if sendInviteEmail is checked
                                 if (sendInviteEmail && memberUser.email) {
-                                    const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId);
+                                    const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId, { forEmail: true });
                                     emailService.sendProjectMemberInvite(memberUser.email, {
                                         projectName: project.name,
                                         inviterName,

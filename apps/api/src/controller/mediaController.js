@@ -9,6 +9,7 @@ const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
 const emailService = require('../services/email-service');
+const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 
 const { Queue } = require("bullmq");
@@ -4226,12 +4227,16 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       if (sendInviteEmail && targetUser.email) {
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
         const appUrl = `${frontendUrl}/media/${assetId}`;
+        const targetOrgId = asset.orgId || request.user?.orgId;
+        const orgBranding = targetOrgId ? await resolveOrgBranding(request.server.prisma, targetOrgId, { forEmail: true }) : null;
 
         // Just sending the standard share invite email as they were granted direct access
         await emailService.sendShareInvite(targetUser.email, {
           assetTitle: asset.title,
           shareUrl: appUrl,
           senderName: inviterName,
+          orgLogoUrl: orgBranding?.logoUrl || null,
+          orgName: orgBranding?.accountName || null,
           permissions: {
             view: true,
             comment: accessLevel === 'Can edit' || accessLevel === 'Full Access',
