@@ -1037,6 +1037,7 @@ module.exports.getMediaAssets = async (request, reply) => {
         },
         transcodingStatus: transcodeJob?.status || null,
         uploadedByUserId: asset.uploadedByUserId,
+        visibility: asset.visibility,
       };
     });
 
@@ -1117,6 +1118,7 @@ module.exports.searchMediaAssets = async (request, reply) => {
         },
         compressionStatus: transcodeJob?.status || "completed",
         transcodingStatus: transcodeJob?.status || null,
+        visibility: asset.visibility,
       };
     });
 

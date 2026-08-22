@@ -376,6 +376,7 @@ async function listItems(prisma, params) {
         uploadedBy: a.uploadedByUserId || null,
         tags: dbTags,
         status: a.status,
+        visibility: a.visibility,
         workspaceId: a.workspaceId,
         customMetadata,
         reviewStatus: customMetadata.reviewStatus || 'New',
@@ -410,6 +411,7 @@ async function listItems(prisma, params) {
         isFolder: true,
         createdAt: f.createdAt.toISOString(),
         color: f.color,
+        visibility: f.visibility,
         workspaceId: f.workspaceId,
         parentFolderId: f.parentFolderId || null,
         linkedProjectIds: f.sources ? f.sources.map(ps => ps.projectId) : [],
@@ -424,6 +426,7 @@ async function listItems(prisma, params) {
         type: 'folder',
         isProject: true,
         createdAt: p.createdAt.toISOString(),
+        visibility: p.visibility,
         workspaceId: p.workspaceId,
         isSharedByMe: Boolean(p.createdById && p.createdById === params.userId),
         itemCount: p._count?.sources || 0
