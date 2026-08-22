@@ -1321,3 +1321,5 @@ model GlobalAdminSetting {
 
   @@map("global_admin_settings")
 }
+
+
