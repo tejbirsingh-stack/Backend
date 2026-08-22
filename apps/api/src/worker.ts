@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Worker, Job } from 'bullmq';
 import Redis from 'ioredis';
-import { PrismaClient } from '@prisma/client';
+
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -17,9 +17,8 @@ const redisConnection = new Redis({
   maxRetriesPerRequest: null, // Required by BullMQ
 });
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-const prisma = globalForPrisma.prisma || new PrismaClient();
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+// @ts-ignore
+const prisma = require('./utils/prisma.js');
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,

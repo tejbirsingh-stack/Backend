@@ -1,6 +1,5 @@
 const stripeService = require('../services/stripe.service.js');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../utils/prisma');
 
 function getFrontendUrl(req) {
   if (req) {

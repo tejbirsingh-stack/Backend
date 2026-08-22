@@ -196,19 +196,34 @@ module.exports.getRoles = async (request, reply) => {
 
 module.exports.updateProfile = async (request, reply) => {
   try {
-    const { name, timezone, shareLinkActivityEnabled } = request.body;
+    const { name, timezone, shareLinkActivityEnabled, preferences } = request.body;
 
     if (!request.user || !request.user.id) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
 
+    let updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (timezone !== undefined) updateData.timezone = timezone;
+    if (shareLinkActivityEnabled !== undefined) updateData.shareLinkActivityEnabled = shareLinkActivityEnabled;
+
+    if (preferences !== undefined) {
+      const existingUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        select: { preferences: true }
+      });
+      const currentPrefs = existingUser?.preferences && typeof existingUser.preferences === 'object'
+        ? existingUser.preferences
+        : {};
+      updateData.preferences = {
+        ...currentPrefs,
+        ...preferences
+      };
+    }
+
     const updatedUser = await request.server.prisma.user.update({
       where: { id: request.user.id },
-      data: {
-        ...(name !== undefined ? { name } : {}),
-        ...(timezone !== undefined ? { timezone } : {}),
-        ...(shareLinkActivityEnabled !== undefined ? { shareLinkActivityEnabled } : {})
-      }
+      data: updateData
     });
 
     return reply.send({

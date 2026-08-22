@@ -1,5 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../utils/prisma');
 
 function parseCspDomains(rawCsp) {
   if (!rawCsp) return ['noahcloud.ai', 'localhost'];

@@ -1,7 +1,4 @@
-const { PrismaClient } = require('@prisma/client');
-const globalForPrisma = globalThis;
-const prisma = globalForPrisma.prisma || new PrismaClient();
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+const prisma = require('../utils/prisma.js');
 
 const ACTOR_TYPE = {
     USER: 'user',

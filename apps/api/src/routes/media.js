@@ -68,7 +68,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get("/:id/thumbnail", getThumbnail);
 
   //5. Download file
-  fastify.get("/:filename/download", downloadFile);
+  fastify.get("/:filename/download", { preHandler: [optionalAuthenticate] }, downloadFile);
 
   //6. List soft-deleted files (Trash)
   fastify.get("/trash", canTrash, softDelete);

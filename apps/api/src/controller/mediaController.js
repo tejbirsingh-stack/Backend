@@ -1343,48 +1343,153 @@ module.exports.downloadFile = async (request, reply) => {
           b2Key = proxy ? proxy.filePath : original?.filePath;
         }
 
-        // Notification logic for explicitly shared downloads
+        // ── Download notification (Privacy: Share Link Activity) ──────────
         if (request.user) {
           try {
-            const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
-              where: { assetId: asset.id, userId: request.user.id }
-            }) || await request.server.prisma.assetGroup.findFirst({
-              where: {
-                assetId: asset.id,
-                group: { members: { some: { userId: request.user.id } } }
-              }
-            });
+            const downloaderId = request.user.id;
+            const creatorId = asset.uploadedByUserId;
 
-            if (isExplicitlyShared) {
-              const viewerDb = await request.server.prisma.user.findUnique({
-                where: { id: request.user.id },
-                select: { shareLinkActivityEnabled: true }
+            console.log(`[downloadNotif] downloader=${downloaderId} creator=${creatorId} asset=${asset.id}`);
+
+            if (creatorId && creatorId !== downloaderId) {
+              // Ghost mode: if the downloader has ghost mode ON, skip notification
+              const downloaderDb = await request.server.prisma.user.findUnique({
+                where: { id: downloaderId },
+                select: { shareLinkActivityEnabled: true, name: true, email: true }
               });
+              const ghostMode = downloaderDb && downloaderDb.shareLinkActivityEnabled === false;
+              console.log(`[downloadNotif] ghostMode=${ghostMode} shareLinkActivityEnabled=${downloaderDb?.shareLinkActivityEnabled}`);
 
-              if (viewerDb && viewerDb.shareLinkActivityEnabled !== false) {
-                const creatorId = asset.uploadedByUserId;
-                if (creatorId && creatorId !== request.user.id) {
-                  await createNotification(
-                    request.server,
-                    creatorId,
-                    asset.orgId,
-                    'media_downloaded',
-                    'Media Downloaded',
-                    `${request.user.name || request.user.email || 'A user'} downloaded your shared media: ${asset.title}`,
-                    asset.id
-                  );
+              if (!ghostMode) {
+                // Check if the downloader accessed this asset via a ShareLink OR AssetUser/AssetGroup
+                const hasShareLink = await request.server.prisma.shareLink.findFirst({
+                  where: {
+                    assetId: asset.id,
+                    revokedAt: null,
+                    OR: [
+                      // Email-mode share: recipient's email matches downloader's email
+                      {
+                        recipients: {
+                          some: {
+                            email: { equals: downloaderDb?.email || request.user.email, mode: 'insensitive' },
+                            revokedAt: null
+                          }
+                        }
+                      },
+                      // Public link: link is public (anyone with link can access)
+                      { visibility: 'public' },
+                    ]
+                  }
+                });
+
+                const hasAssetUser = await request.server.prisma.assetUser.findFirst({
+                  where: { assetId: asset.id, userId: downloaderId }
+                });
+
+                const hasAssetGroup = await request.server.prisma.assetGroup.findFirst({
+                  where: {
+                    assetId: asset.id,
+                    group: { members: { some: { userId: downloaderId } } }
+                  }
+                });
+
+                console.log(`[downloadNotif] hasShareLink=${!!hasShareLink} hasAssetUser=${!!hasAssetUser} hasAssetGroup=${!!hasAssetGroup}`);
+
+                const isSharedWithDownloader = hasShareLink || hasAssetUser || hasAssetGroup;
+
+                if (isSharedWithDownloader) {
+                  // Fetch creator to check their privacy setting and get their email
+                  const creator = await request.server.prisma.user.findUnique({
+                    where: { id: creatorId },
+                    select: { email: true, name: true, shareLinkActivityEnabled: true }
+                  });
+                  console.log(`[downloadNotif] creator=${creator?.email} creatorShareActivity=${creator?.shareLinkActivityEnabled}`);
+
+                  if (creator && creator.shareLinkActivityEnabled !== false) {
+                    const downloaderName = request.user.name || downloaderDb?.name || request.user.email || downloaderDb?.email || 'A user';
+
+                    // 1. In-app + WebSocket notification to the creator
+                    await createNotification(
+                      request.server,
+                      creatorId,
+                      asset.orgId,
+                      'media_downloaded',
+                      'Media Downloaded',
+                      `${downloaderName} downloaded your shared media: ${asset.title}`,
+                      asset.id
+                    );
+                    console.log(`[downloadNotif] ✅ In-app notification sent to creator ${creatorId}`);
+
+                    // 2. Email notification to the creator
+                    if (creator.email) {
+                      try {
+                        const appBase = request.headers?.origin || process.env.FRONTEND_URL || 'http://localhost:3002';
+                        const assetUrl = `${appBase.replace(/\/$/, '')}/home?asset=${asset.id}`;
+                        await request.server.emailService.sendEmail({
+                          to: creator.email,
+                          subject: `${downloaderName} downloaded your shared media on Noah`,
+                          text: `Hi ${creator.name || 'there'},\n\n${downloaderName} has downloaded the media file "${asset.title}" that you shared.\n\nView it here: ${assetUrl}\n\nThanks,\nNoah Platform`,
+                          html: `
+                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+                              <div style="text-align: center; margin-bottom: 24px;">
+                                <h2 style="color: #4f46e5; margin: 0;">📥 Media Downloaded</h2>
+                              </div>
+                              <p style="font-size: 15px; color: #1e293b;">Hi ${creator.name || 'there'},</p>
+                              <p style="font-size: 15px; color: #334155; line-height: 1.5;">
+                                <strong>${downloaderName}</strong> has downloaded your shared media file
+                                <strong>"${asset.title}"</strong>.
+                              </p>
+                              <div style="text-align: center; margin: 32px 0;">
+                                <a href="${assetUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 15px;">View Media</a>
+                              </div>
+                              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+                              <p style="font-size: 12px; color: #94a3b8; text-align: center;">You can disable these notifications from Profile &rarr; Privacy &rarr; Share Link Activity.</p>
+                            </div>
+                          `
+                        });
+                        console.log(`[downloadNotif] ✅ Email sent to ${creator.email}`);
+                      } catch (emailErr) {
+                        console.warn('[downloadNotif] Email send failed:', emailErr.message);
+                      }
+                    }
+                  } else {
+                    console.log(`[downloadNotif] ⏭ Skipped — creator has share link activity disabled`);
+                  }
+                } else {
+                  console.log(`[downloadNotif] ⏭ Skipped — downloader has no share link / access record for this asset`);
                 }
               }
+            } else {
+              console.log(`[downloadNotif] ⏭ Skipped — downloader is the creator or no creator`);
             }
           } catch (notifErr) {
-            console.warn('Failed to send explicit share download notification:', notifErr.message);
+            console.warn('[downloadNotif] Notification error:', notifErr.message);
           }
+        } else {
+          console.log(`[downloadNotif] ⏭ Skipped — no authenticated user on request`);
         }
       }
     }
 
-    if (b2Key) {
-      return await handleMediaRedirectOrServe(request, reply, b2Key, true);
+    if (b2Key && b2Storage.isEnabled()) {
+      try {
+        // Build a presigned URL with ResponseContentDisposition to force download.
+        // This avoids proxying through the backend (which caused 502 errors).
+        const { GetObjectCommand } = require('@aws-sdk/client-s3');
+        const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+        const rawName = path.basename(b2Key).replace(/^\d+-/, '');
+        const safeDisplayName = rawName.replace(/[^\w.\-_() ]/g, '_') || 'download';
+        const command = new GetObjectCommand({
+          Bucket: b2Storage.bucket,
+          Key: b2Key,
+          ResponseContentDisposition: `attachment; filename="${safeDisplayName}"`,
+        });
+        const presignedUrl = await getSignedUrl(b2Storage.s3Client, command, { expiresIn: 3600 });
+        return reply.redirect(presignedUrl, 302);
+      } catch (presignErr) {
+        console.error(`[downloadFile] Presigned URL generation failed for ${b2Key}:`, presignErr.message);
+        // Fall through to proxy streaming as last resort
+      }
     }
 
     return await handleMediaRedirectOrServe(request, reply, filename, true);

@@ -9,7 +9,7 @@ import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
 import rawBody from 'fastify-raw-body';
-import { PrismaClient } from '@prisma/client';
+
 import Redis from 'ioredis';
 import path from 'path';
 import { logSuccess, logError, ACTOR_TYPE, ACTIVITY_NAME } from './lib/audit-log.js';
@@ -39,7 +39,7 @@ const compressionService = {};
 
 declare module 'fastify' {
   interface FastifyInstance {
-    prisma: PrismaClient;
+    prisma: any;
     redis: any;
     logger: Logger;
     metrics: MetricsCollector;
@@ -78,17 +78,9 @@ const fastify = Fastify({
   connectionTimeout: 60000
 });
 
-// Initialize database connection
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-const prisma = globalForPrisma.prisma || new PrismaClient({
-  log: ['query', 'info', 'warn', 'error'],
-  datasources: {
-    db: {
-      url: config.DATABASE_URL
-    }
-  }
-});
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+// Use shared singleton Prisma client (connection pool capped in utils/prisma.js)
+// @ts-ignore
+const prisma = require('./utils/prisma.js');
 
 // Initialize Redis connection with Sentinel support
 // const redis = new Redis({

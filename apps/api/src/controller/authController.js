@@ -326,7 +326,8 @@ module.exports.login = async (request, reply) => {
       organization: user.organization,
       timezone: user.timezone,
       avatarUrl: user.avatarUrl,
-      shareLinkActivityEnabled: user.shareLinkActivityEnabled
+      shareLinkActivityEnabled: user.shareLinkActivityEnabled,
+      preferences: user.preferences
     };
     const token = await reply.jwtSign(payload);
 
@@ -964,6 +965,7 @@ module.exports.getMe = async (request, reply) => {
         avatarUrl: true,
         mfaEnabled: true,
         shareLinkActivityEnabled: true,
+        preferences: true,
         lastLoginAt: true,
         lastActiveAt: true,
         createdAt: true,
