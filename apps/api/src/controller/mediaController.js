@@ -1041,6 +1041,7 @@ module.exports.getMediaAssets = async (request, reply) => {
         },
         transcodingStatus: transcodeJob?.status || null,
         uploadedByUserId: asset.uploadedByUserId,
+        visibility: asset.visibility,
       };
     });
 
@@ -1121,6 +1122,7 @@ module.exports.searchMediaAssets = async (request, reply) => {
         },
         compressionStatus: transcodeJob?.status || "completed",
         transcodingStatus: transcodeJob?.status || null,
+        visibility: asset.visibility,
       };
     });
 
@@ -4017,6 +4019,30 @@ module.exports.updateAssetReviewStatus = async (request, reply) => {
           customProperties: updatedCustomProps,
         },
       });
+    }
+
+    // --- DISPATCH NOTIFICATIONS ---
+    const previousStatus = currentCustomProps.reviewStatus || 'New';
+    if (previousStatus !== reviewStatus && ['Request for Review', 'Approved', 'Rejected'].includes(reviewStatus)) {
+      if (asset.uploadedByUserId && asset.uploadedByUserId !== request.user.id) {
+        const statusVerb = 
+          reviewStatus === 'Request for Review' ? 'requested a review for' :
+          reviewStatus === 'Approved' ? 'approved' : 'rejected';
+          
+        try {
+          await createNotification(
+            request.server,
+            asset.uploadedByUserId,
+            orgId,
+            'review_status_updated',
+            `Status Updated: ${reviewStatus}`,
+            `${request.user.name || 'A team member'} has ${statusVerb} "${asset.title}".`,
+            asset.id
+          );
+        } catch (notifErr) {
+          request.log.error('Failed to create review status notification:', notifErr);
+        }
+      }
     }
 
     return reply.send({ success: true, reviewStatus });

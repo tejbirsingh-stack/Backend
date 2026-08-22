@@ -323,6 +323,15 @@ enum MediaAssetOwnerType {
   FOLDER
 }
 
+enum ReviewStatus {
+  New
+  In_Progress @map("In-Progress")
+  Request_for_Review @map("Request for Review")
+  Under_Review @map("Under Review")
+  Approved
+  Rejected
+}
+
 model Asset {
   id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId        String       @db.Uuid
@@ -333,6 +342,7 @@ model Asset {
   visibility   String       @default("public") @db.VarChar(50) // 'public', 'private'
   compressedKey     String?      @db.VarChar(1000) // Deterministic key for the compressed proxy file
   aiTags       Json         @default("[]") @db.JsonB
+  reviewStatus ReviewStatus @default(New)
 
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
