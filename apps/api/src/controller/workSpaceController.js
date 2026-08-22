@@ -2257,16 +2257,16 @@ module.exports.linkProjectSource = async (request, reply) => {
 module.exports.updateFolder = async (request, reply) => {
     try {
         const { id } = request.params;
-        const { name } = request.body;
+        const { name, color } = request.body;
 
-        if (!name) {
+        if (!name && color === undefined) {
             return reply.code(400).send({
                 success: false,
-                message: 'Folder name is required.'
+                message: 'Folder name or color is required.'
             });
         }
 
-        if (name.length > 100) {
+        if (name && name.length > 100) {
             return reply.code(400).send({
                 success: false,
                 message: 'Folder name cannot exceed 100 characters.'
@@ -2281,14 +2281,18 @@ module.exports.updateFolder = async (request, reply) => {
             });
         }
 
+        const dataToUpdate = {};
+        if (name) dataToUpdate.name = name;
+        if (color !== undefined) dataToUpdate.color = color;
+
         const folder = await prisma.folder.update({
             where: { id },
-            data: { name }
+            data: dataToUpdate
         });
 
         return reply.send({
             success: true,
-            message: 'Folder renamed successfully.',
+            message: 'Folder updated successfully.',
             data: folder
         });
     } catch (error) {
@@ -2541,11 +2545,11 @@ module.exports.moveFolder = async (request, reply) => {
 module.exports.updateProject = async (request, reply) => {
     try {
         const { id } = request.params;
-        const { name, workspaceId, visibility, status } = request.body;
+        const { name, workspaceId, visibility, status, color } = request.body;
 
         await verifyProjectAccess(id, request.user.id, 'Full Access');
 
-        if (name === undefined && workspaceId === undefined && visibility === undefined && status === undefined) {
+        if (name === undefined && workspaceId === undefined && visibility === undefined && status === undefined && color === undefined) {
             return reply.code(400).send({
                 success: false,
                 message: 'No update fields provided.'
@@ -2576,6 +2580,7 @@ module.exports.updateProject = async (request, reply) => {
         }
         if (visibility !== undefined) dataToUpdate.visibility = visibility;
         if (status !== undefined) dataToUpdate.status = status.toLowerCase();
+        if (color !== undefined) dataToUpdate.color = color;
 
         const project = await prisma.project.update({
             where: { id },

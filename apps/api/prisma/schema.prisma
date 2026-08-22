@@ -414,6 +414,7 @@ model AssetGroup {
 model Project {
   id        String              @id @default(uuid())
   name      String  @db.VarChar(100)
+  color     String?
   ownerType MediaAssetOwnerType @map("owner_type")
   visibility String @default("public") @db.VarChar(20)
   status     String @default("active") @db.VarChar(50) // active, inactive
