@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 
 function serializePlan(plan) {
   if (!plan) return null;
@@ -78,9 +78,9 @@ async function createPlan(request, reply) {
 
     const plan = await prisma.plan.create({ data: { id, ...data } });
     await writePlatformAudit({
-      activityName: 'Plan created',
+      activityName: ACTIVITY_NAME.PLAN_CREATED,
       description: `Created plan ${plan.name} (${plan.id})`,
-      activityType: 'plan',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
     return reply.status(201).send({ success: true, plan: serializePlan(plan) });
@@ -103,9 +103,9 @@ async function updatePlan(request, reply) {
       data,
     });
     await writePlatformAudit({
-      activityName: 'Plan updated',
+      activityName: ACTIVITY_NAME.PLAN_UPDATED,
       description: `Updated plan ${plan.name} (${plan.id})`,
-      activityType: 'plan',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
     return { success: true, plan: serializePlan(plan) };
@@ -132,9 +132,9 @@ async function deletePlan(request, reply) {
     }
     const plan = await prisma.plan.delete({ where: { id: planId } });
     await writePlatformAudit({
-      activityName: 'Plan deleted',
+      activityName: ACTIVITY_NAME.PLAN_DELETED,
       description: `Deleted plan ${plan.name} (${plan.id})`,
-      activityType: 'plan',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
     return { success: true };

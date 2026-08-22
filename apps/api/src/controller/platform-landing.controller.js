@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const emailService = require('../services/email-service');
 
 const DEFAULT_SECTIONS = { plansEnabled: true };
@@ -127,9 +127,9 @@ async function updateLandingPage(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Landing page updated',
+      activityName: ACTIVITY_NAME.LANDING_PAGE_UPDATED,
       description: `Updated landing page "${slug}" (${page.status})`,
-      activityType: 'landing',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
 
@@ -227,9 +227,9 @@ async function submitDemoRequest(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Demo request submitted',
+      activityName: ACTIVITY_NAME.DEMO_REQUEST_SUBMITTED,
       description: `${name} <${email}> requested a demo${company ? ` for ${company}` : ''}`,
-      activityType: 'landing',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: { name: 'Public visitor', email },
     });
 

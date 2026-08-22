@@ -68,7 +68,7 @@ async function getDashboardSummary(_request, reply) {
       }),
       prisma.auditLog.findMany({
         where: {
-          OR: [{ actorType: 'platform_admin' }, { activityType: 'platform' }],
+          userRole: 'Platform Admin',
           deletedAt: null,
         },
         orderBy: { createdAt: 'desc' },

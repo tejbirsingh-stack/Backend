@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const {
   resolveRole,
   sendUserInviteEmail,
@@ -128,10 +128,10 @@ async function inviteUser(request, reply) {
       });
     }
 
-    if (roleObj.name === 'System Admin') {
+    if (roleObj.name === 'Platform Admin') {
       return reply.status(400).send({
         error: 'ValidationError',
-        message: 'System Admin cannot be assigned via platform invite',
+        message: 'Platform Admin cannot be assigned via platform invite',
         statusCode: 400,
       });
     }
@@ -180,9 +180,9 @@ async function inviteUser(request, reply) {
     }
 
     await writePlatformAudit({
-      activityName: 'User invited',
+      activityName: ACTIVITY_NAME.USER_INVITED,
       description: `Invited ${email} to ${organization.name} as ${roleObj.name}`,
-      activityType: 'user',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId,
     });
@@ -202,15 +202,18 @@ async function inviteUser(request, reply) {
   }
 }
 
-async function listRoles(_request, reply) {
+async function listRoles(request, reply) {
   try {
+    const includePlatformAdmin = request.query?.includePlatformAdmin === 'true';
+
+    const where = includePlatformAdmin ? {} : { name: { not: 'Platform Admin' } };
+
     const roles = await prisma.role.findMany({
-      where: {
-        name: { not: 'System Admin' },
-      },
+      where,
       orderBy: { name: 'asc' },
       select: { id: true, name: true, show: true },
     });
+
     return { success: true, roles };
   } catch (error) {
     console.error('listRoles error:', error);
@@ -255,9 +258,9 @@ async function patchUser(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'User updated',
+      activityName: ACTIVITY_NAME.USER_UPDATED,
       description: `Updated user ${user.email} (${user.status})`,
-      activityType: 'user',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: user.orgId,
     });

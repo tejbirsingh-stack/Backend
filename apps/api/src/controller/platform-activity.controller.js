@@ -59,38 +59,59 @@ async function listPlatformActivity(request, reply) {
       ? String(request.query.activityType)
       : undefined;
     const actorType = request.query?.actorType ? String(request.query.actorType) : undefined;
+    const userRole = request.query?.userRole ? String(request.query.userRole) : undefined;
     const q = String(request.query?.q || '').trim();
     const take = Math.min(parseInt(request.query?.limit || '100', 10) || 100, 500);
+    const skip = parseInt(request.query?.offset || '0', 10) || 0;
     const hasDateFilter = Boolean(
       request.query?.from || request.query?.to || request.query?.periodDays,
     );
     const filters = hasDateFilter ? parseReportFilters(request.query || {}) : null;
 
-    const logs = await prisma.auditLog.findMany({
-      where: {
-        deletedAt: null,
-        ...(filters ? { createdAt: { gte: filters.from, lte: filters.to } } : {}),
-        ...(orgId ? { orgId } : {}),
-        ...(activityType ? { activityType } : {}),
-        ...(actorType ? { actorType } : {}),
-        ...(q
-          ? {
-              OR: [
-                { activityName: { contains: q, mode: 'insensitive' } },
-                { description: { contains: q, mode: 'insensitive' } },
-                { userEmail: { contains: q, mode: 'insensitive' } },
-              ],
-            }
-          : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-      take,
-      include: {
-        organization: { select: { id: true, name: true, slug: true } },
-      },
-    });
+    const sortBy = request.query?.sortBy ? String(request.query.sortBy) : 'createdAt';
+    const sortDir = String(request.query?.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
 
-    return { success: true, activities: logs };
+    let orderBy = { createdAt: sortDir };
+    if (sortBy === 'activityName') orderBy = { activityName: sortDir };
+    else if (sortBy === 'description') orderBy = { description: sortDir };
+    else if (sortBy === 'activityType') orderBy = { activityType: sortDir };
+    else if (sortBy === 'userEmail') orderBy = { userEmail: sortDir };
+    else if (sortBy === 'actorType') orderBy = { actorType: sortDir };
+    else if (sortBy === 'userRole') orderBy = { userRole: sortDir };
+    else if (sortBy === 'organization') orderBy = { organization: { name: sortDir } };
+
+    const where = {
+      deletedAt: null,
+      ...(filters ? { createdAt: { gte: filters.from, lte: filters.to } } : {}),
+      ...(orgId ? { orgId } : {}),
+      ...(activityType ? { activityType } : {}),
+      ...(actorType ? { actorType } : {}),
+      ...(userRole ? { userRole } : {}),
+      ...(q
+        ? {
+            OR: [
+              { activityName: { contains: q, mode: 'insensitive' } },
+              { description: { contains: q, mode: 'insensitive' } },
+              { userEmail: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const [logs, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        orderBy,
+        take,
+        skip,
+        include: {
+          organization: { select: { id: true, name: true, slug: true } },
+        },
+      }),
+      prisma.auditLog.count({ where }),
+    ]);
+
+    return { success: true, total, activities: logs };
   } catch (error) {
     console.error('listPlatformActivity error:', error);
     return reply.status(500).send({
@@ -301,6 +322,7 @@ async function buildActivityReport(filters) {
     description: log.description || '',
     actorType: log.actorType || '',
     userEmail: log.userEmail || '',
+    userRole: log.userRole || '',
     organization: log.organization?.name || '',
     organizationSlug: log.organization?.slug || '',
   }));

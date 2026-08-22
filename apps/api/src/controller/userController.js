@@ -171,7 +171,7 @@ module.exports.getRoles = async (request, reply) => {
     const Roles = await request.server.prisma.role.findMany({
       where: {
         name: {
-          not: roles.SYSTEM_ADMIN
+          not: roles.PLATFORM_ADMIN
         }
       },
       orderBy: {

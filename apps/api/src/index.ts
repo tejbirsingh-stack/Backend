@@ -15,7 +15,7 @@ import path from 'path';
 import { logSuccess, logError, ACTOR_TYPE, ACTIVITY_NAME } from './lib/audit-log.js';
 
 // Add global BigInt serializer to prevent fastify/JSON stringify errors
-(BigInt.prototype as any).toJSON = function () {   
+(BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
 
@@ -260,7 +260,7 @@ async function setupServer() {
       error: error.message,
       stack: error.stack,
       url: request.url,
-      method: request.method 
+      method: request.method
     });
 
     // Increment error metrics
@@ -324,9 +324,9 @@ async function setupServer() {
     fastify.register(require('./routes/stripe'), { prefix: '/api/stripe' });
 
     console.log('All routes registerd successfully')
-    logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);
+    //logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);
   } catch (err: any) {
-    logError("All routes registered failed", '', null, err, null, ACTOR_TYPE.SYSTEM);
+    //logError("All routes registered failed", '', null, err, null, ACTOR_TYPE.SYSTEM);
     logger.warn('Some routes could not be loaded', { error: err.message });
   }
 
