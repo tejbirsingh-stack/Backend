@@ -5,68 +5,75 @@
  */
 function wrapEmailLayout({ title = 'Noah Platform', previewText = '', bodyHtml, orgLogoUrl = null, orgName = null }) {
   const currentYear = new Date().getFullYear();
-  const displayName = orgName || 'Noah Platform';
-
-  // Dynamic Header: Organization custom logo if available, else Noah Cloud header
-  const headerHtml = orgLogoUrl
-    ? `<img src="${orgLogoUrl}" alt="${displayName}" style="max-height: 48px; max-width: 220px; object-fit: contain; display: inline-block;" />`
-    : `<h1 style="margin: 0; font-size: 22px; font-weight: 700; color: #818cf8; letter-spacing: 0.5px;">NOAH CLOUD</h1>`;
+  const displayName = orgName || 'NOAH Cloud';
+  const logoUrl = orgLogoUrl || 'https://qa.noahcloud.ai/noah-logo.png';
 
   return `
 <!DOCTYPE html>
-<html lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="content-type" content="text/html; charset=utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0;">
   <title>${title}</title>
-  <style>
+  <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700" rel="stylesheet">
+ 
+<style>
+    /* Reset styles */
     body {
-      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
-      background-color: #0f172a;
+      font-family: 'Roboto', Arial, sans-serif;
+      height: 100% !important;
       margin: 0;
-      padding: 24px 12px;
-      color: #f8fafc;
+      min-width: 100%;
+      padding: 0;
+      width: 100% !important;
+      color: #111827;
+      background-color: #ececec;
+    }
+    body, table, td, div, p, a {
+      line-height: 140%;
+      text-size-adjust: 100%;
       -webkit-font-smoothing: antialiased;
+      -ms-text-size-adjust: 100%;
+      -webkit-text-size-adjust: 100%;
     }
-    .email-container {
-      max-width: 600px;
-      margin: 0 auto;
-      background-color: #1e293b;
-      border-radius: 16px;
-      overflow: hidden;
-      border: 1px solid #334155;
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+    table, td {
+      border-collapse: collapse !important;
+      border-spacing: 0;
+      mso-table-lspace: 0pt;
+      mso-table-rspace: 0pt;
     }
-    .email-header {
-      background-color: #0f172a;
-      padding: 28px 24px;
-      text-align: center;
-      border-bottom: 1px solid #334155;
-    }
-    .email-body {
-      padding: 32px 28px;
-      color: #e2e8f0;
-      line-height: 1.6;
-      font-size: 15px;
-    }
-    .email-footer {
-      background-color: #0f172a;
-      padding: 24px;
-      text-align: center;
-      font-size: 12px;
-      color: #94a3b8;
-      border-top: 1px solid #334155;
-      line-height: 1.5;
-    }
-    .email-footer a {
-      color: #818cf8;
+    img {
+      border: 0;
+      line-height: 100%;
+      outline: none;
       text-decoration: none;
+      -ms-interpolation-mode: bicubic;
     }
-    .email-footer a:hover {
-      text-decoration: underline;
+    #outlook a {padding: 0;}
+    .ReadMsgBody {width: 100%;}
+    .ExternalClass {width: 100%;}
+    .ExternalClass,
+    .ExternalClass p,
+    .ExternalClass span,
+    .ExternalClass font,
+    .ExternalClass td,
+    .ExternalClass div {line-height: 100%;}
+
+    @media all and (min-width: 560px) {
+      .container {
+        border-radius: 8px;
+        -webkit-border-radius: 8px;
+        -moz-border-radius: 8px;
+        -khtml-border-radius: 8px;
+      }
+    }
+    a, a:hover {color: #6d28d9;}
+    .footer a,
+    .footer a:hover {
+      color: #4b5563;
     }
     .btn-primary {
-      background-color: #4f46e5;
+      background-color: #7c3aed;
       color: #ffffff !important;
       padding: 12px 28px;
       text-decoration: none;
@@ -74,39 +81,55 @@ function wrapEmailLayout({ title = 'Noah Platform', previewText = '', bodyHtml, 
       font-weight: 600;
       font-size: 15px;
       display: inline-block;
-      transition: background-color 0.2s ease;
     }
     .card-box {
-      background-color: #0f172a;
-      border: 1px solid #334155;
-      border-radius: 10px;
+      background-color: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
       padding: 16px;
       margin: 20px 0;
+      color: #111827;
     }
   </style>
 </head>
-<body>
-  <div class="email-container">
-    <!-- DYNAMIC HEADER WITH ORG LOGO OR NOAH LOGO -->
-    <div class="email-header">
-      ${headerHtml}
-    </div>
+<body topmargin="0" rightmargin="0" bottommargin="0" leftmargin="0" marginwidth="0" marginheight="0" width="100%" style="border-collapse: collapse; border-spacing: 0; margin: 0; padding: 0; width: 100%; height: 100%; -webkit-font-smoothing: antialiased; text-size-adjust: 100%; -ms-text-size-adjust: 100%; -webkit-text-size-adjust: 100%; line-height: 140%; background-color: #ececec; color: #111827;" bgcolor="#ececec" text="#111827">
+<!-- WRAPPER TABLE -->
+<table width="100%" align="center" border="0" cellpadding="0" cellspacing="0" style="border-collapse: collapse; border-spacing: 0; margin: 0; padding: 0; width: 100%;">
+  <tr>
+    <td align="center" valign="top" style="border-collapse: collapse; border-spacing: 0; margin: 0; padding: 0;" bgcolor="#ececec">
+      <!-- WRAPPER -->
+      <table border="0" cellpadding="0" cellspacing="0" align="center" bgcolor="#ffffff" width="560" style="border-collapse: collapse; border-spacing: 0; padding: 0; width: inherit; max-width: 560px; margin: 30px 0 0 0; background-color: #ffffff" class="container">
+        <!-- BRANDING LOGO -->
+        <tr>
+          <td align="center" valign="top" bgcolor="#0f172a" style="border-collapse: collapse; border-spacing: 0; margin: 0; padding: 20px 0 16px; background-color: #0f172a; border-radius: 8px 8px 0 0;">
+            <img border="0" vspace="0" hspace="0" src="${logoUrl}" alt="${displayName}" width="180" style="margin: 0 auto; display: block; max-height: 48px; object-fit: contain; color: #ffffff; font-size: 16px; font-weight: bold;"/>
+          </td>
+        </tr>
+        <!-- MAIN TITLE (DARK PURPLE TEXT FOR 100% VISIBILITY ACROSS ALL EMAIL CLIENTS) -->
+        <tr>
+          <td align="center" valign="top" bgcolor="#f3e8ff" style="border-collapse: collapse; border-spacing: 0; margin: 0; padding: 18px 20px; background-color: #f3e8ff; border-bottom: 2px solid #ddd6fe;">
+            <h1 style="color: #4c1d95 !important; font-family: 'Roboto', Arial, sans-serif; font-size: 18px; font-weight: 700; margin: 0; text-transform: capitalize; text-align: center;">${title}</h1>
+          </td>
+        </tr>
 
-    <!-- DYNAMIC BODY CONTENT -->
-    <div class="email-body">
-      ${bodyHtml}
-    </div>
-
-    <!-- COMMON FOOTER -->
-    <div class="email-footer">
-      <p style="margin: 0 0 8px 0;">© ${currentYear} ${displayName}. All rights reserved.</p>
-      <p style="margin: 0;">
-        <a href="https://noah-cloud.com/privacy">Privacy Policy</a> &nbsp;•&nbsp; 
-        <a href="https://noah-cloud.com/terms">Terms of Service</a> &nbsp;•&nbsp; 
-        <a href="https://noah-cloud.com/support">Support</a>
-      </p>
-    </div>
-  </div>
+        <!-- CONTENT -->
+        <tr>
+          <td valign="top" style="border-collapse: collapse; border-spacing: 0; margin: 0; padding: 24px 6.25%; width: 87.5%; color: #111827; background-color: #ffffff;">
+            ${bodyHtml}
+          </td>
+        </tr>
+      </table>
+      <!-- FOOTER -->
+      <table border="0" cellpadding="0" cellspacing="0" align="center" width="560" style="border-collapse: collapse; border-spacing: 0; padding: 0; width: inherit; max-width: 560px;" class="wrapper">
+        <tr>
+          <td align="center" valign="top" style="border-collapse: collapse; border-spacing: 0; margin: 0; padding: 20px; font-size: 12px; font-weight: 500; line-height: 150%; color: #4b5563; font-family: 'Roboto', Arial, sans-serif;" class="footer">
+              Copyright © ${currentYear} ${displayName}. All Rights Reserved.
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
 </body>
 </html>
   `.trim();

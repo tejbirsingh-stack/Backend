@@ -23,7 +23,7 @@ async function downloadFileToTemp(url) {
         fileStream.close(() => resolve(tempPath));
       });
     }).on('error', (err) => {
-      fs.unlink(tempPath, () => {});
+      fs.unlink(tempPath, () => { });
       reject(err);
     });
   });
@@ -47,9 +47,7 @@ async function extractServerSideMetadata(filePathOrUrl) {
     const tags = await exiftool.read(targetPath);
     if (!tags) return {};
 
-    const make = tags.Make || tags['com.apple.quicktime.make'] || tags.Manufacturer;
-    const model = tags.Model || tags['com.apple.quicktime.model'] || tags.DeviceModel;
-    const lens = tags.LensModel || tags['Lens Model'] || tags.Lens || tags['com.apple.quicktime.lens-model'] || tags.LensMake;
+
 
     let iso = null;
     if (tags.ISO != null) {
@@ -84,6 +82,9 @@ async function extractServerSideMetadata(filePathOrUrl) {
       focalLength = flStr.includes('mm') ? flStr : `${flStr} mm`;
     }
 
+    const make = tags.Make || tags['com.apple.quicktime.make'] || tags.Manufacturer;
+    const model = tags.Model || tags['com.apple.quicktime.model'] || tags.DeviceModel;
+    const lens = tags.LensModel || tags['Lens Model'] || tags.Lens || tags['com.apple.quicktime.lens-model'] || tags.LensMake;
     const width = tags.ImageWidth || tags.SourceImageWidth || tags.Width;
     const height = tags.ImageHeight || tags.SourceImageHeight || tags.Height;
     const resolution = (width && height) ? `${width} × ${height} px` : null;
@@ -143,7 +144,6 @@ async function extractServerSideMetadata(filePathOrUrl) {
       ...(resolution ? { resolution } : {}),
       ...(resolutionTier ? { resolutionTier, resolution_tier: resolutionTier } : {}),
       ...(orientation ? { orientation } : {}),
-      ...(megapixels ? { megapixels } : {}),
       ...(width ? { width } : {}),
       ...(height ? { height } : {}),
       ...(durationSec ? { durationSeconds: durationSec } : {}),
@@ -165,7 +165,7 @@ async function extractServerSideMetadata(filePathOrUrl) {
     return {};
   } finally {
     if (tempPathToCleanup && fs.existsSync(tempPathToCleanup)) {
-      try { fs.unlinkSync(tempPathToCleanup); } catch (e) {}
+      try { fs.unlinkSync(tempPathToCleanup); } catch (e) { }
     }
   }
 }

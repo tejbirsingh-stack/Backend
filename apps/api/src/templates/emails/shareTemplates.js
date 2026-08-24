@@ -13,27 +13,27 @@ function renderShareInviteHtml({ assetTitle, shareUrl, expiresAt, permissions, h
   const formattedExpiry = expiresAt ? new Date(expiresAt).toLocaleString() : 'N/A';
 
   const passwordNoteHtml = password
-    ? `<div style="background-color: #422006; border: 1px solid #713f12; color: #fef08a; padding: 14px 16px; border-radius: 8px; margin: 20px 0; font-size: 14px;">
+    ? `<div style="background-color: #fefce8; border: 1px solid #fef08a; color: #854d0e; padding: 14px 16px; border-radius: 8px; margin: 20px 0; font-size: 14px;">
          <div style="margin-bottom: 6px;">🔒 <strong>Access Password:</strong></div>
-         <div style="font-family: monospace; font-size: 16px; font-weight: bold; background-color: #713f12; padding: 6px 12px; border-radius: 6px; color: #fef08a; letter-spacing: 1px; display: inline-block;">
+         <div style="font-family: monospace; font-size: 16px; font-weight: bold; background-color: #fef08a; padding: 6px 12px; border-radius: 6px; color: #713f12; letter-spacing: 1px; display: inline-block;">
            ${password}
          </div>
        </div>`
     : hasPassword
-    ? `<div style="background-color: #422006; border: 1px solid #713f12; color: #fef08a; padding: 12px; border-radius: 6px; margin: 20px 0; font-size: 14px;">
+      ? `<div style="background-color: #fefce8; border: 1px solid #fef08a; color: #854d0e; padding: 12px; border-radius: 6px; margin: 20px 0; font-size: 14px;">
          🔒 <strong>Password Protected:</strong> The owner has protected this link with a password. Please ask the sender directly for the password.
        </div>`
-    : '';
+      : '';
 
   const bodyHtml = `
-    <p>Hi,</p>
-    <p><strong>${senderName || 'A teammate'}</strong> has shared <strong>"${assetTitle || 'a media file'}"</strong> with you for review.</p>
+    <p style="font-size: 15px; font-weight: 400; line-height: 160%; color: #333333; font-family: 'Roboto', Arial, sans-serif;">Hi,</p>
+    <p style="font-size: 15px; font-weight: 400; line-height: 160%; color: #333333; font-family: 'Roboto', Arial, sans-serif;"><strong>${senderName || 'A teammate'}</strong> has shared <strong>"${assetTitle || 'a media file'}"</strong> with you for review.</p>
 
-    <div class="card-box">
-      <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; font-weight: 600; margin-bottom: 6px;">Allowed Permissions</div>
-      <div style="font-size: 14px; color: #f8fafc; font-weight: 500;">${actionsText}</div>
-      <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #94a3b8; font-weight: 600; margin-top: 14px; margin-bottom: 4px;">Expires At</div>
-      <div style="font-size: 14px; color: #f8fafc;">${formattedExpiry}</div>
+    <div class="card-box" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+      <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; margin-bottom: 6px;">Allowed Permissions</div>
+      <div style="font-size: 14px; color: #0f172a; font-weight: 600;">${actionsText}</div>
+      <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; font-weight: 600; margin-top: 14px; margin-bottom: 4px;">Expires At</div>
+      <div style="font-size: 14px; color: #0f172a; font-weight: 500;">${formattedExpiry}</div>
     </div>
 
     ${passwordNoteHtml}
@@ -42,8 +42,8 @@ function renderShareInviteHtml({ assetTitle, shareUrl, expiresAt, permissions, h
       <a href="${shareUrl}" class="btn-primary">Open Shared Media</a>
     </div>
 
-    <hr style="border: 0; border-top: 1px solid #334155; margin: 28px 0;" />
-    <p style="font-size: 12px; color: #94a3b8; margin: 0; text-align: center;">You received this invite because an asset was shared with your email on Noah Platform.</p>
+    <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 28px 0;" />
+    <p style="font-size: 12px; color: #64748b; margin: 0; text-align: center;">You received this invite because an asset was shared with your email on Noah Platform.</p>
   `;
   return wrapEmailLayout({
     title: `${senderName || 'Someone'} shared "${assetTitle || 'a file'}" with you`,

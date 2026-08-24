@@ -180,6 +180,7 @@ class AuthService {
         emailVerified: true,
         timezone: true,
         avatarUrl: true,
+        shareLinkActivityEnabled: true,
         organization: {
           select: {
             id: true,
@@ -226,6 +227,7 @@ class AuthService {
         emailVerified: true,
         timezone: true,
         avatarUrl: true,
+        shareLinkActivityEnabled: true,
         roleRelation: {
           select: {
             id: true,
@@ -333,6 +335,7 @@ class AuthService {
             roleId: true,
             status: true,
             emailVerified: true,
+            shareLinkActivityEnabled: true,
             organization: {
               select: {
                 id: true,

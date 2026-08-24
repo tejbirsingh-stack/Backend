@@ -39,11 +39,21 @@ async function createPlanFeature(request, reply) {
         statusCode: 400,
       });
     }
+
+    // Auto-assign sort order: if not provided or zero, place at the end
+    let resolvedSortOrder = parseInt(sortOrder, 10);
+    if (!resolvedSortOrder || resolvedSortOrder <= 0) {
+      const aggregate = await prisma.planFeature.aggregate({
+        _max: { sortOrder: true },
+      });
+      resolvedSortOrder = (aggregate._max.sortOrder ?? 0) + 1;
+    }
+
     const feature = await prisma.planFeature.create({
       data: {
         name: String(name).trim(),
         description: description || null,
-        sortOrder: parseInt(sortOrder, 10) || 0,
+        sortOrder: resolvedSortOrder,
         isActive: true,
       },
     });
@@ -82,7 +92,11 @@ async function updatePlanFeature(request, reply) {
     const data = {};
     if (name !== undefined) data.name = String(name).trim();
     if (description !== undefined) data.description = description;
-    if (sortOrder !== undefined) data.sortOrder = parseInt(sortOrder, 10) || 0;
+    if (sortOrder !== undefined) {
+      const parsed = parseInt(sortOrder, 10);
+      // Never allow sort order to be zero or negative
+      data.sortOrder = parsed > 0 ? parsed : 1;
+    }
     if (isActive !== undefined) data.isActive = Boolean(isActive);
 
     const feature = await prisma.planFeature.update({

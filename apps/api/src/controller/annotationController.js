@@ -114,6 +114,31 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
             },
         });
 
+        // --- AUTO-UPDATE REVIEW STATUS TO IN-PROGRESS ---
+        // If the asset is currently 'New' or doesn't have a status, adding an annotation means it's now 'In-Progress'
+        try {
+            const assetMetadata = await request.server.prisma.assetMetadata.findUnique({
+                where: { assetId: mediaId }
+            });
+            const currentProps = typeof assetMetadata?.customProperties === 'object' && assetMetadata.customProperties ? assetMetadata.customProperties : {};
+            
+            if (!currentProps.reviewStatus || currentProps.reviewStatus === 'New') {
+                const updatedProps = { ...currentProps, reviewStatus: 'In-Progress' };
+                if (assetMetadata) {
+                    await request.server.prisma.assetMetadata.update({
+                        where: { assetId: mediaId },
+                        data: { customProperties: updatedProps }
+                    });
+                } else {
+                    await request.server.prisma.assetMetadata.create({
+                        data: { assetId: mediaId, customProperties: updatedProps }
+                    });
+                }
+            }
+        } catch (err) {
+            request.log.error('Failed to auto-update review status to In-Progress:', err);
+        }
+
         // --- SENDGRID EMAIL NOTIFICATIONS ---
         // Fire asynchronously to avoid blocking the response
         if (data && data.text && data.text.trim().length > 0) {
