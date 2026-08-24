@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const B2StorageService = require('../b2-storage.cjs');
 
 const b2Storage = new B2StorageService({
@@ -164,9 +164,9 @@ async function uploadDefaultContent(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Default content uploaded',
+      activityName: ACTIVITY_NAME.DEFAULT_CONTENT_UPLOADED,
       description: `Uploaded starter file "${item.title}" (${item.fileName})`,
-      activityType: 'default_content',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
 
@@ -227,9 +227,9 @@ async function updateDefaultContent(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Default content updated',
+      activityName: ACTIVITY_NAME.DEFAULT_CONTENT_UPDATED,
       description: `Updated starter file "${item.title}"`,
-      activityType: 'default_content',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
 
@@ -267,9 +267,9 @@ async function deleteDefaultContent(request, reply) {
     }
 
     await writePlatformAudit({
-      activityName: 'Default content deleted',
+      activityName: ACTIVITY_NAME.DEFAULT_CONTENT_DELETED,
       description: `Deleted starter file "${existing.title}" (${existing.fileName})`,
-      activityType: 'default_content',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
 

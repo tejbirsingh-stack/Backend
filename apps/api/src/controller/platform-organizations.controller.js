@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const {
   slugify,
   formatWorkspaceName,
@@ -381,9 +381,9 @@ async function createOrganization(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Organization created',
+      activityName: ACTIVITY_NAME.ORGANIZATION_CREATED,
       description: `Created org ${name} (${slug})${adminEmail ? ` with admin ${adminEmail}` : ''} [Plan: ${plan?.name || 'Free'}]`,
-      activityType: 'organization',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: org.id,
     });
@@ -468,9 +468,9 @@ async function patchOrganization(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Organization updated',
+      activityName: ACTIVITY_NAME.ORGANIZATION_UPDATED,
       description: `Updated org ${updated.name} (${updated.slug})`,
-      activityType: 'organization',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: updated.id,
     });
@@ -512,9 +512,9 @@ async function updateWorkspace(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Workspace updated',
+      activityName: ACTIVITY_NAME.WORKSPACE_UPDATED,
       description: `Updated workspace ${updated.name}`,
-      activityType: 'workspace',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId,
     });

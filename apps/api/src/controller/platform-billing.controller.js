@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 
 /**
  * Platform billing overview — Phase 2 surface.
@@ -179,9 +179,9 @@ async function overrideSubscription(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Subscription override',
+      activityName: ACTIVITY_NAME.SUBSCRIPTION_OVERRIDE,
       description: `Manual billing override for ${org.name}`,
-      activityType: 'billing',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: org.id,
     });

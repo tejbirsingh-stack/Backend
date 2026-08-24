@@ -1,5 +1,5 @@
 const platformAuthService = require('../services/platform-auth.service');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 
 async function platformLogin(request, reply) {
   try {
@@ -66,9 +66,9 @@ async function platformLogin(request, reply) {
     );
     await platformAuthService.recordLoginSuccess(admin.id);
     await writePlatformAudit({
-      activityName: 'Platform admin login',
+      activityName: ACTIVITY_NAME.PLATFORM_ADMIN_LOGIN,
       description: `${admin.email} signed in to platform console`,
-      activityType: 'auth',
+      activityType: ACTIVITY_TYPE.INFO,
       admin,
     });
 
@@ -102,9 +102,9 @@ async function platformLogout(request, reply) {
       await platformAuthService.revokeSessionByToken(token);
     }
     await writePlatformAudit({
-      activityName: 'Platform admin logout',
+      activityName: ACTIVITY_NAME.PLATFORM_ADMIN_LOGOUT,
       description: `${request.platformAdmin?.email || 'admin'} signed out`,
-      activityType: 'auth',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
     return { success: true };

@@ -15,7 +15,7 @@ Noah is an enterprise-grade media asset management platform designed for efficie
 
 ### Prerequisites
 
-- Node.js (v16+)
+- Node.js 20.19+ (pinned to 20.20.2 via `.nvmrc`)
 - PostgreSQL (v14+)
 - Redis (v6+)
 - Docker and Docker Compose (for local development)

@@ -22,6 +22,8 @@ function slugifyWorkspaceName(value) {
     .slice(0, 48);
 }
 
+const { computeAiEnabledSync } = require("../services/ai/aiEntitlement");
+
 function formatOrganization(org) {
   if (!org) return null;
   const currentPlan = org.currentPlan || {};
@@ -49,6 +51,7 @@ function formatOrganization(org) {
     maxWorkspaces,
     maxProjects,
     features,
+    aiEnabled: computeAiEnabledSync(org),
   };
 }
 
@@ -330,7 +333,9 @@ module.exports.login = async (request, reply) => {
       allowedProjectIds,
       organization: user.organization,
       timezone: user.timezone,
-      avatarUrl: user.avatarUrl
+      avatarUrl: user.avatarUrl,
+      shareLinkActivityEnabled: user.shareLinkActivityEnabled,
+      preferences: user.preferences
     };
     const token = await reply.jwtSign(payload);
 
@@ -971,6 +976,8 @@ module.exports.getMe = async (request, reply) => {
         timezone: true,
         avatarUrl: true,
         mfaEnabled: true,
+        shareLinkActivityEnabled: true,
+        preferences: true,
         lastLoginAt: true,
         lastActiveAt: true,
         createdAt: true,

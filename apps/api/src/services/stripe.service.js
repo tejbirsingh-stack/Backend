@@ -1,6 +1,5 @@
 const Stripe = require('stripe');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../utils/prisma');
 
 let cachedSecretKey = null;
 let cachedStripeInstance = null;
@@ -451,6 +450,21 @@ class StripeService {
     } catch (error) {
       console.error('[StripeService] Error listing invoices:', error);
       return { data: [] };
+    }
+  }
+
+  /**
+   * Retrieve a single Stripe Invoice by ID
+   * @param {string} invoiceId
+   */
+  async retrieveInvoice(invoiceId) {
+    try {
+      const stripe = await getStripe();
+      if (!invoiceId) return null;
+      return await stripe.invoices.retrieve(invoiceId);
+    } catch (error) {
+      console.error('[StripeService] Error retrieving invoice:', error);
+      return null;
     }
   }
 

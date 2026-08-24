@@ -12,6 +12,7 @@ const { ACCESS_LEVEL, MEMBER_TYPES, VISIBILITY } = require('../lib/rolesPermissi
 const B2StorageService = require('../b2-storage.cjs');
 const { recordStorageDelta } = require('../services/usage-meter.service');
 const { resolveOrgBranding } = require('../services/branding.service');
+const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 
 const b2Storage = new B2StorageService({
     keyId: process.env.B2_KEY_ID,
@@ -43,7 +44,7 @@ module.exports.storeWorkplace = async (request, reply) => {
             });
         }
 
-        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel, isRestricted } = request.body;
+        const { name, description, color, inviteEmails, inviteGroupIds, memberType, accessLevel, isRestricted, sendInviteEmail } = request.body;
 
         // Default values for granular permissions if not provided
         const mType = memberType || MEMBER_TYPES.MEMBER;
@@ -177,6 +178,17 @@ module.exports.storeWorkplace = async (request, reply) => {
                             accessLevelId: aLevelId
                         }
                     }).catch(() => { });
+
+                    // ALWAYS send in-app notification
+                    createNotification(
+                        request.server,
+                        guestUser.id,
+                        guestUser.orgId || orgId,
+                        'workspace_invite',
+                        'Invited to workspace',
+                        `${request.user.name || request.user.email} added you to workspace "${name}"`,
+                        workspace.id
+                    ).catch(err => console.error('Failed to create in-app notification:', err));
                 } else {
                     // Member: must belong to the same org
                     const invitedUser = await prisma.user.findFirst({
@@ -190,6 +202,37 @@ module.exports.storeWorkplace = async (request, reply) => {
                                 memberType: mType,
                                 accessLevelId: aLevelId
                             }
+                        }).catch(() => { });
+
+                        // ALWAYS send in-app notification
+                        createNotification(
+                            request.server,
+                            invitedUser.id,
+                            orgId,
+                            'workspace_invite',
+                            'Invited to workspace',
+                            `${request.user.name || request.user.email} added you to workspace "${name}"`,
+                            workspace.id
+                        ).catch(err => console.error('Failed to create in-app notification:', err));
+                    }
+                }
+
+                if (sendInviteEmail) {
+                    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+                    const appUrl = `${frontendUrl}`; // Base dashboard URL
+                    const cleanEmail = email.toLowerCase().trim();
+                    if (mType === MEMBER_TYPES.GUEST) {
+                        const orgNameObj = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });
+                        emailService.sendWorkspaceGuestInvite(cleanEmail, {
+                            workspaceName: name,
+                            organizationName: orgNameObj?.name || 'Your Organization',
+                            appUrl
+                        }).catch(() => { });
+                    } else {
+                        emailService.sendWorkspaceMemberInvite(cleanEmail, {
+                            workspaceName: name,
+                            inviterName: request.user.name || request.user.email,
+                            appUrl
                         }).catch(() => { });
                     }
                 }
@@ -558,9 +601,11 @@ module.exports.createFolder = async (request, reply) => {
             }
         }
 
+        const uniqueName = await generateUniqueWorkspaceName(prisma, targetWorkspaceId, name, 'folder');
+
         const folder = await prisma.folder.create({
             data: {
-                name,
+                name: uniqueName,
                 color,
                 parentId: targetParentId,
                 workspaceId: targetWorkspaceId,
@@ -688,7 +733,7 @@ module.exports.addProjectMember = async (request, reply) => {
 
                         // Send email only if sendInviteEmail is checked
                         if (sendInviteEmail && memberUser.email) {
-                            const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId);
+                            const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId, { forEmail: true });
                             emailService.sendProjectMemberInvite(memberUser.email, {
                                 projectName: project.name,
                                 inviterName,
@@ -754,7 +799,7 @@ module.exports.addProjectMember = async (request, reply) => {
         // Fire email ONLY if sendInviteEmail is true
         if (sendInviteEmail) {
             try {
-                const orgBranding = await resolveOrgBranding(prisma, user.orgId || orgId || project.workspace?.orgId);
+                const orgBranding = await resolveOrgBranding(prisma, user.orgId || orgId || project.workspace?.orgId, { forEmail: true });
                 const orgName = orgBranding?.accountName || project.workspace?.organization?.name || 'Noah Cloud';
                 if (effectiveMemberType?.toUpperCase() === MEMBER_TYPES.GUEST) {
                     await emailService.sendProjectGuestInvite(user.email, {
@@ -910,7 +955,7 @@ module.exports.createProject = async (request, reply) => {
 
             if (!yearFolder) {
                 yearFolder = await prisma.folder.create({
-                    data: { name: year, workspaceId, parentId: null }
+                    data: { name: year, workspaceId, parentId: null, isAutoGenerated: true }
                 });
             }
 
@@ -921,7 +966,7 @@ module.exports.createProject = async (request, reply) => {
 
             if (!monthFolder) {
                 monthFolder = await prisma.folder.create({
-                    data: { name: month, workspaceId, parentId: yearFolder.id }
+                    data: { name: month, workspaceId, parentId: yearFolder.id, isAutoGenerated: true }
                 });
             }
 
@@ -930,9 +975,11 @@ module.exports.createProject = async (request, reply) => {
             resolvedFolderName = monthFolder.name;
         }
 
+        const uniqueName = await generateUniqueWorkspaceName(prisma, workspaceId, name, 'project');
+
         const project = await prisma.project.create({
             data: {
-                name,
+                name: uniqueName,
                 ownerType: finalOwnerType,
                 workspaceId,
                 folderId: finalFolderId || null,
@@ -1014,7 +1061,7 @@ module.exports.createProject = async (request, reply) => {
                             // Fire non-blocking email only if sendInviteEmail is true
                             if (sendInviteEmail) {
                                 const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });
-                                const orgBranding = await resolveOrgBranding(prisma, orgId);
+                                const orgBranding = await resolveOrgBranding(prisma, orgId, { forEmail: true });
                                 const organizationName = orgBranding?.accountName || (org ? org.name : 'An organization');
 
                                 emailService.sendProjectGuestInvite(cleanEmail, {
@@ -1054,7 +1101,7 @@ module.exports.createProject = async (request, reply) => {
 
                             // Fire non-blocking email only if sendInviteEmail is true
                             if (sendInviteEmail) {
-                                const orgBranding = await resolveOrgBranding(prisma, orgId);
+                                const orgBranding = await resolveOrgBranding(prisma, orgId, { forEmail: true });
                                 emailService.sendProjectMemberInvite(cleanEmail, {
                                     projectName: project.name,
                                     inviterName,
@@ -1110,7 +1157,7 @@ module.exports.createProject = async (request, reply) => {
 
                                 // Send email to group member only if sendInviteEmail is checked
                                 if (sendInviteEmail && memberUser.email) {
-                                    const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId);
+                                    const orgBranding = await resolveOrgBranding(prisma, memberUser.orgId || orgId, { forEmail: true });
                                     emailService.sendProjectMemberInvite(memberUser.email, {
                                         projectName: project.name,
                                         inviterName,
@@ -1395,6 +1442,115 @@ module.exports.findFolderTreeData = async (request, reply) => {
     }
 };
 
+/**
+ * Helper function to handle unselected folders and files when a parent folder or project is permanently deleted by Super Admin.
+ * - Creates or reuses a single "Restore" folder at top level of the workspace.
+ * - Moves top-most unselected folders (whose parent is deleted) into "Restore" folder.
+ * - Moves top-most unselected files (whose parent folder is deleted) into "Restore" folder.
+ * - Leaves nested unselected items inside their unselected parent folder.
+ * - Clears deletion status/fields for all unselected items to make them active again.
+ */
+async function handleUnselectedItemsPreservation(prisma, { workspaceId, targetFolderIds, finalAssetIdsToDelete, allFolderIds, allFolderAssets }) {
+    if (!workspaceId) return;
+
+    const deletedFolderIdSet = new Set(targetFolderIds || []);
+    const deletedAssetIdSet = new Set(finalAssetIdsToDelete || []);
+
+    const unselectedFolderIds = (allFolderIds || []).filter(fId => !deletedFolderIdSet.has(fId));
+    const unselectedAssetIds = (allFolderAssets || []).map(a => a.id).filter(aId => !deletedAssetIdSet.has(aId));
+
+    if (unselectedFolderIds.length === 0 && unselectedAssetIds.length === 0) {
+        return;
+    }
+
+    // 1. Get or Create "Restore" folder in this workspace
+    let restoreFolder = await prisma.folder.findFirst({
+        where: {
+            workspaceId: workspaceId,
+            parentId: null,
+            name: 'Restore'
+        }
+    }).catch(() => null);
+
+    if (!restoreFolder) {
+        restoreFolder = await prisma.folder.create({
+            data: {
+                name: 'Restore',
+                workspaceId: workspaceId,
+                parentId: null,
+                color: '#3b82f6'
+            }
+        }).catch(() => null);
+    }
+
+    if (!restoreFolder) {
+        console.error('[Restore Folder Error] Could not find or create Restore folder');
+        return;
+    }
+
+    // 2. Process Unselected Folders
+    if (unselectedFolderIds.length > 0) {
+        const unselectedFolders = await prisma.folder.findMany({
+            where: { id: { in: unselectedFolderIds } }
+        }).catch(() => []);
+
+        for (const folder of unselectedFolders) {
+            // Check if folder's parent is deleted (or root being deleted)
+            const isParentDeleted = !folder.parentId || deletedFolderIdSet.has(folder.parentId);
+            if (isParentDeleted) {
+                // Top-most unselected folder: Move to Restore folder
+                await prisma.folder.update({
+                    where: { id: folder.id },
+                    data: { parentId: restoreFolder.id }
+                }).catch(() => null);
+            }
+        }
+    }
+
+    // 3. Process Unselected Assets
+    if (unselectedAssetIds.length > 0) {
+        const unselectedAssets = (allFolderAssets || []).filter(a => unselectedAssetIds.includes(a.id));
+
+        for (const asset of unselectedAssets) {
+            // Extract parent folder ID of asset
+            let parentFolderId = asset.ownerType === 'FOLDER' ? asset.ownerId : (asset.folderId || null);
+            if (!parentFolderId && asset.deletionReason) {
+                const match = asset.deletionReason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]/i);
+                if (match) parentFolderId = match[1];
+            }
+
+            const isParentDeleted = !parentFolderId || deletedFolderIdSet.has(parentFolderId);
+
+            if (isParentDeleted) {
+                // Top-most unselected asset: Move to Restore folder & reactivate
+                await prisma.asset.update({
+                    where: { id: asset.id },
+                    data: {
+                        status: 'active',
+                        deletedAt: null,
+                        deletedByUserId: null,
+                        deletionReason: null,
+                        ownerType: 'FOLDER',
+                        ownerId: restoreFolder.id,
+                        workspaceId: workspaceId
+                    }
+                }).catch(() => null);
+            } else {
+                // Asset parent folder is preserved: Keep inside its parent folder & reactivate
+                await prisma.asset.update({
+                    where: { id: asset.id },
+                    data: {
+                        status: 'active',
+                        deletedAt: null,
+                        deletedByUserId: null,
+                        deletionReason: null
+                    }
+                }).catch(() => null);
+            }
+        }
+    }
+}
+
 module.exports.deleteFolder = async (request, reply) => {
     try {
         const { id } = request.params; // folderId
@@ -1431,6 +1587,14 @@ module.exports.deleteFolder = async (request, reply) => {
             where: { id },
             include: { workspace: true }
         }).catch(() => null);
+
+        if (targetFolder && targetFolder.name && targetFolder.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+                success: false,
+                error: 'BadRequest',
+                message: 'The Restore folder is a protected system folder and cannot be deleted.'
+            });
+        }
 
         const folderName = targetFolder?.name || 'Folder';
         const orgId = liveUser?.orgId || targetFolder?.workspace?.orgId || request.user?.orgId;
@@ -1482,6 +1646,17 @@ module.exports.deleteFolder = async (request, reply) => {
 
             const assetsToDelete = allFolderAssets.filter(a => targetAssetIds.includes(a.id) || (isWholeFolder && a.deletionReason && a.deletionReason.includes(id)));
             const finalAssetIdsToDelete = Array.from(new Set(assetsToDelete.map(a => a.id)));
+
+            const workspaceId = targetFolder?.workspaceId || liveUser?.workspaceId;
+
+            // Preserve unselected items and move top-most unselected items to Restore folder if parent deleted
+            await handleUnselectedItemsPreservation(prisma, {
+                workspaceId,
+                targetFolderIds,
+                finalAssetIdsToDelete,
+                allFolderIds: folderIdList,
+                allFolderAssets
+            });
 
             for (const asset of assetsToDelete) {
                 let assetSizeBytes = 0;
@@ -1890,7 +2065,8 @@ module.exports.findProjectData = async (request, reply) => {
         }
 
         const completeFolders = await prisma.folder.findMany({
-            where: { id: { in: Array.from(allFolderIds) } }
+            where: { id: { in: Array.from(allFolderIds) } },
+            include: { sources: true }
         }).catch(() => []);
 
         let effectivePermissions = [];
@@ -2087,30 +2263,65 @@ module.exports.linkProjectSource = async (request, reply) => {
 module.exports.updateFolder = async (request, reply) => {
     try {
         const { id } = request.params;
-        const { name } = request.body;
+        const { name, color } = request.body;
 
-        if (!name) {
+        if (!name && color === undefined) {
             return reply.code(400).send({
                 success: false,
-                message: 'Folder name is required.'
+                message: 'Folder name or color is required.'
             });
         }
 
-        if (name.length > 100) {
+        if (name && name.length > 100) {
             return reply.code(400).send({
                 success: false,
                 message: 'Folder name cannot exceed 100 characters.'
             });
         }
 
+        const folderToUpdate = await prisma.folder.findUnique({
+            where: { id },
+            select: { workspaceId: true, name: true }
+        });
+        if (!folderToUpdate) {
+            return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        if (folderToUpdate.name && folderToUpdate.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+                success: false,
+                message: 'The Restore folder is a protected system folder and cannot be renamed.'
+            });
+        }
+
+        if (name !== undefined) {
+            const duplicateFolder = await prisma.folder.findFirst({
+                where: {
+                    workspaceId: folderToUpdate.workspaceId,
+                    name: name.trim(),
+                    id: { not: id }
+                }
+            });
+            if (duplicateFolder) {
+                return reply.code(400).send({
+                    success: false,
+                    message: 'A folder with this name already exists in this workspace.'
+                });
+            }
+        }
+
+        const dataToUpdate = {};
+        if (name) dataToUpdate.name = name;
+        if (color !== undefined) dataToUpdate.color = color;
+
         const folder = await prisma.folder.update({
             where: { id },
-            data: { name }
+            data: dataToUpdate
         });
 
         return reply.send({
             success: true,
-            message: 'Folder renamed successfully.',
+            message: 'Folder updated successfully.',
             data: folder
         });
     } catch (error) {
@@ -2140,6 +2351,13 @@ module.exports.moveFolder = async (request, reply) => {
 
         if (!folder) {
             return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        if (folder.name && folder.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+                success: false,
+                message: 'The Restore folder is a protected system folder and cannot be moved.'
+            });
         }
 
         let newWorkspaceId = targetWorkspaceId || folder.workspaceId;
@@ -2356,11 +2574,11 @@ module.exports.moveFolder = async (request, reply) => {
 module.exports.updateProject = async (request, reply) => {
     try {
         const { id } = request.params;
-        const { name, workspaceId, visibility, status } = request.body;
+        const { name, workspaceId, visibility, status, color } = request.body;
 
         await verifyProjectAccess(id, request.user.id, 'Full Access');
 
-        if (name === undefined && workspaceId === undefined && visibility === undefined && status === undefined) {
+        if (name === undefined && workspaceId === undefined && visibility === undefined && status === undefined && color === undefined) {
             return reply.code(400).send({
                 success: false,
                 message: 'No update fields provided.'
@@ -2383,6 +2601,33 @@ module.exports.updateProject = async (request, reply) => {
             }
         }
 
+        const projectToUpdate = await prisma.project.findUnique({
+            where: { id },
+            select: { workspaceId: true }
+        });
+        if (!projectToUpdate) {
+            return reply.code(404).send({ success: false, message: 'Project not found.' });
+        }
+
+        const activeWorkspaceId = workspaceId || projectToUpdate.workspaceId;
+
+        if (name !== undefined) {
+            const existingProject = await prisma.project.findFirst({
+                where: {
+                    workspaceId: activeWorkspaceId,
+                    name: name.trim(),
+                    id: { not: id },
+                    status: { notIn: ['deleted', 'trash'] }
+                }
+            });
+            if (existingProject) {
+                return reply.code(400).send({
+                    success: false,
+                    message: 'A project with this name already exists in this workspace.'
+                });
+            }
+        }
+
         const dataToUpdate = {};
         if (name !== undefined) dataToUpdate.name = name;
         if (workspaceId !== undefined && workspaceId) {
@@ -2391,6 +2636,7 @@ module.exports.updateProject = async (request, reply) => {
         }
         if (visibility !== undefined) dataToUpdate.visibility = visibility;
         if (status !== undefined) dataToUpdate.status = status.toLowerCase();
+        if (color !== undefined) dataToUpdate.color = color;
 
         const project = await prisma.project.update({
             where: { id },
@@ -2594,6 +2840,34 @@ module.exports.deleteProject = async (request, reply) => {
                     currentFolderLevel = childIds;
                 }
                 const targetFolderIds = Array.from(selectedFolderSet);
+                const workspaceId = targetProject?.workspaceId || liveUser?.workspaceId;
+
+                const { assets: allProjectAssets } = await getAllProjectAssetIdsAndObjects(prisma, id);
+                const projectFolderSources = await prisma.projectSource.findMany({
+                    where: { projectId: id, sourceableType: 'FOLDER' },
+                    select: { folderId: true }
+                }).catch(() => []);
+                const initialFolderIds = new Set(projectFolderSources.map(s => s.folderId).filter(Boolean));
+                const allProjectFolderIds = new Set(initialFolderIds);
+                let currentProjFolderLevel = Array.from(initialFolderIds);
+                while (currentProjFolderLevel.length > 0) {
+                    const childFolders = await prisma.folder.findMany({
+                        where: { parentId: { in: currentProjFolderLevel } },
+                        select: { id: true }
+                    }).catch(() => []);
+                    const childIds = childFolders.map(f => f.id).filter(fId => !allProjectFolderIds.has(fId));
+                    if (childIds.length === 0) break;
+                    childIds.forEach(fId => allProjectFolderIds.add(fId));
+                    currentProjFolderLevel = childIds;
+                }
+
+                await handleUnselectedItemsPreservation(prisma, {
+                    workspaceId,
+                    targetFolderIds,
+                    finalAssetIdsToDelete: targetAssetIds,
+                    allFolderIds: Array.from(allProjectFolderIds),
+                    allFolderAssets: allProjectAssets
+                });
 
                 if (targetAssetIds.length === 0 && targetFolderIds.length === 0) {
                     const pendingAssets = await prisma.asset.findMany({
