@@ -4,7 +4,6 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { authenticator } = require("otplib");
 const crypto = require("crypto");
-const { PrismaClient } = require("@prisma/client");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const dns = require("dns").promises;
 let config;
@@ -27,9 +26,7 @@ function getExpiryMilliseconds(expiryStr) {
   return 2 * 60 * 1000;
 }
 
-const globalForPrisma = globalThis;
-const prisma = globalForPrisma.prisma || new PrismaClient();
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+const prisma = require('../utils/prisma');
 
 const FREE_EMAIL_DOMAINS = new Set([
   'gmail.com', 'yahoo.com', 'yahoo.co.uk', 'yahoo.co.in', 'hotmail.com',
@@ -181,6 +178,7 @@ class AuthService {
         timezone: true,
         avatarUrl: true,
         shareLinkActivityEnabled: true,
+        preferences: true,
         organization: {
           select: {
             id: true,
@@ -228,6 +226,7 @@ class AuthService {
         timezone: true,
         avatarUrl: true,
         shareLinkActivityEnabled: true,
+        preferences: true,
         roleRelation: {
           select: {
             id: true,
@@ -336,6 +335,7 @@ class AuthService {
             status: true,
             emailVerified: true,
             shareLinkActivityEnabled: true,
+            preferences: true,
             organization: {
               select: {
                 id: true,

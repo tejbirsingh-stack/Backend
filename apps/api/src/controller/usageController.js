@@ -1,6 +1,5 @@
 const usageMeterService = require('../services/usage-meter.service');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../utils/prisma');
 
 async function getOrgIdFromRequest(req) {
   if (req.user?.orgId) return req.user.orgId;

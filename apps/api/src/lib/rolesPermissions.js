@@ -3,8 +3,8 @@ module.exports.roles = {
     SUPER_ADMIN: 'Super Admin',
     COLLABORATOR: 'Collaborator',
     Admin: 'Admin',
-    SYSTEM_ADMIN: 'System Admin',
-    VIEWER: 'Viewer'
+    VIEWER: 'Viewer',
+    PLATFORM_ADMIN: 'Platform Admin'
 }
 
 module.exports.ACCESS_LEVEL = {

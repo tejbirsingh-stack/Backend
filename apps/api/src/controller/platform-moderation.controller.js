@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 
 async function listModerationFlags(request, reply) {
   try {
@@ -72,9 +72,9 @@ async function createModerationFlag(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Moderation flag created',
+      activityName: ACTIVITY_NAME.MODERATION_FLAG_CREATED,
       description: `Flagged asset ${assetId}: ${reason}`,
-      activityType: 'moderation',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: asset.orgId,
     });
@@ -123,9 +123,9 @@ async function updateModerationFlag(request, reply) {
     }
 
     await writePlatformAudit({
-      activityName: 'Moderation flag updated',
+      activityName: ACTIVITY_NAME.MODERATION_FLAG_UPDATED,
       description: `Flag ${flagId} → ${status || 'updated'}`,
-      activityType: 'moderation',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: flag.orgId,
     });
@@ -210,9 +210,9 @@ async function forceDeleteAsset(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Asset force-deleted',
+      activityName: ACTIVITY_NAME.ASSET_FORCE_DELETED,
       description: `Force-deleted asset ${asset.title} (${assetId})`,
-      activityType: 'moderation',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: asset.orgId,
     });

@@ -1,6 +1,5 @@
 const Stripe = require('stripe');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../utils/prisma');
 
 let cachedSecretKey = null;
 let cachedStripeInstance = null;

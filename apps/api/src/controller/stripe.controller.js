@@ -1,8 +1,7 @@
 const stripeService = require('../services/stripe.service.js');
+const prisma = require('../utils/prisma');
 const { resolveOrgBranding } = require('../services/branding.service.js');
 const { buildCustomInvoicePdf } = require('../services/invoicePdf.service.js');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
 
 function getFrontendUrl(req) {
   if (req) {

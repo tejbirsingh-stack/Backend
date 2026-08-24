@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const stripeService = require('../services/stripe.service');
 
 function serializePlan(plan) {
@@ -148,9 +148,9 @@ async function createPlan(request, reply) {
     }
 
     await writePlatformAudit({
-      activityName: 'Plan created',
+      activityName: ACTIVITY_NAME.PLAN_CREATED,
       description: `Created plan ${plan.name} (${plan.id})`,
-      activityType: 'plan',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
     return reply.status(201).send({ success: true, plan: serializePlan(plan) });
@@ -229,9 +229,9 @@ async function updatePlan(request, reply) {
       },
     });
     await writePlatformAudit({
-      activityName: 'Plan updated',
+      activityName: ACTIVITY_NAME.PLAN_UPDATED,
       description: `Updated plan ${plan.name} (${plan.id})`,
-      activityType: 'plan',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
     return { success: true, plan: serializePlan(plan) };
@@ -266,9 +266,9 @@ async function deletePlan(request, reply) {
     }
 
     await writePlatformAudit({
-      activityName: 'Plan deleted',
+      activityName: ACTIVITY_NAME.PLAN_DELETED,
       description: `Deleted plan ${plan.name} (${plan.id})`,
-      activityType: 'plan',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
     return { success: true };

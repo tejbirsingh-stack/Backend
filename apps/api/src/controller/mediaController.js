@@ -1360,48 +1360,30 @@ module.exports.downloadFile = async (request, reply) => {
           b2Key = proxy ? proxy.filePath : original?.filePath;
         }
 
-        // Notification logic for explicitly shared downloads
-        if (request.user) {
-          try {
-            const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
-              where: { assetId: asset.id, userId: request.user.id }
-            }) || await request.server.prisma.assetGroup.findFirst({
-              where: {
-                assetId: asset.id,
-                group: { members: { some: { userId: request.user.id } } }
-              }
-            });
 
-            if (isExplicitlyShared) {
-              const viewerDb = await request.server.prisma.user.findUnique({
-                where: { id: request.user.id },
-                select: { shareLinkActivityEnabled: true }
-              });
-
-              if (viewerDb && viewerDb.shareLinkActivityEnabled !== false) {
-                const creatorId = asset.uploadedByUserId;
-                if (creatorId && creatorId !== request.user.id) {
-                  await createNotification(
-                    request.server,
-                    creatorId,
-                    asset.orgId,
-                    'media_downloaded',
-                    'Media Downloaded',
-                    `${request.user.name || request.user.email || 'A user'} downloaded your shared media: ${asset.title}`,
-                    asset.id
-                  );
-                }
-              }
-            }
-          } catch (notifErr) {
-            console.warn('Failed to send explicit share download notification:', notifErr.message);
-          }
         }
       }
     }
 
-    if (b2Key) {
-      return await handleMediaRedirectOrServe(request, reply, b2Key, true);
+    if (b2Key && b2Storage.isEnabled()) {
+      try {
+        // Build a presigned URL with ResponseContentDisposition to force download.
+        // This avoids proxying through the backend (which caused 502 errors).
+        const { GetObjectCommand } = require('@aws-sdk/client-s3');
+        const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+        const rawName = path.basename(b2Key).replace(/^\d+-/, '');
+        const safeDisplayName = rawName.replace(/[^\w.\-_() ]/g, '_') || 'download';
+        const command = new GetObjectCommand({
+          Bucket: b2Storage.bucket,
+          Key: b2Key,
+          ResponseContentDisposition: `attachment; filename="${safeDisplayName}"`,
+        });
+        const presignedUrl = await getSignedUrl(b2Storage.s3Client, command, { expiresIn: 3600 });
+        return reply.redirect(presignedUrl, 302);
+      } catch (presignErr) {
+        console.error(`[downloadFile] Presigned URL generation failed for ${b2Key}:`, presignErr.message);
+        // Fall through to proxy streaming as last resort
+      }
     }
 
     return await handleMediaRedirectOrServe(request, reply, filename, true);
