@@ -113,7 +113,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
     await prisma.asset.update({
       where: { id: assetId },
       data: { compressedKey: compressedKey }
-    }).catch(err => console.error(`[Job ${job.id}] Failed to save compressedKey:`, err.message));
+    }).catch((err: any) => console.error(`[Job ${job.id}] Failed to save compressedKey:`, err.message));
     const outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400);
 
     let outputs: any = {};
@@ -172,7 +172,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       await prisma.transcodeJob.updateMany({
         where: { assetId: assetId, provider: "coconut" },
         data: { jobId: jobData.id.toString() }
-      }).catch(err => console.error(`[Job ${job.id}] Failed to save Job ID to db:`, err.message));
+      }).catch((err: any) => console.error(`[Job ${job.id}] Failed to save Job ID to db:`, err.message));
     }
 
   } catch (error: any) {
@@ -182,12 +182,12 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       await prisma.transcodeJob.updateMany({
         where: { assetId: assetId, provider: "coconut" },
         data: { status: 'failed' }
-      }).catch((dbErr) => console.error('Failed to write failure status to transcode job:', dbErr));
+      }).catch((dbErr: any) => console.error('Failed to write failure status to transcode job:', dbErr));
 
       await prisma.asset.update({
         where: { id: assetId },
         data: { status: 'failed' }
-      }).catch((dbErr) => console.error('Failed to write failure status to asset:', dbErr));
+      }).catch((dbErr: any) => console.error('Failed to write failure status to asset:', dbErr));
     }
 
     throw error;

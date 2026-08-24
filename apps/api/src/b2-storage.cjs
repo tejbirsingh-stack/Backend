@@ -36,15 +36,21 @@ class B2StorageService {
     this.endpoint = null;
     this.enabled = false;
 
+    const keyId = config && config.keyId ? String(config.keyId).trim() : null;
+    const applicationKey = config && config.applicationKey ? String(config.applicationKey).trim() : null;
+    const bucketName = config && config.bucketName ? String(config.bucketName).trim() : null;
+    const endpoint = config && config.endpoint ? String(config.endpoint).trim() : 'https://s3.us-west-002.backblazeb2.com';
+    const region = config && config.region ? String(config.region).trim() : 'us-west-002';
+
     // Check if B2 configuration is provided
-    if (config && config.keyId && config.applicationKey && config.bucketName) {
-      this.endpoint = config.endpoint || 'https://s3.us-west-002.backblazeb2.com';
+    if (keyId && applicationKey && bucketName) {
+      this.endpoint = endpoint;
       this.s3Client = new S3Client({
-        region: config.region || 'us-west-002',
+        region: region,
         endpoint: this.endpoint,
         credentials: {
-          accessKeyId: config.keyId,
-          secretAccessKey: config.applicationKey,
+          accessKeyId: keyId,
+          secretAccessKey: applicationKey,
         },
         forcePathStyle: true, // Required for B2
         // B2 doesn't support AWS checksum extensions — disable them
@@ -52,7 +58,7 @@ class B2StorageService {
         responseChecksumValidation: 'WHEN_REQUIRED',
       });
 
-      this.bucket = config.bucketName;
+      this.bucket = bucketName;
       this.enabled = true;
 
       console.log('✅ B2 Storage Service initialized');

@@ -301,38 +301,45 @@ async function setupServer() {
     });
   });
 
-  try {
-    // API Routes - using plain require to avoid top-level await
-    fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
-    fastify.register(require('./routes/annotations'), { prefix: '/api/annotations' });
-    fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
-    fastify.register(require('./routes/auth-routes'), { prefix: '/api/auth' });
-    fastify.register(require('./routes/collections'), { prefix: '/api/collections' });
-    fastify.register(require('./routes/favorites'), { prefix: '/api/favorites' });
-    fastify.register(require('./routes/compression'), { prefix: '/api/compression' });
-    fastify.register(require('./routes/health-route.js'));
-    fastify.register(require('./routes/media'), { prefix: '/api/media' });
-    fastify.register(require('./routes/ai'), { prefix: '/api/ai' });
-    fastify.register(require('./routes/organizations'), { prefix: '/api/organizations' });
-    fastify.register(require('./routes/realtime'), { prefix: '/api/ws' });    // WebSocket routes for real-time video features
-    fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
-    fastify.register(require('./routes/users'), { prefix: '/api/users' });
-    fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
-    fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
-    fastify.register(require('./routes/share-routes'), { prefix: '/api' });
-    fastify.register(require('./routes/user-groups'), { prefix: '/api' });
-    fastify.register(require('./routes/tags'), { prefix: '/api/tags' });
-    fastify.register(require('./routes/library'), { prefix: '/api/library' });
-    fastify.register(require('./routes/platform'), { prefix: '/api/platform' });
-    fastify.register(require('./routes/usage'), { prefix: '/api/usage' });
-    fastify.register(require('./routes/stripe'), { prefix: '/api/stripe' });
+  const routeDefs: Array<{ module: string; options?: any }> = [
+    { module: './routes/analytics', options: { prefix: '/api/analytics' } },
+    { module: './routes/annotations', options: { prefix: '/api/annotations' } },
+    { module: './routes/workspaces', options: { prefix: '/api/workspaces' } },
+    { module: './routes/auth-routes', options: { prefix: '/api/auth' } },
+    { module: './routes/collections', options: { prefix: '/api/collections' } },
+    { module: './routes/favorites', options: { prefix: '/api/favorites' } },
+    { module: './routes/compression', options: { prefix: '/api/compression' } },
+    { module: './routes/health-route.js' },
+    { module: './routes/media', options: { prefix: '/api/media' } },
+    { module: './routes/ai', options: { prefix: '/api/ai' } },
+    { module: './routes/organizations', options: { prefix: '/api/organizations' } },
+    { module: './routes/realtime', options: { prefix: '/api/ws' } },
+    { module: './routes/rooms', options: { prefix: '/api/rooms' } },
+    { module: './routes/users', options: { prefix: '/api/users' } },
+    { module: './routes/cron', options: { prefix: '/api/cron' } },
+    { module: './routes/notifications', options: { prefix: '/api/notifications' } },
+    { module: './routes/share-routes', options: { prefix: '/api' } },
+    { module: './routes/user-groups', options: { prefix: '/api' } },
+    { module: './routes/tags', options: { prefix: '/api/tags' } },
+    { module: './routes/library', options: { prefix: '/api/library' } },
+    { module: './routes/platform', options: { prefix: '/api/platform' } },
+    { module: './routes/usage', options: { prefix: '/api/usage' } },
+    { module: './routes/stripe', options: { prefix: '/api/stripe' } },
+  ];
 
-    console.log('All routes registerd successfully')
-    //logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);
-  } catch (err: any) {
-    //logError("All routes registered failed", '', null, err, null, ACTOR_TYPE.SYSTEM);
-    logger.warn('Some routes could not be loaded', { error: err.message });
+  for (const { module, options } of routeDefs) {
+    try {
+      const routeModule = require(module);
+      if (options) {
+        fastify.register(routeModule, options);
+      } else {
+        fastify.register(routeModule);
+      }
+    } catch (err: any) {
+      logger.error(`Failed to register route module [${module}]:`, { error: err.message, stack: err.stack });
+    }
   }
+  console.log('All available routes registered successfully.');
 
   // Start server
   try {
