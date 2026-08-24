@@ -22,6 +22,8 @@ function slugifyWorkspaceName(value) {
     .slice(0, 48);
 }
 
+const { computeAiEnabledSync } = require("../services/ai/aiEntitlement");
+
 function formatOrganization(org) {
   if (!org) return null;
   const currentPlan = org.currentPlan || {};
@@ -49,6 +51,7 @@ function formatOrganization(org) {
     maxWorkspaces,
     maxProjects,
     features,
+    aiEnabled: computeAiEnabledSync(org),
   };
 }
 

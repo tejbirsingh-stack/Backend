@@ -12,6 +12,7 @@ const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 
+const { enqueueAiAnalyze, isAiEnabledForOrg } = require("../services/ai/enqueueAiAnalyze");
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
 
@@ -845,11 +846,11 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
 
       return reply.send(mediaStream.stream);
     } catch (b2ProxyErr) {
-      console.error(`B2 Proxy streaming error for ${b2Key}:`, b2ProxyErr.message);
-      return reply.code(502).send({
+      console.warn(`B2 Proxy streaming warning for ${b2Key}:`, b2ProxyErr.message);
+      return reply.code(404).send({
         success: false,
-        error: "Bad Gateway",
-        message: "Failed to stream media from cloud storage proxy",
+        error: "NotFound",
+        message: "Media file not found in storage. (File belonged to previous bucket or was removed)",
       });
     }
   }
@@ -1309,16 +1310,29 @@ module.exports.getThumbnail = async (request, reply) => {
 
     // 5. Fallback: serve raw original file if present
     if (filePath) {
-      return await handleMediaRedirectOrServe(request, reply, filePath, false);
+      try {
+        return await handleMediaRedirectOrServe(request, reply, filePath, false);
+      } catch (err) {
+        console.warn('Thumbnail stream fallback warning:', err.message);
+      }
     }
 
-    return reply.code(404).send({ error: "Thumbnail unavailable" });
+    reply.type("image/svg+xml");
+    return reply.code(200).send(`
+      <svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200" fill="none">
+        <rect width="300" height="200" fill="#1E293B"/>
+        <path d="M130 90H170M150 70V110" stroke="#64748B" stroke-width="4" stroke-linecap="round"/>
+        <text x="150" y="140" fill="#94A3B8" font-family="sans-serif" font-size="12" text-anchor="middle">Old Bucket Media</text>
+      </svg>
+    `);
   } catch (error) {
-    return reply.code(500).send({
-      success: false,
-      error: "Failed to stream thumbnail",
-      message: error.message,
-    });
+    reply.type("image/svg+xml");
+    return reply.code(200).send(`
+      <svg xmlns="http://www.w3.org/2000/svg" width="300" height="200" viewBox="0 0 300 200" fill="none">
+        <rect width="300" height="200" fill="#1E293B"/>
+        <text x="150" y="100" fill="#94A3B8" font-family="sans-serif" font-size="12" text-anchor="middle">Thumbnail Unavailable</text>
+      </svg>
+    `);
   }
 };
 
@@ -1721,6 +1735,20 @@ module.exports.getMediaFile = async (request, reply) => {
         const originalFile = fetchedAsset.files.find(f => f.fileClass === 'original');
         const proxyFile = fetchedAsset.files.find(f => f.fileClass === 'proxy');
         const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
+
+        if (fetchedAsset.status === 'processing' && originalFile) {
+          if (transcodeJob?.status === 'failed' || transcodeJob?.status === 'completed' || transcodeJob?.providerMetadata?.progress === '100%') {
+            try {
+              await request.server.prisma.asset.update({
+                where: { id: fetchedAsset.id },
+                data: { status: 'active' }
+              });
+              fetchedAsset.status = 'active';
+            } catch (uErr) {
+              console.warn('[getMediaFile] Auto-healing asset status error:', uErr.message);
+            }
+          }
+        }
 
         const fileSize = Number(originalFile?.sizeBytes || 0);
         const proxySize = Number(proxyFile?.sizeBytes || 0);
@@ -3232,7 +3260,10 @@ module.exports.completeResumableUpload = async (request, reply) => {
       if (b2Storage.isEnabled()) {
         const presignedUrl = await b2Storage.getPresignedUrl(session.key, 3600);
         if (presignedUrl) {
-          const serverExif = await extractServerSideMetadata(presignedUrl);
+          const serverExif = await Promise.race([
+            extractServerSideMetadata(presignedUrl),
+            new Promise((resolve) => setTimeout(() => resolve(null), 4000))
+          ]);
           if (serverExif && Object.keys(serverExif).length > 0) {
             Object.assign(mergedTechSpecs, serverExif);
             if (serverExif.exif) {
@@ -3616,6 +3647,14 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
           }
         });
 
+        if ((asset.type === 'video' || asset.type === 'audio') && await isAiEnabledForOrg(asset.orgId, request.server.prisma)) {
+          try {
+            await enqueueAiAnalyze({ assetId: newAssetId, orgId: asset.orgId, force: false });
+          } catch (aiErr) {
+            console.warn('[AI] Failed to enqueue analyze job:', aiErr && aiErr.message ? aiErr.message : aiErr);
+          }
+        }
+
         if (asset.orgId && proxySize > 0) {
           try {
             await recordStorageDelta(request.server.prisma, {
@@ -3653,116 +3692,115 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
       } : {};
 
       // -- DUPLICATE VERIFICATION TIER 1, 2, 3 --
-
       let duplicateOf = [];
-      const originalFile = asset.files.find(f => f.fileClass === 'original');
-      const durationSeconds = asset.metadata?.technicalSpecs?.durationSeconds;
-      const checksum = asset.metadata?.checksum;
+      try {
+        const originalFile = asset.files.find(f => f.fileClass === 'original');
+        const durationSeconds = asset.metadata?.technicalSpecs?.durationSeconds;
+        const checksum = asset.metadata?.checksum;
 
-      // Tier 1: Exact Checksum Match
-      if (checksum && originalFile?.sizeBytes) {
-        const exactMatch = await request.server.prisma.asset.findFirst({
-          where: {
+        // Tier 1: Exact Checksum Match
+        if (checksum && originalFile?.sizeBytes) {
+          const exactMatch = await request.server.prisma.asset.findFirst({
+            where: {
+              id: { not: newAssetId },
+              orgId: asset.orgId,
+              deletedAt: null,
+              ...scopeWhere,
+              metadata: { checksum: checksum },
+              files: { some: { fileClass: 'original', sizeBytes: originalFile.sizeBytes } }
+            }
+          });
+          if (exactMatch) duplicateOf.push(exactMatch.id);
+        }
+
+        // If not an exact match, run fuzzy checks (Tier 2/3)
+        if (duplicateOf.length === 0 && (asset.type === 'video' || asset.type === 'audio')) {
+          const whereClause = {
             id: { not: newAssetId },
             orgId: asset.orgId,
             deletedAt: null,
-            ...scopeWhere,
-            metadata: { checksum: checksum },
-            files: { some: { fileClass: 'original', sizeBytes: originalFile.sizeBytes } }
-          }
-        });
-        if (exactMatch) duplicateOf.push(exactMatch.id);
-      }
+            type: asset.type,
+            ...scopeWhere
+          };
 
-      // If not an exact match, run fuzzy checks (Tier 2/3)
-      if (duplicateOf.length === 0 && (asset.type === 'video' || asset.type === 'audio')) {
-        // Tier 2: Metadata Filter (Find Suspects)
-        const whereClause = {
-          id: { not: newAssetId },
-          orgId: asset.orgId,
-          deletedAt: null,
-          type: asset.type,
-          ...scopeWhere
-        };
+          const potentialSuspects = await request.server.prisma.asset.findMany({
+            where: whereClause,
+            include: { metadata: true }
+          });
 
-        const potentialSuspects = await request.server.prisma.asset.findMany({
-          where: whereClause,
-          include: { metadata: true }
-        });
+          const suspectIds = potentialSuspects.filter(s => {
+            if (!durationSeconds) return asset.type === 'video';
+            const sDuration = s.metadata?.technicalSpecs?.durationSeconds;
+            if (!sDuration) return asset.type === 'video';
+            return Number(sDuration) >= Number(durationSeconds) - 2 && Number(sDuration) <= Number(durationSeconds) + 2;
+          }).map(s => s.id);
 
-        const suspectIds = potentialSuspects.filter(s => {
-          if (!durationSeconds) return asset.type === 'video';
-          const sDuration = s.metadata?.technicalSpecs?.durationSeconds;
-          if (!sDuration) return asset.type === 'video';
-          return Number(sDuration) >= Number(durationSeconds) - 2 && Number(sDuration) <= Number(durationSeconds) + 2;
-        }).map(s => s.id);
+          if (asset.type === 'audio') {
+            duplicateOf.push(...suspectIds);
+          } else {
+            const baseKey = compressedKey || originalFile?.filePath;
 
-        if (asset.type === 'audio') {
-          // For audio, exact duration match (+/- 2s) is the final fuzzy check
-          duplicateOf.push(...suspectIds);
-        } else {
-          // Tier 3: Storyboard pHash (The Visual Math)
-          const baseKey = compressedKey || originalFile?.filePath;
-
-          if (baseKey) {
-            // 1. Download and Hash the 5 thumbnails Coconut just created
-            for (let i = 1; i <= 5; i++) {
-              const thumbKey = `${baseKey}_thumb${i}.jpg`;
-              const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600); // 1-hour link
-
-              if (thumbUrl) {
+            if (baseKey) {
+              for (let i = 1; i <= 5; i++) {
                 try {
-                  let fetchResponse = null;
-                  for (let attempt = 1; attempt <= 3; attempt++) {
-                    const res = await fetch(thumbUrl);
-                    if (res.ok) {
-                      fetchResponse = res;
-                      break;
+                  const thumbKey = `${baseKey}_thumb${i}.jpg`;
+                  const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600);
+
+                  if (thumbUrl) {
+                    let fetchResponse = null;
+                    for (let attempt = 1; attempt <= 3; attempt++) {
+                      const res = await fetch(thumbUrl);
+                      if (res.ok) {
+                        fetchResponse = res;
+                        break;
+                      }
+                      if (res.status === 404 && attempt < 3) {
+                        await new Promise(resolve => setTimeout(resolve, 1500));
+                      }
                     }
-                    if (res.status === 404 && attempt < 3) {
-                      await new Promise(resolve => setTimeout(resolve, 1500));
-                    } else {
-                      throw new Error(`Failed to fetch thumbnail (Status: ${res.status})`);
+
+                    if (fetchResponse) {
+                      const arrayBuffer = await fetchResponse.arrayBuffer();
+                      const buffer = Buffer.from(arrayBuffer);
+                      const hashStr = await imageHashAsync({ data: buffer, name: 'thumb.jpg' }, 16, true);
+
+                      await request.server.prisma.videoFrameHash.create({
+                        data: {
+                          assetId: newAssetId,
+                          frameIndex: i,
+                          hashValue: hashStr
+                        }
+                      });
                     }
                   }
-
-                  if (!fetchResponse) throw new Error("Thumbnail not found in B2 after 3 attempts");
-
-                  const arrayBuffer = await fetchResponse.arrayBuffer();
-                  const buffer = Buffer.from(arrayBuffer);
-
-                  const hashStr = await imageHashAsync({ data: buffer, name: 'thumb.jpg' }, 16, true);
-
-                  await request.server.prisma.videoFrameHash.create({
-                    data: {
-                      assetId: newAssetId,
-                      frameIndex: i,
-                      hashValue: hashStr
-                    }
-                  });
                 } catch (e) {
-                  console.error(`[Webhook] Failed to hash thumb ${i}:`, e.message);
+                  console.warn(`[Webhook] Failed to hash thumb ${i}:`, e.message);
+                }
+              }
+
+              if (suspectIds.length > 0) {
+                try {
+                  const duplicateMatches = await request.server.prisma.$queryRawUnsafe(`
+                  SELECT vfh."assetId", COUNT(*) as match_count
+                  FROM video_frame_hashes vfh
+                  JOIN video_frame_hashes new_vfh ON new_vfh."frameIndex" = vfh."frameIndex"
+                  WHERE new_vfh."assetId" = $1::uuid 
+                    AND vfh."assetId" = ANY($2::uuid[])
+                    AND length(replace((('x' || vfh."hashValue")::bit(256) # ('x' || new_vfh."hashValue")::bit(256))::text, '0', '')) <= 15
+                  GROUP BY vfh."assetId"
+                  HAVING COUNT(*) >= 3
+                `, newAssetId, suspectIds);
+
+                  duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
+                } catch (sqlErr) {
+                  console.warn('[Webhook] Duplicate matching query skipped:', sqlErr.message);
                 }
               }
             }
-
-            // 2. PostgreSQL Hamming Distance Calculation
-            if (suspectIds.length > 0) {
-              const duplicateMatches = await request.server.prisma.$queryRawUnsafe(`
-              SELECT vfh."assetId", COUNT(*) as match_count
-              FROM video_frame_hashes vfh
-              JOIN video_frame_hashes new_vfh ON new_vfh."frameIndex" = vfh."frameIndex"
-              WHERE new_vfh."assetId" = $1::uuid 
-                AND vfh."assetId" = ANY($2::uuid[])
-                AND length(replace((('x' || vfh."hashValue")::bit(256) # ('x' || new_vfh."hashValue")::bit(256))::text, '0', '')) <= 15
-              GROUP BY vfh."assetId"
-              HAVING COUNT(*) >= 3
-            `, newAssetId, suspectIds);
-
-              duplicateMatches.forEach(match => duplicateOf.push(match.assetId));
-            }
           }
-        } // End of video Tier 3
+        }
+      } catch (dupCheckErr) {
+        console.warn('[Webhook] Duplicate verification step encountered warning:', dupCheckErr.message);
       }
 
       // Determine final status and metadata

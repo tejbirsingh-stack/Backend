@@ -8,6 +8,7 @@ import os from 'os';
 // @ts-ignore
 import B2StorageService from './b2-storage.cjs';
 import { v4 as uuidv4 } from 'uuid';
+import './ai-worker.js';
 
 // 1. Initialize DB and Cache connections (reusing config)
 const redisConnection = new Redis({

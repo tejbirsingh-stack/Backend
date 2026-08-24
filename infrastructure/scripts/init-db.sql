@@ -2,7 +2,8 @@
 -- This script sets up the core database with TimescaleDB extensions
 
 -- Enable TimescaleDB extension
-CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+-- CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Enable additional extensions for advanced features
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -161,7 +162,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 -- Convert audit_logs to hypertable for time-series data
-SELECT create_hypertable('audit_logs', 'time', if_not_exists => TRUE);
+-- SELECT create_hypertable('audit_logs', 'time', if_not_exists => TRUE);
 
 -- Create indexes for performance
 CREATE INDEX IF NOT EXISTS idx_organizations_slug ON organizations(slug);
@@ -258,7 +259,7 @@ GROUP BY DATE_TRUNC('day', created_at)
 ORDER BY date DESC;
 
 -- Set up retention policies for audit logs (keep 1 year)
-SELECT add_retention_policy('audit_logs', INTERVAL '1 year', if_not_exists => TRUE);
+-- SELECT add_retention_policy('audit_logs', INTERVAL '1 year', if_not_exists => TRUE);
 
 -- Grant permissions
 GRANT USAGE ON SCHEMA noah_core TO noah_user;
