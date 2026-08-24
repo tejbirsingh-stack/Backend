@@ -1345,9 +1345,6 @@ module.exports.downloadFile = async (request, reply) => {
         } else {
           b2Key = proxy ? proxy.filePath : original?.filePath;
         }
-
-
-        }
       }
     }
 

@@ -366,7 +366,7 @@ module.exports.login = async (request, reply) => {
 
 
 module.exports.register = async (request, reply) => {
-  const { name, email, password, orgId, orgName, phone, hubspotUtk } = request.body;
+  const { name, email, password, orgId, orgName, phone, hubspotUtk, planId } = request.body;
 
   try {
     // Validate required fields
@@ -446,15 +446,35 @@ module.exports.register = async (request, reply) => {
       const derivedOrgName = formatDomainToOrgName(email, orgName || name);
       const rawOrgName = orgName || name || email.split('@')[0];
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
-      const freePlan = await request.server.prisma.plan.findFirst({
-        where: { name: { equals: 'free', mode: 'insensitive' } }
-      });
+      let plan = null;
+      if (planId) {
+        plan = await request.server.prisma.plan.findUnique({
+          where: { id: planId }
+        });
+      }
+      if (!plan) {
+        plan = await request.server.prisma.plan.findFirst({
+          where: { isFree: true, isActive: true }
+        });
+      }
+      
+      const isFreePlan = Boolean(plan && plan.isFree);
+      let planExpiresAt = null;
+      
+      if (isFreePlan) {
+         const trialDays = plan.trialDays ?? 3;
+         const expires = new Date();
+         expires.setDate(expires.getDate() + trialDays);
+         planExpiresAt = expires;
+      }
+
       organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
-          currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: false,
+          currentPlanId: plan ? plan.id : null,
+          isFreeTrialUsed: isFreePlan,
+          planExpiresAt: planExpiresAt,
         },
         include: { currentPlan: true },
       });

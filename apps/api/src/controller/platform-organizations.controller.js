@@ -25,9 +25,9 @@ function serializeOrg(org) {
     storageUsedBytes: org.storageUsedBytes?.toString?.() ?? String(org.storageUsedBytes ?? 0),
     currentPlan: org.currentPlan
       ? {
-          ...org.currentPlan,
-          storageQuotaBytes: org.currentPlan.storageQuotaBytes?.toString?.() ?? String(org.currentPlan.storageQuotaBytes ?? 0),
-        }
+        ...org.currentPlan,
+        storageQuotaBytes: org.currentPlan.storageQuotaBytes?.toString?.() ?? String(org.currentPlan.storageQuotaBytes ?? 0),
+      }
       : null,
     _count: org._count,
   };
@@ -40,8 +40,8 @@ async function listOrganizations(request, reply) {
     const planId = request.query?.planId
       ? String(request.query.planId)
       : request.query?.planType
-      ? String(request.query.planType)
-      : undefined;
+        ? String(request.query.planType)
+        : undefined;
     const subscriptionStatus = request.query?.subscriptionStatus
       ? String(request.query.subscriptionStatus)
       : undefined;
@@ -61,11 +61,11 @@ async function listOrganizations(request, reply) {
         ? planId === 'none'
           ? { currentPlanId: null }
           : {
-              OR: [
-                { currentPlanId: planId },
-                { currentPlan: { name: { equals: planId, mode: 'insensitive' } } },
-              ],
-            }
+            OR: [
+              { currentPlanId: planId },
+              { currentPlan: { name: { equals: planId, mode: 'insensitive' } } },
+            ],
+          }
         : {}),
       ...(subscriptionStatus
         ? subscriptionStatus === 'none'
@@ -74,29 +74,29 @@ async function listOrganizations(request, reply) {
         : {}),
       ...(minStorageBytes || maxStorageBytes
         ? {
-            storageUsedBytes: {
-              ...(minStorageBytes ? { gte: BigInt(minStorageBytes) } : {}),
-              ...(maxStorageBytes ? { lte: BigInt(maxStorageBytes) } : {}),
-            },
-          }
+          storageUsedBytes: {
+            ...(minStorageBytes ? { gte: BigInt(minStorageBytes) } : {}),
+            ...(maxStorageBytes ? { lte: BigInt(maxStorageBytes) } : {}),
+          },
+        }
         : {}),
       ...(createdFrom || createdTo
         ? {
-            createdAt: {
-              ...(createdFrom ? { gte: new Date(createdFrom) } : {}),
-              ...(createdTo ? { lte: new Date(createdTo) } : {}),
-            },
-          }
+          createdAt: {
+            ...(createdFrom ? { gte: new Date(createdFrom) } : {}),
+            ...(createdTo ? { lte: new Date(createdTo) } : {}),
+          },
+        }
         : {}),
       ...(q
         ? {
-            OR: [
-              { name: { contains: q, mode: 'insensitive' } },
-              { slug: { contains: q, mode: 'insensitive' } },
-              { currentPlan: { name: { contains: q, mode: 'insensitive' } } },
-              { users: { some: { email: { contains: q, mode: 'insensitive' } } } },
-            ],
-          }
+          OR: [
+            { name: { contains: q, mode: 'insensitive' } },
+            { slug: { contains: q, mode: 'insensitive' } },
+            { currentPlan: { name: { contains: q, mode: 'insensitive' } } },
+            { users: { some: { email: { contains: q, mode: 'insensitive' } } } },
+          ],
+        }
         : {}),
     };
 
@@ -266,18 +266,18 @@ async function createOrganization(request, reply) {
     } else {
       plan =
         (await prisma.plan.findFirst({
-          where: {
-            OR: [{ id: 'free' }, { name: { equals: 'Free', mode: 'insensitive' } }],
-          },
+          where: { isFree: true, isActive: true },
         })) || null;
     }
 
-    const isPaidPlan = Boolean(
-      plan &&
-        ((plan.priceInCents && plan.priceInCents > 0) ||
-          (plan.price && Number(plan.price) > 0) ||
-          (plan.id && plan.id !== 'free' && plan.id !== 'none'))
+    const isFreePlan = Boolean(
+      !plan ||
+      plan.isFree ||
+      plan.id === 'free' ||
+      plan.id === 'none' ||
+      (plan.name && plan.name.toLowerCase() === 'free')
     );
+    const isPaidPlan = !isFreePlan;
     const requestedSlug = body.slug ? slugify(body.slug) : slugify(name);
     const slug = await ensureUniqueSlug(prisma, requestedSlug);
 
@@ -293,6 +293,17 @@ async function createOrganization(request, reply) {
       console.warn('[platform] Stripe customer creation skipped/failed:', stripeErr.message);
     }
 
+    let isFreeTrialUsed = false;
+    let planExpiresAt = null;
+
+    if (isFreePlan) {
+      isFreeTrialUsed = true;
+      const expireDate = new Date();
+      const trialDays = plan?.trialDays ? plan.trialDays : 14;
+      expireDate.setDate(expireDate.getDate() + trialDays);
+      planExpiresAt = expireDate;
+    }
+
     const org = await prisma.organization.create({
       data: {
         name,
@@ -301,6 +312,8 @@ async function createOrganization(request, reply) {
         status: 'active',
         subscriptionStatus: isPaidPlan ? 'past_due' : 'active',
         stripeCustomerId,
+        isFreeTrialUsed,
+        ...(planExpiresAt && { planExpiresAt }),
       },
     });
 
@@ -393,11 +406,11 @@ async function createOrganization(request, reply) {
       organization: serializeOrg(full),
       adminUser: adminUser
         ? {
-            id: adminUser.id,
-            email: adminUser.email,
-            name: adminUser.name,
-            status: adminUser.status,
-          }
+          id: adminUser.id,
+          email: adminUser.email,
+          name: adminUser.name,
+          status: adminUser.status,
+        }
         : null,
       checkoutUrl,
     });
