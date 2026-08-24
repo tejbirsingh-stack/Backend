@@ -140,25 +140,28 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
       { type: 'company_logo', orgId: targetOrgId }
     );
 
+    // Store long-lived / public URL for branding logo
+    const longLivedLogoUrl = (await b2Storage.getPresignedUrl(uploadedAsset.key, 604800)) || b2Storage.getPublicUrl(uploadedAsset.key) || uploadedAsset.url;
+
     // Also update logoKey & logoUrl in organisation_branding_settings
     await request.server.prisma.organisationBrandingSetting.upsert({
       where: { orgId: targetOrgId },
       update: {
         logoKey: uploadedAsset.key,
-        logoUrl: uploadedAsset.url,
+        logoUrl: longLivedLogoUrl,
       },
       create: {
         orgId: targetOrgId,
         accountName: org.name,
         accountInitials: org.name ? org.name.slice(0, 2).toUpperCase() : 'NO',
         logoKey: uploadedAsset.key,
-        logoUrl: uploadedAsset.url,
+        logoUrl: longLivedLogoUrl,
       },
     }).catch(() => {});
 
     return reply.send({
       success: true,
-      logoUrl: uploadedAsset.url,
+      logoUrl: longLivedLogoUrl,
       b2Key: uploadedAsset.key
     });
   } catch (error) {
@@ -251,12 +254,12 @@ module.exports.getBrandingSettings = async (request, reply) => {
       });
     }
 
-    // Refresh B2 presigned URLs if keys exist
+    // Refresh B2 presigned URLs with long-lived validity (7 days) if keys exist
     if (branding.logoKey && b2Storage.isEnabled()) {
-      branding.logoUrl = await b2Storage.getPresignedUrl(branding.logoKey).catch(() => branding.logoUrl);
+      branding.logoUrl = await b2Storage.getPresignedUrl(branding.logoKey, 604800).catch(() => branding.logoUrl);
     }
     if (branding.headerImageKey && b2Storage.isEnabled()) {
-      branding.headerImageUrl = await b2Storage.getPresignedUrl(branding.headerImageKey).catch(() => branding.headerImageUrl);
+      branding.headerImageUrl = await b2Storage.getPresignedUrl(branding.headerImageKey, 604800).catch(() => branding.headerImageUrl);
     }
 
     return reply.send({

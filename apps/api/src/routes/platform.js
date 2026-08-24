@@ -27,9 +27,18 @@ const {
   listPublicPlans,
 } = require('../controller/platform-plans.controller');
 const {
+  listPlanFeatures,
+  createPlanFeature,
+  updatePlanFeature,
+  deletePlanFeature,
+} = require('../controller/platform-plan-features.controller');
+const {
   getBillingOverview,
   overrideSubscription,
   getUsageOverview,
+  getPlatformPaymentLogs,
+  getPaymentLogEvents,
+  getPaymentLogOrgs,
 } = require('../controller/platform-billing.controller');
 const {
   listModerationFlags,
@@ -100,7 +109,16 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   fastify.patch('/plans/:planId', { preHandler: requirePlatformAdmin }, updatePlan);
   fastify.delete('/plans/:planId', { preHandler: requirePlatformAdmin }, deletePlan);
 
+  // Plan feature catalog
+  fastify.get('/plan-features', { preHandler: requirePlatformAdmin }, listPlanFeatures);
+  fastify.post('/plan-features', { preHandler: requirePlatformAdmin }, createPlanFeature);
+  fastify.patch('/plan-features/:featureId', { preHandler: requirePlatformAdmin }, updatePlanFeature);
+  fastify.delete('/plan-features/:featureId', { preHandler: requirePlatformAdmin }, deletePlanFeature);
+
   fastify.get('/billing/overview', { preHandler: requirePlatformAdmin }, getBillingOverview);
+  fastify.get('/billing/logs', { preHandler: requirePlatformAdmin }, getPlatformPaymentLogs);
+  fastify.get('/billing/logs/orgs', { preHandler: requirePlatformAdmin }, getPaymentLogOrgs);
+  fastify.get('/billing/logs/:logId/events', { preHandler: requirePlatformAdmin }, getPaymentLogEvents);
   fastify.patch(
     '/billing/organizations/:orgId',
     { preHandler: requirePlatformAdmin },

@@ -360,6 +360,38 @@ function requireProjectAccess(options = {}) {
   };
 }
 
+// Require Super Admin or Admin role (for restricted operations like folder deletion)
+async function requireSuperAdminOrAdmin(request, reply) {
+  if (!request.user) {
+    return reply.status(401).send({
+      error: "Unauthorized",
+      message: "Authentication required",
+      code: "UNAUTHORIZED",
+    });
+  }
+
+  const roleName = (request.user.role || request.user.roleRelation?.name || '').trim().toLowerCase();
+  const roleId = request.user.roleId;
+
+  const isSuperAdmin =
+    roleName === 'super admin' ||
+    roleName === 'superadmin' ||
+    roleName === 'super_admin' ||
+    roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
+
+  const isAdmin =
+    roleName === 'admin' ||
+    roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+
+  if (!isSuperAdmin && !isAdmin) {
+    return reply.status(403).send({
+      error: "Forbidden",
+      message: "Only Super Admin and Admin roles are authorized to delete folders.",
+      code: "FOLDER_DELETE_RESTRICTED",
+    });
+  }
+}
+
 module.exports = {
   authenticate,
   optionalAuthenticate,
@@ -367,4 +399,5 @@ module.exports = {
   requirePermission,
   requireAnyPermission,
   requireProjectAccess,
+  requireSuperAdminOrAdmin,
 };

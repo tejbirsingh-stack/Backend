@@ -128,7 +128,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
       outputs = {
-        'mp4:1080p': { url: outputUrl },
+        'mp4': { url: outputUrl },
         'jpg:300x#10%': { url: thumbUrl1 },
         'jpg:300x#30%': { url: thumbUrl2 },
         'jpg:300x#50%': { url: thumbUrl3 },

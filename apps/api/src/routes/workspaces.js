@@ -21,13 +21,17 @@ const {
   validateGuestUser,
   searchGuestUsers,
   findAccessLevels,
-  deleteWorkspace
+  deleteWorkspace,
+  findFolderTreeData,
+  deleteFolder,
+  restoreFolder
 } = require('../controller');
-const { authenticate, requirePermission } = require('../middleware/auth-middleware');
+const { authenticate, requirePermission, requireSuperAdminOrAdmin } = require('../middleware/auth-middleware');
 
 module.exports = function (fastify, opts, done) {
   const canRead = { preHandler: [authenticate] };
   const canManageFolders = { preHandler: [authenticate, requirePermission('manage_root_folders')] };
+  const canDeleteFolders = { preHandler: [authenticate, requireSuperAdminOrAdmin] };
   const canUpload = { preHandler: [authenticate, requirePermission('upload_media')] };
 
   const isSuperAdminUser = (req) => {
@@ -60,6 +64,10 @@ module.exports = function (fastify, opts, done) {
   fastify.put('/folder/update/:id', canManageFolders, updateFolder);
   fastify.put('/folder/:id/move', canManageFolders, moveFolder);
   fastify.get('/folder/find-all-data/:id', canRead, findFolderData);
+  fastify.get('/folder/find-all-tree/:id', canRead, findFolderTreeData);
+  fastify.delete('/folder/delete/:id', canDeleteFolders, deleteFolder);
+  fastify.post('/folder/delete/:id', canDeleteFolders, deleteFolder);
+  fastify.post('/folder/restore/:id', canRead, restoreFolder);
   fastify.post('/project/add/:workspaceId', canUpload, createProject);
   fastify.put('/project/update/:id', canUpload, updateProject);
   fastify.delete('/project/delete/:id', canRead, deleteProject);

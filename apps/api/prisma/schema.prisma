@@ -323,6 +323,15 @@ enum MediaAssetOwnerType {
   FOLDER
 }
 
+enum ReviewStatus {
+  New
+  In_Progress @map("In-Progress")
+  Request_for_Review @map("Request for Review")
+  Under_Review @map("Under Review")
+  Approved
+  Rejected
+}
+
 model Asset {
   id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   orgId        String       @db.Uuid
@@ -333,6 +342,7 @@ model Asset {
   visibility   String       @default("public") @db.VarChar(50) // 'public', 'private'
   compressedKey     String?      @db.VarChar(1000) // Deterministic key for the compressed proxy file
   aiTags       Json         @default("[]") @db.JsonB
+  reviewStatus ReviewStatus @default(New)
 
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
@@ -1086,22 +1096,55 @@ model Plan {
   maxUsers           Int      @default(2)
   maxWorkspaces      Int      @default(1)
   maxProjects        Int      @default(1)
-  features           Json     @default("[]") @db.JsonB
+  showProjectQuota   Boolean  @default(true)
+  showStorageQuota   Boolean  @default(true)
+  showMemberQuota    Boolean  @default(true)
+  stripeProductId    String?  @db.VarChar(255) // Stripe Product ID (stable, rename-safe)
   monthlyPriceId     String?  @db.VarChar(255) // Stripe monthly price id
   yearlyPriceId      String?  @db.VarChar(255) // Stripe yearly price id
   isPublic           Boolean  @default(true)
   isFeatured         Boolean  @default(false)
+  hasAI              Boolean  @default(false)
   sortOrder          Int      @default(0)
   ctaLabel           String?  @db.VarChar(100)
   isActive           Boolean  @default(true)
   createdAt          DateTime @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
-  organizations Organization[]
+  organizations      Organization[]
+  featureSelections  PlanFeatureSelection[]
 
   @@index([isPublic, sortOrder])
   @@map("plans")
 }
+
+/// Master catalog of all available plan feature options
+model PlanFeature {
+  id          String   @id @default(uuid()) @db.VarChar(255)
+  name        String   @unique @db.VarChar(200)
+  description String?  @db.Text
+  sortOrder   Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  planSelections PlanFeatureSelection[]
+
+  @@map("plan_features")
+}
+
+/// Join table: which PlanFeatures are selected for each Plan
+model PlanFeatureSelection {
+  planId    String @db.VarChar(255)
+  featureId String @db.VarChar(255)
+
+  plan    Plan        @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature PlanFeature @relation(fields: [featureId], references: [id], onDelete: Cascade)
+
+  @@id([planId, featureId])
+  @@map("plan_feature_selections")
+}
+
 
 /// Lightweight landing page CMS (existing table: landing_page_content)
 model LandingPage {
@@ -1288,3 +1331,5 @@ model GlobalAdminSetting {
 
   @@map("global_admin_settings")
 }
+
+

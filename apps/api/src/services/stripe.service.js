@@ -142,6 +142,113 @@ class StripeService {
   }
 
   /**
+   * Sync a Noah Plan to Stripe Product Catalogue
+   * @param {Object} planData - Plan details from database
+   * @returns {Object} - Object containing stripeProductId, monthlyPriceId, yearlyPriceId
+   */
+  async syncPlanToStripe(planData) {
+    try {
+      const stripe = await getStripe();
+      // Use stored stripeProductId if available (rename-safe), fall back to slug for new plans
+      const slugId = planData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const productId = planData.stripeProductId || slugId;
+
+      // 1. Sync Product
+      let product;
+      try {
+        product = await stripe.products.retrieve(productId);
+        product = await stripe.products.update(productId, {
+          name: planData.name,
+          description: planData.description || undefined,
+          active: planData.isActive,
+        });
+      } catch (error) {
+        if (error.code === 'resource_missing' || error.statusCode === 404) {
+          product = await stripe.products.create({
+            id: slugId, // always create with slug-based ID
+            name: planData.name,
+            description: planData.description || undefined,
+            active: planData.isActive,
+          });
+        } else {
+          throw error;
+        }
+      }
+
+      // Helper to find or create price
+      const findOrCreatePrice = async (cents, interval, existingPriceId) => {
+        if (cents <= 0) return null; // free tier, no price needed
+        
+        if (existingPriceId) {
+          try {
+            const existing = await stripe.prices.retrieve(existingPriceId);
+            if (
+              existing.unit_amount === cents &&
+              existing.recurring?.interval === interval &&
+              existing.product === product.id &&
+              existing.active
+            ) {
+              return existing.id; // Still valid, reuse
+            }
+            // Archive the old price because it no longer matches
+            await stripe.prices.update(existingPriceId, { active: false }).catch(() => {});
+          } catch (e) {
+            // Ignore retrieve/update errors and just create a new one
+          }
+        }
+
+        // Before creating, search for an existing active price with the same amount on this product
+        try {
+          const list = await stripe.prices.list({ product: product.id, active: true, limit: 20 });
+          const match = list.data.find(
+            (p) => p.unit_amount === cents && p.recurring?.interval === interval
+          );
+          if (match) return match.id;
+        } catch (_e) { /* ignore list errors */ }
+
+        // Create new price
+        const price = await stripe.prices.create({
+          product: product.id,
+          unit_amount: cents,
+          currency: 'usd',
+          recurring: { interval },
+        });
+        return price.id;
+      };
+
+      const monthlyPriceId = await findOrCreatePrice(planData.monthlyPriceCents, 'month', planData.monthlyPriceId);
+      const yearlyPriceId = await findOrCreatePrice(planData.yearlyPriceCents, 'year', planData.yearlyPriceId);
+
+      return {
+        stripeProductId: product.id,
+        monthlyPriceId,
+        yearlyPriceId,
+      };
+    } catch (error) {
+      console.error('[StripeService] Error syncing plan to Stripe:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Archive a Stripe Product (when deleted in NOAH)
+   * @param {string} productId - Stripe Product ID (plan slug)
+   */
+  async archivePlanInStripe(productId) {
+    try {
+      const stripe = await getStripe();
+      await stripe.products.update(productId, { active: false });
+      return true;
+    } catch (error) {
+      if (error.code === 'resource_missing' || error.statusCode === 404) {
+        return true; // Already gone
+      }
+      console.error('[StripeService] Error archiving plan in Stripe:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Dynamically create a price in Stripe
    */
   async createPrice({ amountCents, interval = 'month', productName = 'Noah Plan' }) {
@@ -251,7 +358,7 @@ class StripeService {
     try {
       const stripe = await getStripe();
       return await stripe.checkout.sessions.retrieve(sessionId, {
-        expand: ['line_items', 'customer', 'invoice'],
+        expand: ['line_items', 'customer', 'invoice', 'subscription', 'subscription.latest_invoice'],
       });
     } catch (error) {
       console.error('[StripeService] Error retrieving checkout session:', error);
@@ -343,6 +450,21 @@ class StripeService {
     } catch (error) {
       console.error('[StripeService] Error listing invoices:', error);
       return { data: [] };
+    }
+  }
+
+  /**
+   * Retrieve a single Stripe Invoice by ID
+   * @param {string} invoiceId
+   */
+  async retrieveInvoice(invoiceId) {
+    try {
+      const stripe = await getStripe();
+      if (!invoiceId) return null;
+      return await stripe.invoices.retrieve(invoiceId);
+    } catch (error) {
+      console.error('[StripeService] Error retrieving invoice:', error);
+      return null;
     }
   }
 

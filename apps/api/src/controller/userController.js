@@ -458,7 +458,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
   try {
     const { userIds, action } = request.body; // action: 'active', 'inactive', 'delete'
 
-    // 1. Verify Super Admin role
+    // 1. Verify Super Admin or Admin role
     let currentUserRole = request.user?.role || "";
     if (request.user?.id) {
       const liveUser = await request.server.prisma.user.findUnique({
@@ -473,11 +473,11 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     }
     const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
 
-    if (normalizedRole !== "superadmin") {
+    if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
       return reply.status(403).send({
         success: false,
         error: "Forbidden",
-        message: "Access denied. Only Super Admin can edit users.",
+        message: "Access denied. Admin permissions required.",
       });
     }
 
@@ -490,20 +490,57 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     }
 
     if (action === 'delete') {
+      // ONLY Super Admin can delete users
+      if (normalizedRole !== "superadmin") {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Only Super Admin can delete users.",
+        });
+      }
+
+      // Fetch target users to prevent deleting self or other Super Admins
+      const targetUsers = await request.server.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        include: { roleRelation: true }
+      });
+
+      const safeUserIdsToDelete = targetUsers
+        .filter((u) => {
+          if (u.id === request.user.id) return false; // Prevent self deletion
+          const rName = (u.roleRelation?.name || u.role || '').toLowerCase().replace(/[_ -]+/g, "");
+          if (rName === 'superadmin') return false; // Prevent Super Admin deletion
+          return true;
+        })
+        .map((u) => u.id);
+
+      if (safeUserIdsToDelete.length === 0) {
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: "Super Admin and your own account cannot be deleted.",
+        });
+      }
+
       await request.server.prisma.user.deleteMany({
-        where: { id: { in: userIds } }
+        where: { id: { in: safeUserIdsToDelete } }
+      });
+
+      return reply.send({
+        success: true,
+        message: `Successfully deleted ${safeUserIdsToDelete.length} user(s)`
       });
     } else {
       await request.server.prisma.user.updateMany({
         where: { id: { in: userIds } },
         data: { status: action === 'active' ? 'active' : 'pending' }
       });
-    }
 
-    return reply.send({
-      success: true,
-      message: `Successfully updated ${userIds.length} users`
-    });
+      return reply.send({
+        success: true,
+        message: `Successfully updated ${userIds.length} user(s)`
+      });
+    }
 
   } catch (error) {
     request.log.error(error);

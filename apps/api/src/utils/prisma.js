@@ -1,7 +1,6 @@
 const { PrismaClient } = require('@prisma/client');
 
 const globalForPrisma = global;
-
 // Always reuse a single PrismaClient instance across the entire process.
 // Appending ?connection_limit=10&pool_timeout=20 caps the connection pool
 // so we never exhaust Postgres's max_connections.

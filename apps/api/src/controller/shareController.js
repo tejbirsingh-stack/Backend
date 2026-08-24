@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const { handleMediaRedirectOrServe } = require('./mediaController');
 const { broadcastToRoom } = require('./realtimeController');
+const { resolveOrgBranding } = require('../services/branding.service');
 const { createNotification } = require('./notificationController');
 const B2StorageService = require('../b2-storage.cjs');
 
@@ -169,6 +170,9 @@ async function createShareLink(req, reply) {
       const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
       const shareUrl = `${appBaseUrl.replace(/\/$/, '')}/s/${recipientToken}`;
 
+      const orgBranding = await resolveOrgBranding(prisma, orgId, { forEmail: true });
+      const emailLogoUrl = orgBranding?.logoUrl || 'https://qa.noahcloud.ai/noah-logo.png';
+
       await emailService.sendShareInvite(email.trim(), {
         assetTitle: asset.originalName || asset.title || 'Media File',
         shareUrl,
@@ -177,6 +181,8 @@ async function createShareLink(req, reply) {
         hasPassword: Boolean(passwordHash),
         password: finalPassword ? finalPassword.trim() : null,
         senderName: user.name || user.email || 'NOAH Team Member',
+        orgLogoUrl: emailLogoUrl,
+        orgName: orgBranding?.accountName || null,
       });
     }
 
@@ -446,6 +452,9 @@ async function resendShareLinkInvite(req, reply) {
 
     const appBaseUrl = req.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
 
+    const orgBranding = await resolveOrgBranding(prisma, shareLink.orgId, { forEmail: true });
+    const emailLogoUrl = orgBranding?.logoUrl || 'https://qa.noahcloud.ai/noah-logo.png';
+
     for (const recipient of shareLink.recipients) {
       const shareUrl = `${appBaseUrl.replace(/\/$/, '')}/s/${recipient.token}`;
       await emailService.sendShareInvite(recipient.email, {
@@ -455,6 +464,8 @@ async function resendShareLinkInvite(req, reply) {
         permissions: shareLink.permissions,
         hasPassword: Boolean(shareLink.passwordHash),
         senderName: user.name || user.email || 'NOAH Team Member',
+        orgLogoUrl: emailLogoUrl,
+        orgName: orgBranding?.accountName || null,
       });
     }
 
@@ -573,14 +584,17 @@ async function validateShareToken(req, reply) {
       }
     }
 
+    // Build a permanent publicly-accessible logo URL via the proxy endpoint
+    // This works even with a private B2 bucket — no presigned URLs needed
+    const reqOrigin = req.headers.origin || process.env.WEBHOOK_HOST || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
+    const publicApiBase = (process.env.WEBHOOK_HOST || process.env.APP_URL || reqOrigin).replace(/\/$/, '');
+    const useProxyUrl = !publicApiBase.includes('localhost');
+
     let logoUrl = null;
-    if (shareLink.permissions?.watermark !== false) {
-      logoUrl = shareLink.organization?.metadata?.logoUrl || null;
-      if (shareLink.organization?.metadata?.logoKey) {
-        if (b2Storage.isEnabled()) {
-          logoUrl = await b2Storage.getPresignedUrl(shareLink.organization.metadata.logoKey);
-        }
-      }
+    if (shareLink.orgId) {
+      logoUrl = useProxyUrl
+        ? `${publicApiBase}/api/public/branding/logo/${shareLink.orgId}`
+        : (shareLink.organization?.metadata?.logoUrl || null);
     }
 
     let branding = null;
@@ -589,11 +603,13 @@ async function validateShareToken(req, reply) {
         where: { orgId: shareLink.orgId }
       });
       if (dbBranding) {
-        let bLogoUrl = dbBranding.logoUrl;
+        // Use proxy URL for logo — works with private B2 bucket (streams image via server)
+        const bLogoUrl = useProxyUrl
+          ? `${publicApiBase}/api/public/branding/logo/${shareLink.orgId}`
+          : (dbBranding.logoUrl || logoUrl || null);
+
+        // headerImageUrl still uses presigned URL (header images are for guest page background, not email)
         let bHeaderImageUrl = dbBranding.headerImageUrl;
-        if (dbBranding.logoKey && b2Storage.isEnabled()) {
-          bLogoUrl = await b2Storage.getPresignedUrl(dbBranding.logoKey).catch(() => dbBranding.logoUrl);
-        }
         if (dbBranding.headerImageKey && b2Storage.isEnabled()) {
           bHeaderImageUrl = await b2Storage.getPresignedUrl(dbBranding.headerImageKey).catch(() => dbBranding.headerImageUrl);
         }
@@ -900,6 +916,56 @@ async function createShareAnnotation(req, reply) {
 }
 
 
+async function getPublicOrgLogo(req, reply) {
+  const { prisma } = req.server;
+  const { orgId } = req.params;
+  const FALLBACK_LOGO = 'https://qa.noahcloud.ai/noah-logo.png';
+
+  try {
+    if (!orgId) {
+      return reply.redirect(FALLBACK_LOGO, 302);
+    }
+
+    // Fetch branding from DB to get logoKey
+    const branding = await prisma.organisationBrandingSetting.findUnique({ where: { orgId } }).catch(() => null);
+    const org = !branding ? await prisma.organization.findUnique({ where: { id: orgId } }).catch(() => null) : null;
+    const logoKey = branding?.logoKey || org?.metadata?.logoKey || null;
+
+    if (!logoKey) {
+      // No custom logo — redirect to default
+      return reply.redirect(FALLBACK_LOGO, 302);
+    }
+
+    if (!b2Storage.isEnabled()) {
+      return reply.redirect(FALLBACK_LOGO, 302);
+    }
+
+    // Proxy the image directly from B2 using authenticated SDK (GetObject)
+    // This works even with a PRIVATE B2 bucket because our server authenticates
+    const { GetObjectCommand } = require('@aws-sdk/client-s3');
+    const command = new GetObjectCommand({
+      Bucket: b2Storage.bucket,
+      Key: logoKey,
+    });
+
+    const s3Response = await b2Storage.s3Client.send(command);
+
+    const contentType = s3Response.ContentType || 'image/png';
+    const contentLength = s3Response.ContentLength;
+
+    reply.header('Content-Type', contentType);
+    reply.header('Cache-Control', 'public, max-age=86400'); // cache 24h in CDN/proxy
+    if (contentLength) {
+      reply.header('Content-Length', String(contentLength));
+    }
+
+    return reply.send(s3Response.Body);
+  } catch (err) {
+    req.log.warn('[getPublicOrgLogo] Failed to proxy logo for org', orgId, err.message);
+    return reply.redirect(FALLBACK_LOGO, 302);
+  }
+}
+
 module.exports = {
   createShareLink,
   getShareLinks,
@@ -915,4 +981,5 @@ module.exports = {
   getShareAnnotations,
   createShareAnnotation,
   updateShareLink,
+  getPublicOrgLogo,
 };

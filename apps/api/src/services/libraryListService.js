@@ -44,7 +44,14 @@ async function listItems(prisma, params) {
     Prisma.sql`("status" IS NULL OR "status" NOT IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`,
     Prisma.sql`"deletedAt" IS NULL`
   ];
-  const folderConditions = [];
+  const folderConditions = [
+    Prisma.sql`id::text NOT IN (
+      SELECT "ownerId"::text FROM "assets" 
+      WHERE "ownerId" IS NOT NULL 
+      AND "ownerType" = 'FOLDER' 
+      AND ("status" IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted') OR "deletedAt" IS NOT NULL OR "deletionReason" ILIKE '%Deleted with folder%')
+    )`
+  ];
   const projectConditions = [];
 
   if (view !== 'shared') {
@@ -77,6 +84,7 @@ async function listItems(prisma, params) {
 
     if (!isSpecificContainer) {
       folderConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
+      folderConditions.push(Prisma.sql`("parent_folder_id" IS NULL OR "parent_folder_id" = '')`);
       projectConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
     }
     projectConditions.push(Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`);
@@ -368,6 +376,7 @@ async function listItems(prisma, params) {
         uploadedBy: a.uploadedByUserId || null,
         tags: dbTags,
         status: a.status,
+        visibility: a.visibility,
         workspaceId: a.workspaceId,
         customMetadata,
         reviewStatus: customMetadata.reviewStatus || 'New',
@@ -402,6 +411,8 @@ async function listItems(prisma, params) {
         isFolder: true,
         createdAt: f.createdAt.toISOString(),
         folderColor: f.color || undefined,
+        color: f.color,
+        visibility: f.visibility,
         workspaceId: f.workspaceId,
         parentFolderId: f.parentFolderId || null,
         linkedProjectIds: f.sources ? f.sources.map(ps => ps.projectId) : [],
@@ -418,6 +429,7 @@ async function listItems(prisma, params) {
         isProject: true,
         folderColor: p.color || undefined,
         createdAt: p.createdAt.toISOString(),
+        visibility: p.visibility,
         workspaceId: p.workspaceId,
         isSharedByMe: Boolean(p.createdById && p.createdById === params.userId),
         itemCount: p._count?.sources || 0

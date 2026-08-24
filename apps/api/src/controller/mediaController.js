@@ -9,6 +9,7 @@ const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
 const emailService = require('../services/email-service');
+const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 
 const { Queue } = require("bullmq");
@@ -1041,6 +1042,7 @@ module.exports.getMediaAssets = async (request, reply) => {
         },
         transcodingStatus: transcodeJob?.status || null,
         uploadedByUserId: asset.uploadedByUserId,
+        visibility: asset.visibility,
       };
     });
 
@@ -1121,6 +1123,7 @@ module.exports.searchMediaAssets = async (request, reply) => {
         },
         compressionStatus: transcodeJob?.status || "completed",
         transcodingStatus: transcodeJob?.status || null,
+        visibility: asset.visibility,
       };
     });
 
@@ -1343,130 +1346,7 @@ module.exports.downloadFile = async (request, reply) => {
           b2Key = proxy ? proxy.filePath : original?.filePath;
         }
 
-        // ── Download notification (Privacy: Share Link Activity) ──────────
-        if (request.user) {
-          try {
-            const downloaderId = request.user.id;
-            const creatorId = asset.uploadedByUserId;
 
-            console.log(`[downloadNotif] downloader=${downloaderId} creator=${creatorId} asset=${asset.id}`);
-
-            if (creatorId && creatorId !== downloaderId) {
-              // Ghost mode: if the downloader has ghost mode ON, skip notification
-              const downloaderDb = await request.server.prisma.user.findUnique({
-                where: { id: downloaderId },
-                select: { shareLinkActivityEnabled: true, name: true, email: true }
-              });
-              const ghostMode = downloaderDb && downloaderDb.shareLinkActivityEnabled === false;
-              console.log(`[downloadNotif] ghostMode=${ghostMode} shareLinkActivityEnabled=${downloaderDb?.shareLinkActivityEnabled}`);
-
-              if (!ghostMode) {
-                // Check if the downloader accessed this asset via a ShareLink OR AssetUser/AssetGroup
-                const hasShareLink = await request.server.prisma.shareLink.findFirst({
-                  where: {
-                    assetId: asset.id,
-                    revokedAt: null,
-                    OR: [
-                      // Email-mode share: recipient's email matches downloader's email
-                      {
-                        recipients: {
-                          some: {
-                            email: { equals: downloaderDb?.email || request.user.email, mode: 'insensitive' },
-                            revokedAt: null
-                          }
-                        }
-                      },
-                      // Public link: link is public (anyone with link can access)
-                      { visibility: 'public' },
-                    ]
-                  }
-                });
-
-                const hasAssetUser = await request.server.prisma.assetUser.findFirst({
-                  where: { assetId: asset.id, userId: downloaderId }
-                });
-
-                const hasAssetGroup = await request.server.prisma.assetGroup.findFirst({
-                  where: {
-                    assetId: asset.id,
-                    group: { members: { some: { userId: downloaderId } } }
-                  }
-                });
-
-                console.log(`[downloadNotif] hasShareLink=${!!hasShareLink} hasAssetUser=${!!hasAssetUser} hasAssetGroup=${!!hasAssetGroup}`);
-
-                const isSharedWithDownloader = hasShareLink || hasAssetUser || hasAssetGroup;
-
-                if (isSharedWithDownloader) {
-                  // Fetch creator to check their privacy setting and get their email
-                  const creator = await request.server.prisma.user.findUnique({
-                    where: { id: creatorId },
-                    select: { email: true, name: true, shareLinkActivityEnabled: true }
-                  });
-                  console.log(`[downloadNotif] creator=${creator?.email} creatorShareActivity=${creator?.shareLinkActivityEnabled}`);
-
-                  if (creator && creator.shareLinkActivityEnabled !== false) {
-                    const downloaderName = request.user.name || downloaderDb?.name || request.user.email || downloaderDb?.email || 'A user';
-
-                    // 1. In-app + WebSocket notification to the creator
-                    await createNotification(
-                      request.server,
-                      creatorId,
-                      asset.orgId,
-                      'media_downloaded',
-                      'Media Downloaded',
-                      `${downloaderName} downloaded your shared media: ${asset.title}`,
-                      asset.id
-                    );
-                    console.log(`[downloadNotif] ✅ In-app notification sent to creator ${creatorId}`);
-
-                    // 2. Email notification to the creator
-                    if (creator.email) {
-                      try {
-                        const appBase = request.headers?.origin || process.env.FRONTEND_URL || 'http://localhost:3002';
-                        const assetUrl = `${appBase.replace(/\/$/, '')}/home?asset=${asset.id}`;
-                        await request.server.emailService.sendEmail({
-                          to: creator.email,
-                          subject: `${downloaderName} downloaded your shared media on Noah`,
-                          text: `Hi ${creator.name || 'there'},\n\n${downloaderName} has downloaded the media file "${asset.title}" that you shared.\n\nView it here: ${assetUrl}\n\nThanks,\nNoah Platform`,
-                          html: `
-                            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
-                              <div style="text-align: center; margin-bottom: 24px;">
-                                <h2 style="color: #4f46e5; margin: 0;">📥 Media Downloaded</h2>
-                              </div>
-                              <p style="font-size: 15px; color: #1e293b;">Hi ${creator.name || 'there'},</p>
-                              <p style="font-size: 15px; color: #334155; line-height: 1.5;">
-                                <strong>${downloaderName}</strong> has downloaded your shared media file
-                                <strong>"${asset.title}"</strong>.
-                              </p>
-                              <div style="text-align: center; margin: 32px 0;">
-                                <a href="${assetUrl}" style="background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 15px;">View Media</a>
-                              </div>
-                              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
-                              <p style="font-size: 12px; color: #94a3b8; text-align: center;">You can disable these notifications from Profile &rarr; Privacy &rarr; Share Link Activity.</p>
-                            </div>
-                          `
-                        });
-                        console.log(`[downloadNotif] ✅ Email sent to ${creator.email}`);
-                      } catch (emailErr) {
-                        console.warn('[downloadNotif] Email send failed:', emailErr.message);
-                      }
-                    }
-                  } else {
-                    console.log(`[downloadNotif] ⏭ Skipped — creator has share link activity disabled`);
-                  }
-                } else {
-                  console.log(`[downloadNotif] ⏭ Skipped — downloader has no share link / access record for this asset`);
-                }
-              }
-            } else {
-              console.log(`[downloadNotif] ⏭ Skipped — downloader is the creator or no creator`);
-            }
-          } catch (notifErr) {
-            console.warn('[downloadNotif] Notification error:', notifErr.message);
-          }
-        } else {
-          console.log(`[downloadNotif] ⏭ Skipped — no authenticated user on request`);
         }
       }
     }
@@ -2345,11 +2225,12 @@ module.exports.deleteMediaFile = async (request, reply) => {
     // If it's a database UUID, handle deletion logic based on role
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
       try {
-        // Find the asset first to get uploadedByUserId
-        const assetToUpdate = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+        // Check if the filename ID corresponds to an Asset or a Folder
+        let assetToUpdate = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+        let folderToDelete = null;
 
         if (!assetToUpdate) {
-          return reply.code(404).send({ success: false, error: "Asset not found" });
+          folderToDelete = await request.server.prisma.folder.findUnique({ where: { id: filename } });
         }
 
         const liveUser = await request.server.prisma.user.findUnique({
@@ -2358,6 +2239,45 @@ module.exports.deleteMediaFile = async (request, reply) => {
         });
         const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
         let userRole = rawRoleName.trim().toLowerCase();
+        const roleId = liveUser?.roleId || request.user?.roleId;
+
+        const isSuperAdminOrAdmin =
+          userRole === 'super admin' ||
+          userRole === 'superadmin' ||
+          userRole === 'super_admin' ||
+          userRole === 'admin' ||
+          roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
+          roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+
+        // If target resource is a Folder, enforce Super Admin or Admin role requirement
+        if (folderToDelete) {
+          if (folderToDelete.name && folderToDelete.name.trim().toLowerCase() === 'restore') {
+            return reply.code(400).send({
+              success: false,
+              error: "BadRequest",
+              message: "The Restore folder is a protected system folder and cannot be deleted."
+            });
+          }
+
+          if (!isSuperAdminOrAdmin) {
+            return reply.code(403).send({
+              success: false,
+              error: "Forbidden",
+              message: "Only Super Admin and Admin roles are authorized to delete folders."
+            });
+          }
+
+          await request.server.prisma.projectSource.deleteMany({ where: { folderId: filename } }).catch(() => null);
+          await request.server.prisma.folderUser.deleteMany({ where: { folderId: filename } }).catch(() => null);
+          await request.server.prisma.favorite.deleteMany({ where: { folderId: filename } }).catch(() => null);
+          await request.server.prisma.folder.delete({ where: { id: filename } });
+
+          return reply.send({ success: true, message: "Folder deleted successfully" });
+        }
+
+        if (!assetToUpdate) {
+          return reply.code(404).send({ success: false, error: "Asset or folder not found" });
+        }
 
         // Check if asset is linked to any project
         const projectSource = await request.server.prisma.projectSource.findFirst({
@@ -2380,15 +2300,33 @@ module.exports.deleteMediaFile = async (request, reply) => {
           }
         }
 
-        // 1. Super Admin: Permanent Delete Directly
-        if (userRole === 'super admin' || userRole === 'superadmin') {
-          return await module.exports.deletePermanently(request, reply);
-        }
-
         const reason = request.body?.reason || request.body?.deletionReason || null;
 
         if (reason && reason.length > 500) {
           return reply.code(400).send({ success: false, error: "Deletion reason cannot exceed 500 characters" });
+        }
+
+        // 2. Admin: Submit for Super Admin review (pending_super_admin status, NOT trash)
+        const isAdminRole = userRole === 'admin' || roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+        if (isAdminRole) {
+          const asset = await request.server.prisma.asset.update({
+            where: { id: filename },
+            data: {
+              status: "pending_super_admin",
+              deletedAt: new Date(),
+              deletedByUserId: request.user.id,
+              deletionReason: reason || `File deletion requested by Admin: '${assetToUpdate.title}'`
+            }
+          });
+
+          const userName = liveUser?.name || liveUser?.email || request.user?.name || 'Admin';
+          await notifyRole(request.server, asset.orgId || request.user?.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) requested deletion for file: '${asset.title}'. Approval needed.`, asset.id);
+
+          return reply.send({
+            success: true,
+            status: "pending_super_admin",
+            message: "File deletion request submitted for Super Admin review."
+          });
         }
 
         // 3. Editor: Soft Delete (goes to Trash normally)
@@ -2492,8 +2430,13 @@ module.exports.getPendingDeletions = async (request, reply) => {
 
     const orgId = liveUser?.orgId || request.user?.orgId;
 
-    const isSuperAdmin = userRole === 'super admin' || userRole === 'superadmin';
-    const isAdmin = userRole === 'admin' || isSuperAdmin;
+    const roleId = liveUser?.roleId || request.user?.roleId;
+    const isSuperAdmin =
+      userRole === 'super admin' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin' ||
+      roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
+    const isAdmin = userRole === 'admin' || isSuperAdmin || roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
 
     if (!isAdmin) {
       return reply.code(403).send({ success: false, error: 'Unauthorized to view pending deletions' });
@@ -2645,19 +2588,81 @@ module.exports.getPendingDeletions = async (request, reply) => {
       });
     });
 
-    // 2. Process Standalone assets pending deletion not attached to any project
+    // 2. Process Standalone assets & Folder Deletion Requests
+    const folderRequestMap = new Map();
     const standaloneAssets = [];
+
     assets.forEach((asset) => {
       if (processedAssetIds.has(asset.id)) return;
       const reason = asset.deletionReason || '';
-      if (!reason.includes('Deleted with project') && !reason.includes('Selected deletion from project')) {
+
+      if (reason.includes('Deleted with project') || reason.includes('Selected deletion from project')) {
+        return;
+      }
+
+      const folderMatch = reason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]\s*(.*)/i);
+      if (folderMatch) {
+        const folderId = folderMatch[1];
+        const folderName = folderMatch[2] || 'Folder';
+
+        if (!folderRequestMap.has(folderId)) {
+          folderRequestMap.set(folderId, {
+            id: folderId,
+            title: folderName,
+            status: 'Pending Review',
+            rawStatus: asset.status,
+            deletedAt: asset.deletedAt,
+            deletionReason: reason,
+            deletionType: 'Folder Deletion Request',
+            type: 'folder',
+            isFolderRequest: true,
+            workspaceName: 'Workspace',
+            deletedBy: asset.deletedBy,
+            deletedFiles: []
+          });
+        }
+        const isFolderPlaceholder = asset.ownerType === 'FOLDER_REQUEST' || (asset.type === 'folder' && asset.title.trim().toLowerCase() === folderName.trim().toLowerCase());
+        const isDirectFile = String(asset.ownerId) === String(folderId) && asset.ownerType === 'FOLDER';
+        if (isDirectFile && !isFolderPlaceholder) {
+          folderRequestMap.get(folderId).deletedFiles.push({
+            id: asset.id,
+            title: asset.title || 'Untitled item',
+            type: asset.type || 'file',
+            isFolder: asset.type === 'folder'
+          });
+        }
+      } else {
         standaloneAssets.push(asset);
       }
     });
 
+    const formattedFolderRequests = await Promise.all(Array.from(folderRequestMap.values()).map(async fr => {
+      const childFolders = await request.server.prisma.folder.findMany({
+        where: { parentId: fr.id },
+        select: { id: true, name: true }
+      }).catch(() => []);
+
+      const existingFileIds = new Set(fr.deletedFiles.map(f => f.id));
+      childFolders.forEach(cf => {
+        if (!existingFileIds.has(cf.id)) {
+          fr.deletedFiles.unshift({
+            id: cf.id,
+            title: cf.name || 'Subfolder',
+            type: 'folder',
+            isFolder: true
+          });
+        }
+      });
+
+      return {
+        ...fr,
+        itemCount: fr.deletedFiles.length
+      };
+    }));
+
     return reply.send({
       success: true,
-      data: [...formattedProjects, ...standaloneAssets]
+      data: [...formattedProjects, ...formattedFolderRequests, ...standaloneAssets]
     });
   } catch (error) {
     return reply.code(500).send({ success: false, error: error.message });
@@ -2733,6 +2738,35 @@ module.exports.rejectDelete = async (request, reply) => {
 
       let updateData = {};
       let message = "";
+
+      if (existingAsset.type === 'folder') {
+        const targetFolderId = existingAsset.ownerId || existingAsset.id;
+        await request.server.prisma.asset.deleteMany({
+          where: {
+            type: 'folder',
+            ownerType: 'FOLDER',
+            OR: [{ ownerId: targetFolderId }, { deletionReason: { contains: targetFolderId } }]
+          }
+        }).catch(() => null);
+
+        await request.server.prisma.asset.updateMany({
+          where: {
+            type: { not: 'folder' },
+            OR: [
+              { ownerId: targetFolderId },
+              { deletionReason: { contains: targetFolderId } }
+            ]
+          },
+          data: {
+            status: 'active',
+            deletedAt: null,
+            deletedByUserId: null,
+            deletionReason: null
+          }
+        });
+
+        return reply.send({ success: true, message: 'Folder and inner items restored to Active' });
+      }
 
       if (userRole === 'super admin' || userRole === 'superadmin') {
         // Super Admin rejects → fully restore to active, clear all deletion fields
@@ -3970,6 +4004,30 @@ module.exports.updateAssetReviewStatus = async (request, reply) => {
       });
     }
 
+    // --- DISPATCH NOTIFICATIONS ---
+    const previousStatus = currentCustomProps.reviewStatus || 'New';
+    if (previousStatus !== reviewStatus && ['Request for Review', 'Approved', 'Rejected'].includes(reviewStatus)) {
+      if (asset.uploadedByUserId && asset.uploadedByUserId !== request.user.id) {
+        const statusVerb = 
+          reviewStatus === 'Request for Review' ? 'requested a review for' :
+          reviewStatus === 'Approved' ? 'approved' : 'rejected';
+          
+        try {
+          await createNotification(
+            request.server,
+            asset.uploadedByUserId,
+            orgId,
+            'review_status_updated',
+            `Status Updated: ${reviewStatus}`,
+            `${request.user.name || 'A team member'} has ${statusVerb} "${asset.title}".`,
+            asset.id
+          );
+        } catch (notifErr) {
+          request.log.error('Failed to create review status notification:', notifErr);
+        }
+      }
+    }
+
     return reply.send({ success: true, reviewStatus });
   } catch (error) {
     console.error("Failed to update asset review status:", error);
@@ -4177,12 +4235,16 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       if (sendInviteEmail && targetUser.email) {
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
         const appUrl = `${frontendUrl}/media/${assetId}`;
+        const targetOrgId = asset.orgId || request.user?.orgId;
+        const orgBranding = targetOrgId ? await resolveOrgBranding(request.server.prisma, targetOrgId, { forEmail: true }) : null;
 
         // Just sending the standard share invite email as they were granted direct access
         await emailService.sendShareInvite(targetUser.email, {
           assetTitle: asset.title,
           shareUrl: appUrl,
           senderName: inviterName,
+          orgLogoUrl: orgBranding?.logoUrl || null,
+          orgName: orgBranding?.accountName || null,
           permissions: {
             view: true,
             comment: accessLevel === 'Can edit' || accessLevel === 'Full Access',
