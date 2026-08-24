@@ -36,8 +36,8 @@ async function loadUserAuthzContext(prisma, userId) {
   const role = user.roleRelation?.name || null;
   let permissions = (user.roleRelation?.permissions || []).map((rp) => rp.permission.slug);
 
-  // Safety fallback for Super Admin / System Admin if permissions array is empty
-  if ((role === 'Super Admin' || role === 'System Admin') && permissions.length === 0) {
+  // Safety fallback for Super Admin / Platform Admin if permissions array is empty
+  if ((role === 'Super Admin' || role === 'Platform Admin') && permissions.length === 0) {
     permissions = await getRolePermissions(prisma, user.roleId);
   }
 

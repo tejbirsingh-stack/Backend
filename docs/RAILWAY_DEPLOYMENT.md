@@ -118,7 +118,7 @@ After seeding, these accounts will be available:
 
 | Role | Email | Password | Access |
 |------|-------|----------|--------|
-| System Admin | admin@noah.app | SystemAdmin123! | Full system access |
+| Platform Admin | admin@noah.app | SystemAdmin123! | Full system access |
 | Org Admin | sarah@visitdetroit.com | Detroit2024! | Visit Detroit admin |
 | Team Member | mike@visitdetroit.com | Detroit2024! | Upload, share |
 | Team Member | jessica@visitdetroit.com | Detroit2024! | Upload, share |

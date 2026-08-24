@@ -779,7 +779,7 @@ module.exports.registerRole = async (request, reply) => {
     });
     user.role = roleObj.name;
 
-    if (['Super Admin', 'Admin', 'System Admin'].includes(user.role)) {
+    if (['Super Admin', 'Admin', 'Platform Admin'].includes(user.role)) {
       if (user.orgId) {
         await autoAssignNewAdminToWorkspaces(request.server.prisma, user.orgId, user.id);
       }
