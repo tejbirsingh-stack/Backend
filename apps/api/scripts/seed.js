@@ -39,7 +39,7 @@ async function seedDatabase() {
         const roles = [
             {
                 id: '350c047a-60a1-4a84-8bdb-79748e9a906e',
-                name: "System Admin",
+                name: "Platform Admin",
                 show: 0,
             },
             {
@@ -87,7 +87,7 @@ async function seedDatabase() {
 
 
         // ===========================
-        // Create System Admin User
+        // Create Platform Admin User
         // ===========================
 
         await prisma.user.upsert({
@@ -96,9 +96,9 @@ async function seedDatabase() {
             },
             update: {},
             create: {
-                name: "System Admin",
+                name: "Platform Admin",
                 email: "systemadminnoah@yopmail.com",
-                roleId: roleMap["System Admin"].id,
+                roleId: roleMap["Platform Admin"].id,
                 orgId: org.id,
                 status: "active",
                 passwordHash: hashedPassword,
@@ -107,7 +107,7 @@ async function seedDatabase() {
             },
         });
 
-        console.log("✅ System Admin created");
+        console.log("✅ Platform Admin created");
 
 
         // ===========================

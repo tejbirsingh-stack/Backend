@@ -4,7 +4,7 @@ const getNotifications = async (request, reply) => {
   try {
     const userId = request.user.id;
     const orgId = request.user.orgId;
-    
+
     const notifications = await request.server.prisma.notification.findMany({
       where: {
         userId,
@@ -79,13 +79,13 @@ const createNotification = async (fastify, userId, orgId, type, title, message, 
         relatedEntityId
       }
     });
-    
+
     // Emit real-time WebSocket event to recipient user
     sendNotificationToUser(userId, {
       id: notification.id,
       title: notification.title,
       message: notification.message,
-      time: new Date(notification.createdAt).toLocaleDateString() + ' ' + new Date(notification.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}),
+      time: new Date(notification.createdAt).toLocaleDateString() + ' ' + new Date(notification.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       unread: !notification.isRead,
       type: notification.type,
       relatedEntityId: notification.relatedEntityId
@@ -100,13 +100,13 @@ const createNotification = async (fastify, userId, orgId, type, title, message, 
 const notifyRole = async (fastify, orgId, roleName, type, title, message, relatedEntityId = null) => {
   try {
     const isSuperAdminRole = ['super admin', 'superadmin', 'super_admin'].includes(String(roleName).toLowerCase());
-    const isAdminRole = ['admin', 'system admin'].includes(String(roleName).toLowerCase());
+    const isAdminRole = ['admin', 'Platform Admin'].includes(String(roleName).toLowerCase());
 
     let roleNamesToMatch = [roleName];
     if (isSuperAdminRole) {
-      roleNamesToMatch = ['Super Admin', 'SuperAdmin', 'super_admin', 'super admin', 'System Admin'];
+      roleNamesToMatch = ['Super Admin', 'SuperAdmin', 'super_admin', 'super admin', 'Platform Admin'];
     } else if (isAdminRole) {
-      roleNamesToMatch = ['Admin', 'admin', 'System Admin'];
+      roleNamesToMatch = ['Admin', 'admin', 'Platform Admin'];
     }
 
     const whereClause = {
@@ -121,11 +121,11 @@ const notifyRole = async (fastify, orgId, roleName, type, title, message, relate
     const users = await fastify.prisma.user.findMany({
       where: whereClause
     });
-    
+
     for (const user of users) {
       await createNotification(fastify, user.id, user.orgId || orgId, type, title, message, relatedEntityId);
     }
-  } catch(error) {
+  } catch (error) {
     console.error(`Error notifying role ${roleName}:`, error);
   }
 };

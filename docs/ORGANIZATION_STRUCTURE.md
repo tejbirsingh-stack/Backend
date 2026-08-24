@@ -4,7 +4,7 @@
 
 ```
 System
-├── System Admin (super admin - manages all orgs)
+├── Platform Admin (super admin - manages all orgs)
 └── Organizations
     └── Visit Detroit (Organization)
         ├── Organization Admin (manages org settings, users)
@@ -14,7 +14,7 @@ System
 
 ## Role Definitions
 
-### 1. System Admin
+### 1. Platform Admin
 - Full access to all organizations
 - Manage system settings
 - Create/delete organizations
@@ -236,11 +236,11 @@ async function seedVisitDetroit() {
 
   // 2. Create Users
   const users = await Promise.all([
-    // System Admin
+    // Platform Admin
     prisma.user.create({
       data: {
         email: 'admin@noah.app',
-        name: 'System Admin',
+        name: 'Platform Admin',
         password: await hash('SystemAdmin123!'),
         isSystemAdmin: true,
         emailVerified: true
@@ -371,7 +371,7 @@ async function seedVisitDetroit() {
 
   console.log('✅ Visit Detroit organization seeded successfully');
   console.log('📧 Test accounts:');
-  console.log('  - admin@noah.app (System Admin)');
+  console.log('  - admin@noah.app (Platform Admin)');
   console.log('  - sarah@visitdetroit.com (Org Admin)');
   console.log('  - mike@visitdetroit.com (Team Member)');
   console.log('  - jessica@visitdetroit.com (Team Member)');
@@ -438,7 +438,7 @@ async function checkOrgAccess(req, res, next) {
   const { slug } = req.params;
   const userId = req.user.id;
   
-  // System admin has access to everything
+  // Platform Admin has access to everything
   if (req.user.isSystemAdmin) {
     req.role = 'system_admin';
     return next();

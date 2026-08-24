@@ -12,7 +12,7 @@ async function autoAssignAdminsToWorkspace(prisma, orgId, workspaceId) {
       where: {
         orgId,
         roleRelation: {
-          name: { in: ['Super Admin', 'Admin', 'System Admin'] }
+          name: { in: ['Super Admin', 'Admin', 'Platform Admin'] }
         }
       },
       select: { id: true }
@@ -126,7 +126,7 @@ async function autoAssignAdminsToProject(prisma, orgId, workspaceId, projectId) 
         where: {
           orgId,
           roleRelation: {
-            name: { in: ['Super Admin', 'Admin', 'System Admin'] }
+            name: { in: ['Super Admin', 'Admin', 'Platform Admin'] }
           }
         },
         select: { id: true }
@@ -179,7 +179,7 @@ async function autoAssignAdminsToProject(prisma, orgId, workspaceId, projectId) 
  * Returns true if the user has access to the given workspace.
  *
  * Access is granted when ANY of the following is true:
- *  1. The user has an org-wide role (Super Admin / Admin / System Admin).
+ *  1. The user has an org-wide role (Super Admin / Admin / Platform Admin).
  *  2. The user has a direct row in `workspace_users`.
  *  3. The user is a member of a UserGroup that is linked to the workspace via `workspace_groups`.
  *
@@ -242,7 +242,7 @@ async function autoAssignAdminsToAsset(prisma, orgId, workspaceId, assetId) {
         where: {
           orgId,
           roleRelation: {
-            name: { in: ['Super Admin', 'Admin', 'System Admin'] }
+            name: { in: ['Super Admin', 'Admin', 'Platform Admin'] }
           }
         },
         select: { id: true }
@@ -307,7 +307,7 @@ async function autoAssignProjectOwnersToAsset(prisma, orgId, projectId, assetId)
       const orgAdmins = await prisma.user.findMany({
         where: {
           orgId,
-          roleRelation: { name: { in: ['Super Admin', 'Admin', 'System Admin'] } }
+          roleRelation: { name: { in: ['Super Admin', 'Admin', 'Platform Admin'] } }
         },
         select: { id: true }
       });
