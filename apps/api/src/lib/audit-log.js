@@ -9,7 +9,8 @@ const ACTOR_TYPE = {
 
 const ACTIVITY_TYPE = {
     INFO: 'INFO',
-    ERROR: 'ERROR'
+    ERROR: 'ERROR',
+    WARNING: 'WARNING',
 };
 
 const ACTIVITY_NAME = {
@@ -22,7 +23,6 @@ const ACTIVITY_NAME = {
     WORKSPACE_CREATED: "WORKSPACE CREATED",
     FAVORITE_ADDED: 'FAVORITE ADDED',
     FAVORITE_REMOVED: 'FAVORITE REMOVED',
-    
     // Platform Activities
     PLAN_CREATED: 'Plan created',
     PLAN_UPDATED: 'Plan updated',
