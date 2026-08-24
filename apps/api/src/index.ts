@@ -1,3 +1,6 @@
+import dns from 'dns';
+try { dns.setDefaultResultOrder('ipv4first'); } catch (e) {}
+
 import 'dotenv/config';
 import './worker.js';
 import Fastify from 'fastify';

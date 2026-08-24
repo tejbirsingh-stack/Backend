@@ -1382,7 +1382,7 @@ model AiEmbedding {
   chunkText  String                       @map("chunk_text") @db.Text
   startMs    Int?                         @map("start_ms")
   endMs      Int?                         @map("end_ms")
-  embedding  Unsupported("vector(1536)")
+  embedding  Json?
 
   asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)

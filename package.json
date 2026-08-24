@@ -26,10 +26,10 @@
     "start:api": "cd apps/api && npm run dev",
     "start:web": "cd apps/web && npm run dev",
     "start:compression": "cd apps/compression && cargo run",
-    "docker:up": "docker-compose -f docker-compose.dev.yml up -d",
-    "docker:down": "docker-compose -f docker-compose.dev.yml down",
-    "docker:reset": "docker-compose -f docker-compose.dev.yml down -v",
-    "docker:simple": "docker-compose -f docker-compose.simple.yml up -d"
+    "docker:up": "docker compose -f docker-compose.dev.yml up -d",
+    "docker:down": "docker compose -f docker-compose.dev.yml down",
+    "docker:reset": "docker compose -f docker-compose.dev.yml down -v",
+    "docker:simple": "docker compose -f docker-compose.simple.yml up -d"
   },
   "devDependencies": {
     "@prisma/client": "^6.15.0",

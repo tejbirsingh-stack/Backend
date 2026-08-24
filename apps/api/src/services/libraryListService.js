@@ -59,7 +59,10 @@ async function listItems(prisma, params) {
     const isSpecificContainer = view === 'project' || view === 'folder';
 
     if (!isSpecificContainer) {
-      assetConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
+      assetConditions.push(Prisma.sql`(
+        "workspace_id" = ${workspaceId}
+        OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId}))
+      )`);
     }
 
     assetConditions.push(Prisma.sql`(
