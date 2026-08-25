@@ -84,7 +84,7 @@ async function listOrganizations(request, reply) {
         ? {
           createdAt: {
             ...(createdFrom ? { gte: new Date(createdFrom) } : {}),
-            ...(createdTo ? { lte: new Date(createdTo) } : {}),
+            ...(createdTo ? { lte: new Date(`${createdTo}T23:59:59.999Z`) } : {}),
           },
         }
         : {}),
