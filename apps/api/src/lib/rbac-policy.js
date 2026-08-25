@@ -190,6 +190,11 @@ async function resolveUserProjectPermissions(prisma, user, project) {
  * 3. If Asset is Public: return union of explicit asset permissions and contextual (Project or Workspace) permissions.
  */
 async function resolveUserAssetPermissions(prisma, user, asset, projectContext = null) {
+  // Global media assets (starter/template media) are strictly READ-ONLY for all users and roles.
+  if (asset?.globalMedia) {
+    return ['view_search_media', 'download_stream_media'];
+  }
+
   // 1. Super Admins / Admins get full permissions ONLY within their own org.
   //    Cross-org guests must be checked against AssetUser.accessLevelId.
   const isOwnOrgAsset = !asset.orgId || !user.orgId || asset.orgId === user.orgId;
