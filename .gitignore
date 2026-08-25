@@ -88,3 +88,6 @@ apps/api/uploads/
 
 # Frontend Folder (Managed separately)
 frontend/
+
+# Secrets and Keys
+*.pem
