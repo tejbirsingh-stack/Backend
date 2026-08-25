@@ -8,6 +8,30 @@ export type TranscriptChunk = {
 };
 
 const TARGET_CHARS = 600;
+const VECTOR_LITERAL_RE = /^\[[-0-9.,eE+\s]+\]$/;
+
+function formatPrismaRawError(err: unknown): string {
+  if (!err || typeof err !== 'object') return String(err);
+  const e = err as { message?: string; code?: string; meta?: unknown };
+  const parts = [e.message || String(err)];
+  if (e.code) parts.push(`code=${e.code}`);
+  if (e.meta !== undefined) {
+    try {
+      parts.push(`meta=${JSON.stringify(e.meta)}`);
+    } catch {
+      parts.push('meta=[unserializable]');
+    }
+  }
+  return parts.join(' | ');
+}
+
+/** Validate OpenAI vector before embedding in raw SQL cast. */
+export function assertPgVectorLiteral(literal: string): string {
+  if (!VECTOR_LITERAL_RE.test(literal)) {
+    throw new Error('Invalid pgvector literal; refusing to insert');
+  }
+  return literal;
+}
 
 export function chunkTranscriptSegments(
   segments: Array<{ text: string; startMs: number; endMs: number }>,
@@ -59,29 +83,35 @@ export async function replaceAssetEmbeddings(
     throw new Error('Embedding count does not match chunk count');
   }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw(
-      Prisma.sql`DELETE FROM "ai_embeddings" WHERE "assetId" = ${assetId}::uuid`,
-    );
-    for (let i = 0; i < chunks.length; i += 1) {
-      const chunk = chunks[i];
-      const literal = toPgVectorLiteral(vectors[i]);
+  try {
+    await prisma.$transaction(async (tx) => {
       await tx.$executeRaw(
-        Prisma.sql`
-          INSERT INTO "ai_embeddings" ("assetId", "orgId", source_type, chunk_text, start_ms, end_ms, embedding)
-          VALUES (
-            ${assetId}::uuid,
-            ${orgId}::uuid,
-            ${sourceType},
-            ${chunk.text},
-            ${chunk.startMs},
-            ${chunk.endMs},
-            ${Prisma.raw(`'${literal}'::vector`)}
-          )
-        `,
+        Prisma.sql`DELETE FROM "ai_embeddings" WHERE "assetId" = ${assetId}::uuid`,
       );
-    }
-  });
+      for (let i = 0; i < chunks.length; i += 1) {
+        const chunk = chunks[i];
+        const literal = assertPgVectorLiteral(toPgVectorLiteral(vectors[i]));
+        // Validated numeric literal only — safe to inline as ::vector cast
+        await tx.$executeRaw(
+          Prisma.sql`
+            INSERT INTO "ai_embeddings" ("assetId", "orgId", source_type, chunk_text, start_ms, end_ms, embedding)
+            VALUES (
+              ${assetId}::uuid,
+              ${orgId}::uuid,
+              ${sourceType},
+              ${chunk.text},
+              ${chunk.startMs},
+              ${chunk.endMs},
+              ${Prisma.raw(`'${literal}'::vector`)}
+            )
+          `,
+        );
+      }
+    });
+  } catch (err) {
+    console.error('[AI] replaceAssetEmbeddings failed:', formatPrismaRawError(err));
+    throw err;
+  }
 }
 
 export async function embedTranscriptForAsset(

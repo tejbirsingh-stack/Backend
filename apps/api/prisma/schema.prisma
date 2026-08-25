@@ -1382,7 +1382,8 @@ model AiEmbedding {
   chunkText  String                       @map("chunk_text") @db.Text
   startMs    Int?                         @map("start_ms")
   endMs      Int?                         @map("end_ms")
-  embedding  Json?
+  // pgvector — read/write via $executeRaw / $queryRaw only (not Prisma Client fields)
+  embedding  Unsupported("vector(1536)")
 
   asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)

@@ -1,8 +1,5 @@
 const prisma = require('../../utils/prisma');
 
-const AI_INSIGHTS_FEATURE_ID = 'ai_insights';
-const AI_INSIGHTS_FEATURE_NAME = 'AI Insights';
-
 function isAiEnabledFromEnv() {
   return String(process.env.AI_ENABLED || '').toLowerCase() === 'true';
 }
@@ -11,11 +8,8 @@ function isPlanEntitlementOn() {
   return String(process.env.AI_PLAN_ENTITLEMENT || '').toLowerCase() === 'true';
 }
 
-function orgHasAiInsightsFeature(org) {
-  const selections = org?.currentPlan?.featureSelections || [];
-  return selections.some(
-    (s) => s.feature?.id === AI_INSIGHTS_FEATURE_ID || s.feature?.name === AI_INSIGHTS_FEATURE_NAME,
-  );
+function orgHasAiPlan(org) {
+  return org?.currentPlan?.hasAI === true;
 }
 
 /** Sync check for session payloads. Plan lookup only runs when AI_PLAN_ENTITLEMENT=true. */
@@ -26,7 +20,7 @@ function computeAiEnabledSync(org) {
   if (!isPlanEntitlementOn()) {
     return true;
   }
-  return orgHasAiInsightsFeature(org);
+  return orgHasAiPlan(org);
 }
 
 async function isAiEnabledForOrg(orgId, prismaClient = prisma) {
@@ -42,16 +36,13 @@ async function isAiEnabledForOrg(orgId, prismaClient = prisma) {
   const org = await prismaClient.organization.findUnique({
     where: { id: orgId },
     include: {
-      currentPlan: {
-        include: { featureSelections: { include: { feature: true } } },
-      },
+      currentPlan: true,
     },
   });
-  return orgHasAiInsightsFeature(org);
+  return orgHasAiPlan(org);
 }
 
 module.exports = {
-  AI_INSIGHTS_FEATURE_ID,
   isAiEnabledFromEnv,
   isPlanEntitlementOn,
   computeAiEnabledSync,
