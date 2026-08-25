@@ -121,22 +121,35 @@ async function getDashboardSummary(_request, reply) {
 
     const storageUsedBytes = storageAgg._sum.storageUsedBytes || 0n;
     let storageQuotaBytes = 0n;
+    
+    // Find the default free plan to use as a fallback for orgs without a plan (currentPlanId = null)
+    const fallbackFreePlan = allPlans.find(p => p.name.toLowerCase().includes('free') || p.monthlyPriceCents === 0);
+
     for (const row of planGroups) {
-      const plan = allPlans.find((p) => p.id === row.currentPlanId);
+      const plan = row.currentPlanId ? allPlans.find((p) => p.id === row.currentPlanId) : fallbackFreePlan;
       if (plan?.storageQuotaBytes) {
         storageQuotaBytes += BigInt(plan.storageQuotaBytes) * BigInt(row._count._all);
       }
     }
 
     const planMap = new Map(allPlans.map((p) => [p.id, p.name.toLowerCase()]));
-    const planMix = planGroups
-      .map((row) => ({
-        planType: row.currentPlanId ? (planMap.get(row.currentPlanId) || 'free') : 'free',
-        count: row._count._all,
-      }))
+    
+    // Group by the normalized string name so nulls and 'Free' plans combine into a single slice
+    const planMixAgg = {};
+    for (const row of planGroups) {
+      const planType = row.currentPlanId ? (planMap.get(row.currentPlanId) || 'free') : 'free';
+      planMixAgg[planType] = (planMixAgg[planType] || 0) + row._count._all;
+    }
+    
+    const planMix = Object.entries(planMixAgg)
+      .map(([planType, count]) => ({ planType, count }))
       .sort((a, b) => b.count - a.count);
 
-    const orgQuotaBytes = (org) => org.currentPlan?.storageQuotaBytes || 0n;
+    const orgQuotaBytes = (org) => {
+      if (org.currentPlan?.storageQuotaBytes) return org.currentPlan.storageQuotaBytes;
+      if (fallbackFreePlan?.storageQuotaBytes) return fallbackFreePlan.storageQuotaBytes;
+      return 0n;
+    };
 
     const attentionOrgs = attentionCandidates
       .filter((org) => {
