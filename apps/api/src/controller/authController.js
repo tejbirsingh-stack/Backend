@@ -2199,6 +2199,7 @@ module.exports.completeSignup = async (request, reply) => {
       where: { id: planId },
     }).catch(() => null);
 
+
     const GB_BYTES = BigInt(1024 * 1024 * 1024);
     const PLAN_LIMITS_MAP = {
       free: {
