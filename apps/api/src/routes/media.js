@@ -31,7 +31,8 @@ const {
   removeAssetGroupAccessOverride,
   getSharedMediaAssets,
   moveMediaFile,
-  renameMediaAsset
+  renameMediaAsset,
+  userSyncDefaultContent
 } = require('../controller');
 
 const {
@@ -78,6 +79,7 @@ module.exports = function (fastify, opts, done) {
 
   //8. Permanently delete a file from B2
   fastify.delete("/:filename/permanent", canDelete, deletePermanently);
+  fastify.post("/:filename/permanent-delete", canDelete, deletePermanently);
 
   //9. GET /api/media/:filename — file bytes for players (optionally authenticated for permission resolution)
   fastify.get("/:filename", { preHandler: [optionalAuthenticate] }, getMediaFile);
@@ -98,8 +100,9 @@ module.exports = function (fastify, opts, done) {
   //10. Upload media asset
   fastify.post("/upload", canUpload, uploadMediaFile);
 
-  //11. Delete media asset
+  //11. Delete media asset / Move to Trash
   fastify.delete("/:filename", canTrash, deleteMediaFile);
+  fastify.post("/:filename/trash", canTrash, deleteMediaFile);
 
   //11.1 Request Permanent Delete
   fastify.post("/:filename/request-delete", canTrash, requestPermanentDelete);
@@ -136,6 +139,9 @@ module.exports = function (fastify, opts, done) {
 
   //14. Check which chunks have been successfully uploaded
   fastify.get("/upload/status/:sessionId", { preHandler: [authenticate, requirePermission('upload_media')] }, getUploadStatus);
+
+  //14b. Sync Default Starter Content to current user's default workspace
+  fastify.post("/sync-default-content", { preHandler: authenticate }, userSyncDefaultContent);
 
   //15. Complete Multipart Upload Session and Create Database Record
   fastify.post("/upload/complete", canUpload, completeResumableUpload);

@@ -63,6 +63,7 @@ const {
   uploadDefaultContent,
   updateDefaultContent,
   deleteDefaultContent,
+  syncDefaultContentToWorkspaces,
 } = require('../controller/platform-default-content.controller');
 const {
   getGlobalSecuritySettings,
@@ -150,6 +151,7 @@ module.exports = function platformRoutes(fastify, _opts, done) {
 
   fastify.get('/default-content', { preHandler: requirePlatformAdmin }, listDefaultContent);
   fastify.post('/default-content', { preHandler: requirePlatformAdmin }, uploadDefaultContent);
+  fastify.post('/default-content/sync', { preHandler: requirePlatformAdmin }, syncDefaultContentToWorkspaces);
   fastify.patch('/default-content/:id', { preHandler: requirePlatformAdmin }, updateDefaultContent);
   fastify.delete('/default-content/:id', { preHandler: requirePlatformAdmin }, deleteDefaultContent);
 

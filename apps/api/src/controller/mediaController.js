@@ -919,20 +919,65 @@ module.exports.getMediaAssets = async (request, reply) => {
 
 
 
-    const tenancyWhere = projectScopeWhere(request.user);
-    const where = {
-      ...tenancyWhere,
-      deletedAt: null,
-    };
+    const isGlobalMediaRequested = String(request.query.globalMedia || '').toLowerCase() === 'true';
+    const targetWorkspaceId = request.query.workspaceId || request.query.ownerId;
+    let isDefaultWorkspace = false;
 
-    if (orgId) {
-      where.orgId = orgId;
+    if (targetWorkspaceId) {
+      const ws = await request.server.prisma.workspace.findUnique({
+        where: { id: targetWorkspaceId },
+        select: { id: true, isDefault: true, orgId: true },
+      });
+      if (ws) {
+        if (ws.isDefault) {
+          isDefaultWorkspace = true;
+        } else {
+          const firstWs = await request.server.prisma.workspace.findFirst({
+            where: { orgId: ws.orgId },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true },
+          });
+          if (firstWs && firstWs.id === ws.id) {
+            isDefaultWorkspace = true;
+          }
+        }
+      }
+    } else {
+      isDefaultWorkspace = true;
     }
 
-    where.OR = [
-      { visibility: "public" },
-      { visibility: "private", uploadedByUserId: request.user?.id }
-    ];
+    const where = { deletedAt: null, status: { notIn: ['inactive', 'trash', 'deleted'] } };
+
+    if (isGlobalMediaRequested) {
+      where.globalMedia = true;
+      where.OR = [
+        { visibility: "public" },
+        { visibility: "private", uploadedByUserId: request.user?.id }
+      ];
+    } else if (isDefaultWorkspace) {
+      // For default workspaces (is_default = true), show both normal workspace assets AND active globalMedia = true assets
+      const tenancyWhere = projectScopeWhere(request.user);
+      where.OR = [
+        { globalMedia: true, status: "active" },
+        {
+          globalMedia: false,
+          ...tenancyWhere,
+          OR: [
+            { visibility: "public" },
+            { visibility: "private", uploadedByUserId: request.user?.id }
+          ]
+        }
+      ];
+    } else {
+      // For non-default workspaces, show only standard workspace assets
+      const tenancyWhere = projectScopeWhere(request.user);
+      Object.assign(where, tenancyWhere);
+      where.globalMedia = false;
+      where.OR = [
+        { visibility: "public" },
+        { visibility: "private", uploadedByUserId: request.user?.id }
+      ];
+    }
 
     if (query) {
       where.title = {
@@ -1406,20 +1451,31 @@ module.exports.softDelete = async (request, reply) => {
     const userRole = rawRoleName.trim().toLowerCase();
 
     let whereClause = {
-      orgId: request.user.orgId,
       status: { in: ['trash'] },
       deletedAt: { not: null }
     };
 
-    if (userRole === 'editor' || userRole === 'collaborator' || userRole === 'viewer') {
+    const isSuperAdminOrAdmin =
+      userRole === 'super admin' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin' ||
+      userRole === 'admin' ||
+      liveUser?.roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
+      liveUser?.roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+
+    if (request.user?.orgId && isSuperAdminOrAdmin) {
+      whereClause.AND = [
+        {
+          OR: [
+            { orgId: request.user.orgId },
+            { orgId: null }
+          ]
+        }
+      ];
+    } else if (!isSuperAdminOrAdmin) {
       whereClause.OR = [
         { uploadedByUserId: userId },
         { deletedByUserId: userId }
-      ];
-    } else {
-      whereClause.OR = [
-        { uploadedByUserId: userId },
-        { deletedByUserId: userId } // Admin sees files they deleted, or they uploaded
       ];
     }
 
@@ -1975,11 +2031,20 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const isImage = actualMimeType.startsWith("image/");
         const isMimeAudio = actualMimeType.startsWith("audio/");
         const isMimeVideo = actualMimeType.startsWith("video/");
-        const subFolder = isImage ? "images" : isMimeAudio ? "audios" : isMimeVideo ? "videos" : "files";
+        const subFolder = isImage ? "images" : isMimeAudio ? "audios" : isMimeVideo ? "videos" : "documents";
+
+        const isGlobalAdmin = Boolean(
+          request.platformAdmin ||
+          (request.user && (request.user.role === 'super_admin' || request.user.isPlatformAdmin))
+        );
+        const requestedGlobalMedia = String(request.query?.isGlobalMedia || '').toLowerCase() === 'true';
+        const isGlobalMedia = isGlobalAdmin && requestedGlobalMedia;
 
         const baseName = (part.filename || 'untitled').replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
         const folderName = `${baseName}-${uniqueId}`;
-        const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${filename}`;
+        const b2Key = isGlobalMedia
+          ? `global-media/${subFolder}/${uniqueId}/${filename}`
+          : `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${filename}`;
 
         console.log(`Streaming directly to B2: ${b2Key}`);
 
@@ -2082,17 +2147,24 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const uniqueAssetTitle = uploadWorkspaceId ? await generateUniqueWorkspaceName(request.server.prisma, uploadWorkspaceId, originalAssetTitle, 'asset') : originalAssetTitle;
 
         // Write to the New Architecture
+        const isPlatformAdminUser = Boolean(
+          request.platformAdmin ||
+          request.user?.isPlatformAdmin ||
+          request.user?.role === 'PLATFORM_ADMIN'
+        );
+        const shouldBeNullOrg = isGlobalMedia || isPlatformAdminUser;
         const newAsset = await request.server.prisma.asset.create({
           data: {
-            orgId: request.user.orgId,
+            orgId: shouldBeNullOrg ? null : (request.user?.orgId || null),
             title: uniqueAssetTitle,
             type: assetType,
             status: (isActuallyVideo || isActuallyAudio) ? "processing" : "active",
             visibility: request.query.visibility || "public",
-            uploadedByUserId: request.user.id,
-            ownerType: resolved.resolvedOwnerType,
-            ownerId: resolved.resolvedOwnerId,
-            workspaceId: uploadWorkspaceId,
+            globalMedia: isGlobalMedia || isPlatformAdminUser,
+            uploadedByUserId: shouldBeNullOrg ? null : (request.user?.id || null),
+            ownerType: shouldBeNullOrg ? null : resolved.resolvedOwnerType,
+            ownerId: shouldBeNullOrg ? null : resolved.resolvedOwnerId,
+            workspaceId: shouldBeNullOrg ? null : uploadWorkspaceId,
             files: {
               create: {
                 fileClass: "original",
@@ -3024,13 +3096,22 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     const isImage = actualSessionMimeType.startsWith("image/");
     const isAudio = actualSessionMimeType.startsWith("audio/");
     const isVideo = actualSessionMimeType.startsWith("video/");
-    const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "files";
+    const subFolder = isImage ? "images" : isAudio ? "audios" : isVideo ? "videos" : "documents";
+
+    const isGlobalAdmin = Boolean(
+      request.platformAdmin ||
+      (request.user && (request.user.role === 'super_admin' || request.user.isPlatformAdmin))
+    );
+    const requestedGlobalMedia = Boolean(request.body?.isGlobalMedia);
+    const isGlobalMedia = isGlobalAdmin && requestedGlobalMedia;
 
     const uniqueId = Date.now().toString();
     const baseName = (fileName || 'untitled').replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
     const folderName = `${baseName}-${uniqueId}`;
     const safeFileName = (fileName || 'untitled').replace(/[^a-zA-Z0-9.-]/g, '_');
-    const b2Key = `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${uniqueId}-raw-${safeFileName}`;
+    const b2Key = isGlobalMedia
+      ? `global-media/${subFolder}/${uniqueId}/${uniqueId}-raw-${safeFileName}`
+      : `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${uniqueId}-raw-${safeFileName}`;
 
     // Initiate upload session with Backblaze B2 S3
     const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
@@ -3052,6 +3133,7 @@ module.exports.initiateResumableUpload = async (request, reply) => {
       ownerId,
       linkedProjectId,
       visibility: visibility || "public",
+      isGlobalMedia: Boolean(isGlobalMedia),
       parts: [],
     };
 
@@ -3302,17 +3384,30 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const uniqueAssetTitle = uploadWorkspaceId ? await generateUniqueWorkspaceName(request.server.prisma, uploadWorkspaceId, assetTitle, 'asset') : assetTitle;
 
     // Save the asset metadata in PostgreSQL via Prisma (New Architecture)
+    const isPlatformAdminUser = Boolean(
+      request.platformAdmin ||
+      request.user?.isPlatformAdmin ||
+      request.user?.role === 'PLATFORM_ADMIN'
+    );
+    const isGlobalMediaSession = Boolean(
+      session.isGlobalMedia ||
+      isPlatformAdminUser ||
+      request.body?.isGlobalMedia
+    );
+    const shouldBeNullOrg = isGlobalMediaSession || isPlatformAdminUser;
+
     const newAsset = await request.server.prisma.asset.create({
       data: {
-        orgId: request.user.orgId,
+        orgId: shouldBeNullOrg ? null : (request.user?.orgId || null),
         title: uniqueAssetTitle,
         type: assetType,
         status: shouldQueueTranscode ? "processing" : "active",
         visibility: request.body.visibility || session.visibility || "public",
-        uploadedByUserId: request.user.id,
-        ownerType: resolved.resolvedOwnerType,
-        ownerId: resolved.resolvedOwnerId,
-        workspaceId: uploadWorkspaceId,
+        globalMedia: isGlobalMediaSession,
+        uploadedByUserId: shouldBeNullOrg ? null : (request.user?.id || null),
+        ownerType: shouldBeNullOrg ? null : resolved.resolvedOwnerType,
+        ownerId: shouldBeNullOrg ? null : resolved.resolvedOwnerId,
+        workspaceId: shouldBeNullOrg ? null : uploadWorkspaceId,
         files: {
           create: {
             fileClass: "original",
@@ -4712,5 +4807,40 @@ module.exports.renameMediaAsset = async (request, reply) => {
   } catch (error) {
     console.error("Failed to rename media asset:", error);
     return reply.code(500).send({ success: false, error: error.message });
+  }
+};
+
+module.exports.userSyncDefaultContent = async (request, reply) => {
+  try {
+    const userOrgId = request.user?.orgId;
+    if (!userOrgId) {
+      return reply.status(400).send({ message: "User does not belong to an organization" });
+    }
+
+    const defaultWorkspace = await request.server.prisma.workspace.findFirst({
+      where: { orgId: userOrgId, isDefault: true },
+      include: { organization: { select: { name: true } } },
+    });
+
+    if (!defaultWorkspace) {
+      return reply.status(404).send({ message: "Default workspace not found" });
+    }
+
+    const { seedDefaultContentIntoWorkspace } = require('../lib/seed-default-content');
+    const res = await seedDefaultContentIntoWorkspace(request.server.prisma, {
+      orgId: defaultWorkspace.orgId,
+      workspaceId: defaultWorkspace.id,
+      orgName: defaultWorkspace.organization?.name || 'organization',
+      uploadedByUserId: request.user?.id,
+    });
+
+    return {
+      success: true,
+      message: `Default content synced successfully (${res.seeded} seeded, ${res.skipped} already present).`,
+      ...res,
+    };
+  } catch (error) {
+    console.error("userSyncDefaultContent error:", error);
+    return reply.status(500).send({ message: error.message || "Failed to sync default content" });
   }
 };
