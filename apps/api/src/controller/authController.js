@@ -344,6 +344,15 @@ module.exports.login = async (request, reply) => {
       token
     );
 
+    // Update last login and activity timestamps
+    await request.server.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        lastLoginAt: new Date(),
+        lastActiveAt: new Date(),
+      },
+    });
+
     logSuccess(ACTIVITY_NAME.USER_LOGIN, "Login successful.", null, user);  //Log user activity
 
     return {
