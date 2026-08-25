@@ -13,6 +13,8 @@ function serializePlan(plan) {
     showStorageQuota: plan.showStorageQuota ?? true,
     showMemberQuota: plan.showMemberQuota ?? true,
     hasAI: plan.hasAI ?? false,
+    isFree: plan.isFree ?? false,
+    trialDays: plan.trialDays ?? null,
     // Expose features as a flat array of feature objects { id, name, sortOrder }
     features: (plan.featureSelections || []).map((sel) => sel.feature).filter(Boolean),
   };
@@ -22,10 +24,22 @@ function parsePlanBody(body = {}) {
   const data = {};
   if (body.name !== undefined) data.name = String(body.name).trim();
   if (body.description !== undefined) data.description = body.description;
-  if (body.monthlyPriceCents !== undefined) data.monthlyPriceCents = parseInt(body.monthlyPriceCents, 10) || 0;
-  if (body.yearlyPriceCents !== undefined || body.annualPriceCents !== undefined) {
-    data.yearlyPriceCents = parseInt(body.yearlyPriceCents ?? body.annualPriceCents, 10) || 0;
+
+  if (body.isFree !== undefined) data.isFree = Boolean(body.isFree);
+  if (body.trialDays !== undefined) {
+    data.trialDays = body.trialDays ? parseInt(body.trialDays, 10) : null;
   }
+
+  if (data.isFree) {
+    data.monthlyPriceCents = 0;
+    data.yearlyPriceCents = 0;
+  } else {
+    if (body.monthlyPriceCents !== undefined) data.monthlyPriceCents = parseInt(body.monthlyPriceCents, 10) || 0;
+    if (body.yearlyPriceCents !== undefined || body.annualPriceCents !== undefined) {
+      data.yearlyPriceCents = parseInt(body.yearlyPriceCents ?? body.annualPriceCents, 10) || 0;
+    }
+  }
+
   if (body.storageQuotaBytes !== undefined) data.storageQuotaBytes = BigInt(body.storageQuotaBytes);
   if (body.maxUsers !== undefined) data.maxUsers = parseInt(body.maxUsers, 10) || 1;
   if (body.maxWorkspaces !== undefined) data.maxWorkspaces = parseInt(body.maxWorkspaces, 10) || 1;
@@ -86,6 +100,27 @@ async function createPlan(request, reply) {
         message: 'name is required',
         statusCode: 400,
       });
+    }
+
+    if (data.isFree) {
+      if (!data.trialDays || data.trialDays <= 0) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          message: 'Trial Days must be a positive number greater than zero.',
+          statusCode: 400,
+        });
+      }
+
+      const existingFreePlan = await prisma.plan.findFirst({
+        where: { isFree: true },
+      });
+      if (existingFreePlan) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          message: 'A free plan already exists. Only one free plan is allowed.',
+          statusCode: 400,
+        });
+      }
     }
     if (data.storageQuotaBytes === undefined) data.storageQuotaBytes = BigInt(5 * 1024 ** 3);
     if (data.isActive === undefined) data.isActive = true;
@@ -178,6 +213,27 @@ async function updatePlan(request, reply) {
     });
     if (!existingPlan) {
       return reply.status(404).send({ error: 'NotFound', message: 'Plan not found', statusCode: 404 });
+    }
+
+    if (data.isFree) {
+      if (!data.trialDays || data.trialDays <= 0) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          message: 'Trial Days must be a positive number greater than zero.',
+          statusCode: 400,
+        });
+      }
+
+      const existingFreePlan = await prisma.plan.findFirst({
+        where: { isFree: true, id: { not: planId } },
+      });
+      if (existingFreePlan) {
+        return reply.status(400).send({
+          error: 'ValidationError',
+          message: 'A free plan already exists. Only one free plan is allowed.',
+          statusCode: 400,
+        });
+      }
     }
 
     if (data.sortOrder !== undefined && data.sortOrder !== existingPlan.sortOrder) {
