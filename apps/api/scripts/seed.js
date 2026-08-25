@@ -23,8 +23,6 @@ async function seedDatabase() {
             create: {
                 name: "Demo Organization",
                 slug: "demo-org",
-                planType: "professional",
-                features: {},
                 metadata: {},
             },
         });
@@ -69,22 +67,41 @@ async function seedDatabase() {
             },
         ];
 
-        const roleMap = {};
+       const roleMap = {};
 
-        for (const role of roles) {
-            const createdRole = await prisma.role.upsert({
-                where: {
-                    name: role.name,
-                },
-                update: {},
-                create: role,
-            });
+for (const role of roles) {
+    let existingRole = await prisma.role.findUnique({
+        where: {
+            name: role.name,
+        },
+    });
 
-            roleMap[role.name] = createdRole;
+    // If role name doesn't exist, check whether the UUID already exists
+    if (!existingRole) {
+        existingRole = await prisma.role.findUnique({
+            where: {
+                id: role.id,
+            },
+        });
+    }
 
-            console.log(`✅ Role created: ${createdRole.name}`);
-        }
+    // Create only if neither name nor ID exists
+    if (!existingRole) {
+        existingRole = await prisma.role.create({
+            data: {
+                id: role.id,
+                name: role.name,
+                show: role.show,
+            },
+        });
 
+        console.log(`✅ Role created: ${existingRole.name}`);
+    } else {
+        console.log(`ℹ️ Role already exists: ${existingRole.name}`);
+    }
+
+    roleMap[role.name] = existingRole;
+}
 
         // ===========================
         // Create Platform Admin User

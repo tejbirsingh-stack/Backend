@@ -56,14 +56,15 @@ function renderPasswordResetHtml({ name, resetUrl, orgLogoUrl = null, orgName = 
 /**
  * MFA OTP Code Template Builder
  */
-function renderMfaCodeHtml({ name, code, orgLogoUrl = null, orgName = null }) {
+function renderMfaCodeHtml({ name, code, otpCode, orgLogoUrl = null, orgName = null }) {
+  const displayCode = code || otpCode || '';
   const bodyHtml = `
     <h2 style="color: #6d28d9; text-align: center; margin-top: 0; margin-bottom: 20px;">Authentication Required</h2>
     <p style="font-size: 15px; color: #111827; font-family: 'Roboto', Arial, sans-serif;">Hi ${name},</p>
     <p style="font-size: 15px; color: #111827; font-family: 'Roboto', Arial, sans-serif;">You are attempting to log in. Please use the following authentication code to complete your login:</p>
     <div style="text-align: center; margin: 32px 0;">
       <div style="background-color: #f5f3ff; border: 2px solid #7c3aed; color: #6d28d9; padding: 18px 32px; border-radius: 10px; font-weight: bold; font-size: 32px; letter-spacing: 8px; display: inline-block;">
-        ${code}
+        ${displayCode}
       </div>
     </div>
     <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 28px 0;" />

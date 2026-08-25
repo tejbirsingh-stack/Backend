@@ -124,7 +124,7 @@ class EmailService {
   async sendMfaCode(to, name, otpCode, { orgLogoUrl, orgName } = {}) {
     const subject = "Your Noah Login Verification Code";
     const text = `Hi ${name},\n\nYour verification code is: ${otpCode}\n\nThis code will expire in 10 minutes. If you did not attempt to log in, please secure your account immediately.`;
-    const html = renderMfaCodeHtml({ name, otpCode, orgLogoUrl, orgName });
+    const html = renderMfaCodeHtml({ name, code: otpCode, otpCode, orgLogoUrl, orgName });
     return this.sendEmail({ to, subject, text, html });
   }
 
