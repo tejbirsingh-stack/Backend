@@ -185,12 +185,17 @@ module.exports.getHighlights = async function getHighlights(request, reply) {
       ? asset.aiTags.filter((t) => typeof t === 'string')
       : [];
 
+  const status = highlight ? 'completed' : (highlightsStep || job?.status || 'idle');
+  const error =
+    status === 'failed' || highlightsStep === 'failed' ? job?.error || null : null;
+
   return reply.send({
     success: true,
     assetId,
-    status: highlight ? 'completed' : (highlightsStep || job?.status || 'idle'),
+    status,
     summary: highlight?.summary || null,
     tags,
+    error,
   });
 };
 
