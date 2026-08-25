@@ -1892,6 +1892,7 @@ module.exports.getMediaFile = async (request, reply) => {
             visibility: fetchedAsset.visibility,
             uploadedBy: fetchedAsset.uploadedBy || null,
             uploadedByUserId: fetchedAsset.uploadedByUserId || null,
+            globalMedia: Boolean(fetchedAsset.globalMedia),
             folder: folderInfo,
             customMetadata: {
               ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
