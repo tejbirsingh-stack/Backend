@@ -1108,6 +1108,8 @@ model Plan {
   sortOrder          Int      @default(0)
   ctaLabel           String?  @db.VarChar(100)
   isActive           Boolean  @default(true)
+  isFree             Boolean  @default(false)
+  trialDays          Int?
   createdAt          DateTime @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
