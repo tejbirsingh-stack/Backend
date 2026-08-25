@@ -2215,77 +2215,28 @@ module.exports.completeSignup = async (request, reply) => {
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
-    const dbPlan = await request.server.prisma.plan.findUnique({
-      where: { id: planId },
-    }).catch(() => null);
+    let dbPlan = null;
+    if (planId && planId !== "free") {
+      dbPlan = await request.server.prisma.plan.findUnique({
+        where: { id: planId },
+      }).catch(() => null);
+    }
+    
+    if (!dbPlan) {
+      dbPlan = await request.server.prisma.plan.findFirst({
+        where: { isFree: true, isActive: true },
+      }).catch(() => null);
+    }
 
-    const GB_BYTES = BigInt(1024 * 1024 * 1024);
-    const PLAN_LIMITS_MAP = {
-      free: {
-        storageQuotaBytes: BigInt(5) * GB_BYTES,
-        maxUsers: 5,
-        features: [
-          '5 GB Storage',
-          '5 Members',
-          'Basic media library & folders',
-          'Share links with view access',
-          'Mobile & desktop access',
-          'Community support',
-        ],
-      },
-      basic: {
-        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
-        maxUsers: 5,
-        features: [
-          '300 MB Storage',
-          '5 Members',
-          'Media library essentials',
-          'Share links & file comments',
-          'Activity feed & project overview',
-          'Mobile & desktop access',
-          'Email support',
-        ],
-      },
-      premium: {
-        storageQuotaBytes: BigInt(15) * GB_BYTES,
-        maxUsers: 10,
-        features: [
-          '15 GB Storage',
-          '10 Members',
-          'Review & annotate video/audio',
-          'Advanced filters & reporting',
-          'Custom labels, priorities & checklists',
-          'Project insights & team analytics',
-          'Billing & usage tracking',
-          'Priority support',
-        ],
-      },
-      enterprise: {
-        storageQuotaBytes: BigInt(20) * GB_BYTES,
-        maxUsers: 15,
-        features: [
-          '20 GB Storage',
-          '15 Members',
-          'Dedicated account manager',
-          'Custom integrations & automation',
-          'SSO & role-based access control',
-          'KPI dashboards & reporting tools',
-          'Onboarding support',
-        ],
-      },
-    };
-
-    const targetPlanLimits = PLAN_LIMITS_MAP[planId] || PLAN_LIMITS_MAP.free;
-
-    const selectedStorageQuotaBytes = dbPlan ? dbPlan.storageQuotaBytes : targetPlanLimits.storageQuotaBytes;
-    const selectedMaxUsers = dbPlan ? dbPlan.maxUsers : targetPlanLimits.maxUsers;
-    const selectedFeatures = dbPlan ? dbPlan.features : targetPlanLimits.features;
+    const isFreePlan = Boolean(dbPlan && dbPlan.isFree);
 
     const isMonthly = (billingCycle || "annual").toLowerCase() === "monthly";
     const now = new Date();
     const expiresAtDate = new Date(now);
-    if (planId === "free") {
-      expiresAtDate.setDate(expiresAtDate.getDate() + 3);
+    
+    if (isFreePlan) {
+      const trialDays = dbPlan.trialDays ?? 3;
+      expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);
     } else if (isMonthly) {
       expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
     } else {
@@ -2308,8 +2259,8 @@ module.exports.completeSignup = async (request, reply) => {
       website: companyWebsite || null,
       teamSize: teamSize || null,
       primaryFocus: firstFocus || null,
-      planId: planId,
-      billingCycle: planId === "free" ? "3days" : (isMonthly ? "monthly" : "annual"),
+      planId: dbPlan ? dbPlan.id : planId,
+      billingCycle: isFreePlan ? `${dbPlan?.trialDays ?? 3}days` : (isMonthly ? "monthly" : "annual"),
       planSelectedAt: now.toISOString(),
       expiresAt: expiresAtDate.toISOString(),
       subtotalCents,
@@ -2321,7 +2272,7 @@ module.exports.completeSignup = async (request, reply) => {
       name: derivedOrgName,
       slug: uniqueSlug,
       currentPlanId: dbPlan ? dbPlan.id : null,
-      isFreeTrialUsed: true,
+      isFreeTrialUsed: isFreePlan,
       metadata: orgMetadata,
       planExpiresAt: expiresAtDate,
     };

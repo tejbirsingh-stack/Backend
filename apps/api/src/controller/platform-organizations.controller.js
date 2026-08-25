@@ -471,6 +471,39 @@ async function patchOrganization(request, reply) {
       data.subscriptionStatus = body.subscriptionStatus;
     }
 
+    if (body.settings !== undefined && typeof body.settings === 'object') {
+      const {
+        requirePasswordDefault,
+        allowCommentsDefault,
+        allowDownloadOriginalDefault,
+        allowDownloadProxyDefault,
+        showCompanyWatermarkDefault,
+        defaultExpiryDays,
+      } = body.settings;
+      
+      const settingsData = {};
+      if (typeof requirePasswordDefault === 'boolean') settingsData.requirePasswordDefault = requirePasswordDefault;
+      if (typeof allowCommentsDefault === 'boolean') settingsData.allowCommentsDefault = allowCommentsDefault;
+      if (typeof allowDownloadOriginalDefault === 'boolean') settingsData.allowDownloadOriginalDefault = allowDownloadOriginalDefault;
+      if (typeof allowDownloadProxyDefault === 'boolean') settingsData.allowDownloadProxyDefault = allowDownloadProxyDefault;
+      if (typeof showCompanyWatermarkDefault === 'boolean') settingsData.showCompanyWatermarkDefault = showCompanyWatermarkDefault;
+      if (typeof defaultExpiryDays === 'number') settingsData.defaultExpiryDays = defaultExpiryDays;
+
+      if (Object.keys(settingsData).length > 0) {
+        try {
+          if (prisma.organizationSettings?.upsert) {
+            await prisma.organizationSettings.upsert({
+              where: { orgId },
+              update: settingsData,
+              create: { orgId, ...settingsData },
+            });
+          }
+        } catch (settingsError) {
+          console.warn('Could not save org settings:', settingsError.message);
+        }
+      }
+    }
+
     const updated = await prisma.organization.update({
       where: { id: orgId },
       data,
@@ -488,7 +521,21 @@ async function patchOrganization(request, reply) {
       orgId: updated.id,
     });
 
-    return { success: true, organization: serializeOrg(updated) };
+    let settings = null;
+    try {
+      if (prisma.organizationSettings?.findUnique) {
+        settings = await prisma.organizationSettings.findUnique({ where: { orgId } });
+      }
+    } catch (settingsError) {
+      console.warn('Could not load org settings:', settingsError.message);
+    }
+
+    const res = serializeOrg(updated);
+    if (settings) {
+      res.settings = { ...settings };
+    }
+
+    return { success: true, organization: res };
   } catch (error) {
     console.error('patchOrganization error:', error);
     return reply.status(500).send({
