@@ -142,9 +142,24 @@ function buildCustomInvoicePdf(invoiceData = {}, branding = {}) {
       doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a').text('Total:', totalsX, cursorY);
       doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a').text(invoiceData.total || '$0.00', totalsX + 90, cursorY, { align: 'right', width: 105 });
 
+      // Standardized Footer (matching pdfLayout.js header & footer specification)
+      const currentYear = new Date().getFullYear();
+      const footerY = 770;
+
       // Footer Note
-      doc.fontSize(8.5).font('Helvetica').fillColor('#94a3b8')
-         .text('Thank you for upgrading your subscription! For any billing questions, contact support.', 40, 780, { align: 'center', width: 515 });
+      doc.fontSize(8.5).font('Helvetica').fillColor('#64748b')
+         .text('Thank you for upgrading your subscription! For any billing questions, contact support.', 40, footerY - 18, { align: 'center', width: 515 });
+
+      // Footer Top Border Line
+      doc.moveTo(40, footerY).lineTo(555, footerY).strokeColor('#e2e8f0').lineWidth(1).stroke();
+
+      // Left Footer: Copyright
+      doc.fontSize(8).font('Helvetica').fillColor('#64748b')
+         .text(`© ${currentYear} ${orgName}. All rights reserved.`, 40, footerY + 8);
+
+      // Right Footer: Confidential Document
+      doc.fontSize(8).font('Helvetica').fillColor('#64748b')
+         .text('Confidential Document', 400, footerY + 8, { align: 'right', width: 155 });
 
       doc.end();
     } catch (err) {

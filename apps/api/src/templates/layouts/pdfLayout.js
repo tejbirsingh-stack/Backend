@@ -3,13 +3,21 @@
  * Standardizes A4 page sizing, print-ready CSS headers, footers, and page numbers across all system PDFs.
  * Supports Organization Branding Logo with fallback to Noah Cloud logo.
  */
-function wrapPdfLayout({ title = 'Document Report', bodyHtml, orgLogoUrl = null, orgName = null, accentColor = '#4f46e5' }) {
+function wrapPdfLayout({
+  title = 'Document Report',
+  bodyHtml,
+  orgLogoUrl = null,
+  orgName = null,
+  accentColor = '#4f46e5',
+  confidentialText = 'Confidential Document',
+  footerNote = ''
+}) {
   const currentYear = new Date().getFullYear();
   const displayName = orgName || 'Noah Platform';
 
   const pdfHeaderLogo = orgLogoUrl
     ? `<img src="${orgLogoUrl}" alt="${displayName}" style="max-height: 44px; max-width: 200px; object-fit: contain;" />`
-    : `<h2 style="margin: 0; color: ${accentColor}; font-size: 20px; font-weight: 700; letter-spacing: 0.5px;">NOAH CLOUD</h2>`;
+    : `<h2 style="margin: 0; color: ${accentColor}; font-size: 20px; font-weight: 700; letter-spacing: 0.5px;">${displayName.toUpperCase()}</h2>`;
 
   return `
 <!DOCTYPE html>
@@ -37,6 +45,11 @@ function wrapPdfLayout({ title = 'Document Report', bodyHtml, orgLogoUrl = null,
       line-height: 1.5;
       font-size: 10pt;
     }
+    .pdf-top-bar {
+      height: 4px;
+      background-color: ${accentColor};
+      margin-bottom: 16px;
+    }
     .pdf-header {
       display: flex;
       justify-content: space-between;
@@ -62,11 +75,19 @@ function wrapPdfLayout({ title = 'Document Report', bodyHtml, orgLogoUrl = null,
     .pdf-body {
       margin-bottom: 30px;
     }
-    .pdf-footer {
+    .pdf-footer-container {
       position: fixed;
       bottom: 0;
       left: 0;
       right: 0;
+    }
+    .pdf-footer-note {
+      text-align: center;
+      font-size: 8.5pt;
+      color: #64748b;
+      margin-bottom: 8px;
+    }
+    .pdf-footer {
       text-align: center;
       font-size: 8pt;
       color: #64748b;
@@ -96,6 +117,9 @@ function wrapPdfLayout({ title = 'Document Report', bodyHtml, orgLogoUrl = null,
   </style>
 </head>
 <body>
+  <!-- ACCENT TOP BAR -->
+  <div class="pdf-top-bar"></div>
+
   <!-- DYNAMIC PDF HEADER -->
   <div class="pdf-header">
     <div class="pdf-logo">
@@ -113,9 +137,12 @@ function wrapPdfLayout({ title = 'Document Report', bodyHtml, orgLogoUrl = null,
   </div>
 
   <!-- DYNAMIC PDF FOOTER -->
-  <div class="pdf-footer">
-    <div>© ${currentYear} ${displayName}. All rights reserved.</div>
-    <div>Confidential Document</div>
+  <div class="pdf-footer-container">
+    ${footerNote ? `<div class="pdf-footer-note">${footerNote}</div>` : ''}
+    <div class="pdf-footer">
+      <div>© ${currentYear} ${displayName}. All rights reserved.</div>
+      <div>${confidentialText}</div>
+    </div>
   </div>
 </body>
 </html>
