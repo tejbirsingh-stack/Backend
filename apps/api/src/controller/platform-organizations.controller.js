@@ -424,6 +424,68 @@ async function createOrganization(request, reply) {
   }
 }
 
+async function inviteOrganization(request, reply) {
+  try {
+    const body = request.body || {};
+    const email = body.email ? String(body.email).toLowerCase().trim() : '';
+
+    if (!email) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'Business email is required',
+        statusCode: 400,
+      });
+    }
+
+    const emailValidation = await authService.validateBusinessEmail(email);
+    if (!emailValidation.isValid) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: emailValidation.message || 'Please enter a valid business email address',
+        statusCode: 400,
+      });
+    }
+
+    const existingUser = await authService.findUserByEmail(email);
+    if (existingUser) {
+      return reply.status(409).send({
+        error: 'Conflict',
+        message: 'Admin email is already registered',
+        statusCode: 409,
+      });
+    }
+
+    const emailService = request.server.emailService || require('../services/email-service');
+    const frontendUrl =
+      request.headers.origin ||
+      process.env.FRONTEND_URL ||
+      (process.env.NODE_ENV === 'production' ? 'https://qa.noahcloud.ai' : 'http://localhost:5173');
+    const signupUrl = `${frontendUrl}/signup?email=${encodeURIComponent(email)}`;
+
+    await emailService.sendOrganizationInvite(email, { appUrl: signupUrl });
+
+    await writePlatformAudit({
+      activityName: ACTIVITY_NAME.ORGANIZATION_CREATED, // or a new ACTIVITY_NAME like ORGANIZATION_INVITED
+      description: `Invited organization with admin ${email}`,
+      activityType: ACTIVITY_TYPE.INFO,
+      admin: request.platformAdmin,
+      orgId: null,
+    });
+
+    return reply.status(200).send({
+      success: true,
+      message: 'Invitation sent successfully',
+    });
+  } catch (error) {
+    console.error('inviteOrganization error:', error);
+    return reply.status(500).send({
+      error: 'InternalServerError',
+      message: error.message || 'Failed to send invite',
+      statusCode: 500,
+    });
+  }
+}
+
 async function patchOrganization(request, reply) {
   try {
     const { orgId } = request.params;
@@ -594,6 +656,7 @@ module.exports = {
   listOrganizations,
   getOrganization,
   createOrganization,
+  inviteOrganization,
   patchOrganization,
   updateWorkspace,
 };
