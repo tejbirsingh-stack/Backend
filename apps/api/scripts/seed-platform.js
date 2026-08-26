@@ -5,6 +5,7 @@
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const { PrismaClient } = require('@prisma/client');
+const Stripe = require('stripe');
 
 try {
   require('dotenv').config({ path: path.join(__dirname, '../.env') });
@@ -13,6 +14,78 @@ try {
 }
 
 const prisma = new PrismaClient();
+
+/**
+ * Get or create a Stripe price for a given product and interval.
+ * Uses the plan's human-readable slug as the stable Stripe Product ID so it's
+ * the same across all environments (local, QA, prod) for the same Stripe account.
+ */
+async function syncPlanToStripe(stripe, plan) {
+  if (!stripe) return {}; // Skip if no Stripe key configured
+
+  const productId = plan.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+  // Upsert Stripe Product
+  let product;
+  try {
+    product = await stripe.products.retrieve(productId);
+    product = await stripe.products.update(productId, {
+      name: plan.name,
+      description: plan.description || undefined,
+      active: plan.isActive !== false,
+    });
+  } catch (err) {
+    if (err.code === 'resource_missing' || err.statusCode === 404) {
+      product = await stripe.products.create({
+        id: productId,
+        name: plan.name,
+        description: plan.description || undefined,
+        active: plan.isActive !== false,
+      });
+    } else {
+      console.warn(`[Stripe] Could not sync product "${plan.name}": ${err.message}`);
+      return {};
+    }
+  }
+
+  const findOrCreatePrice = async (cents, interval, existingPriceId) => {
+    if (!cents || cents <= 0) return null;
+    if (existingPriceId) {
+      try {
+        const existing = await stripe.prices.retrieve(existingPriceId);
+        if (
+          existing.unit_amount === cents &&
+          existing.recurring?.interval === interval &&
+          existing.product === product.id &&
+          existing.active
+        ) {
+          return existing.id; // Already correct, reuse
+        }
+        await stripe.prices.update(existingPriceId, { active: false }).catch(() => {});
+      } catch (e) { /* will create a new one */ }
+    }
+    // Search for an existing active price with matching amount on this product
+    try {
+      const list = await stripe.prices.list({ product: product.id, active: true, limit: 20 });
+      const match = list.data.find(
+        p => p.unit_amount === cents && p.recurring?.interval === interval
+      );
+      if (match) return match.id;
+    } catch (e) { /* ignore */ }
+    const price = await stripe.prices.create({
+      product: product.id,
+      unit_amount: cents,
+      currency: 'usd',
+      recurring: { interval },
+    });
+    return price.id;
+  };
+
+  const monthlyPriceId = await findOrCreatePrice(plan.monthlyPriceCents, 'month', plan.monthlyPriceId);
+  const yearlyPriceId = await findOrCreatePrice(plan.yearlyPriceCents, 'year', plan.yearlyPriceId);
+
+  return { stripeProductId: product.id, monthlyPriceId, yearlyPriceId };
+}
 
 const PLATFORM_ADMIN = {
   email: 'platformadmin@noahcloud.ai',
@@ -35,9 +108,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 1,
     maxProjects: 1,
     features: [
-      '1 Project & 1 Workspace',
-      '0 Storage',
-      '5 Members',
       'Basic media library & folders',
       'Share links with view access',
       'Mobile & desktop access',
@@ -45,7 +115,7 @@ const DEFAULT_PLANS = [
     ],
     isPublic: true,
     isFeatured: false,
-    sortOrder: 0,
+    sortOrder: 1,
     ctaLabel: 'Continue with Free',
     isActive: true,
   },
@@ -59,9 +129,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 2,
     maxProjects: 2,
     features: [
-      '2 Projects & 2 Workspaces',
-      '300 MB Storage',
-      '5 Members',
       'Media library essentials',
       'Share links & file comments',
       'Activity feed & project overview',
@@ -70,7 +137,7 @@ const DEFAULT_PLANS = [
     ],
     isPublic: true,
     isFeatured: false,
-    sortOrder: 1,
+    sortOrder: 2,
     ctaLabel: 'Get started',
     isActive: true,
   },
@@ -84,9 +151,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 3,
     maxProjects: 3,
     features: [
-      '3 Projects & 3 Workspaces',
-      '15 GB Storage',
-      '10 Members',
       'Review & annotate video/audio',
       'Advanced filters & reporting',
       'Custom labels, priorities & checklists',
@@ -96,7 +160,7 @@ const DEFAULT_PLANS = [
     ],
     isPublic: true,
     isFeatured: true,
-    sortOrder: 2,
+    sortOrder: 3,
     ctaLabel: 'Start with Premium',
     isActive: true,
   },
@@ -110,9 +174,6 @@ const DEFAULT_PLANS = [
     maxWorkspaces: 4,
     maxProjects: 4,
     features: [
-      '4 Projects & 4 Workspaces',
-      '20 GB Storage',
-      '15 Members',
       'Dedicated account manager',
       'Custom integrations & automation',
       'SSO & role-based access control',
@@ -121,7 +182,7 @@ const DEFAULT_PLANS = [
     ],
     isPublic: true,
     isFeatured: false,
-    sortOrder: 3,
+    sortOrder: 4,
     ctaLabel: 'Contact Sales',
     isActive: true,
   },
@@ -129,6 +190,23 @@ const DEFAULT_PLANS = [
 
 async function main() {
   const passwordHash = await bcrypt.hash(PLATFORM_ADMIN.password, 10);
+
+  // Initialise Stripe (optional — if no key is configured, plan sync is skipped gracefully)
+  let stripe = null;
+  try {
+    const setting = await prisma.systemSetting.findFirst({
+      where: { key: { in: ['TEST_STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY'] } },
+    }).catch(() => null);
+    const stripeKey = setting?.value || process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+    if (stripeKey) {
+      stripe = new Stripe(stripeKey, { apiVersion: '2023-10-16' });
+      console.log('Stripe initialised — plans will be synced automatically.');
+    } else {
+      console.warn('No Stripe key found — skipping Stripe sync. Run Save in Platform Admin to sync later.');
+    }
+  } catch (e) {
+    console.warn('Stripe init failed:', e.message);
+  }
 
   const admin = await prisma.platformAdmin.upsert({
     where: { email: PLATFORM_ADMIN.email },
@@ -148,21 +226,80 @@ async function main() {
   console.log('Platform admin ready:', admin.email);
 
   for (const plan of DEFAULT_PLANS) {
-    const existing = await prisma.plan.findFirst({
-      where: { name: { equals: plan.name, mode: 'insensitive' } },
+    const { features, ...planData } = plan;
+    const planSlug = plan.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    
+    // Search by stripeProductId first (stable slug), fallback to name
+    let existing = await prisma.plan.findFirst({
+      where: { stripeProductId: planSlug },
     });
+    
+    if (!existing) {
+      existing = await prisma.plan.findFirst({
+        where: { name: { equals: plan.name, mode: 'insensitive' } },
+      });
+    }
 
+    let currentPlan;
     if (existing) {
-      const updated = await prisma.plan.update({
+      // Preserve existing Stripe price IDs so we don't generate new prices on every seed run
+      const updateData = { ...planData };
+      if (existing.monthlyPriceId) delete updateData.monthlyPriceId;
+      if (existing.yearlyPriceId) delete updateData.yearlyPriceId;
+      currentPlan = await prisma.plan.update({
         where: { id: existing.id },
-        data: plan,
+        data: updateData,
       });
-      console.log(`Plan ready: ${updated.name} (${updated.id})`);
     } else {
-      const created = await prisma.plan.create({
-        data: plan,
+      currentPlan = await prisma.plan.create({
+        data: planData,
       });
-      console.log(`Plan ready: ${created.name} (${created.id})`);
+    }
+
+    // Auto-sync ALL plans to Stripe (even free ones) so stripeProductId is always stored — rename-safe
+    if (stripe) {
+      try {
+        const { stripeProductId, monthlyPriceId, yearlyPriceId } = await syncPlanToStripe(stripe, currentPlan);
+        // Always save stripeProductId; only save price IDs if they exist
+        const syncData = {};
+        if (stripeProductId) syncData.stripeProductId = stripeProductId;
+        if (monthlyPriceId) syncData.monthlyPriceId = monthlyPriceId;
+        if (yearlyPriceId) syncData.yearlyPriceId = yearlyPriceId;
+        if (Object.keys(syncData).length > 0) {
+          currentPlan = await prisma.plan.update({ where: { id: currentPlan.id }, data: syncData });
+        }
+        console.log(`Plan ready + Stripe synced: ${currentPlan.name} (product: ${stripeProductId ?? 'n/a'}, monthly: ${monthlyPriceId ?? 'n/a'}, yearly: ${yearlyPriceId ?? 'n/a'})`);
+      } catch (stripeErr) {
+        console.warn(`Plan ready: ${currentPlan.name} — Stripe sync failed: ${stripeErr.message}`);
+      }
+    } else {
+      console.log(`Plan ready: ${currentPlan.name} (${currentPlan.id})`);
+    }
+
+    for (let i = 0; i < features.length; i++) {
+      const featureName = features[i];
+      const featureRecord = await prisma.planFeature.upsert({
+        where: { name: featureName },
+        update: {},
+        create: {
+          name: featureName,
+          sortOrder: i,
+        },
+      });
+
+      await prisma.planFeatureSelection.upsert({
+        where: {
+          planId_featureId: {
+            planId: currentPlan.id,
+            featureId: featureRecord.id,
+          },
+        },
+        update: {},
+        create: {
+          planId: currentPlan.id,
+          featureId: featureRecord.id,
+        },
+      });
     }
   }
 

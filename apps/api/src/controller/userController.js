@@ -1,5 +1,6 @@
 // User and Team Management Controller
 const { roles } = require('../lib');
+const { autoAssignNewAdminToWorkspaces } = require('../services/workspace.service');
 const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
 
@@ -170,7 +171,7 @@ module.exports.getRoles = async (request, reply) => {
     const Roles = await request.server.prisma.role.findMany({
       where: {
         name: {
-          not: roles.SYSTEM_ADMIN
+          not: roles.PLATFORM_ADMIN
         }
       },
       orderBy: {
@@ -195,18 +196,34 @@ module.exports.getRoles = async (request, reply) => {
 
 module.exports.updateProfile = async (request, reply) => {
   try {
-    const { name, timezone } = request.body;
-    
+    const { name, timezone, shareLinkActivityEnabled, preferences } = request.body;
+
     if (!request.user || !request.user.id) {
       return reply.code(401).send({ error: "Unauthorized" });
     }
 
+    let updateData = {};
+    if (name !== undefined) updateData.name = name;
+    if (timezone !== undefined) updateData.timezone = timezone;
+    if (shareLinkActivityEnabled !== undefined) updateData.shareLinkActivityEnabled = shareLinkActivityEnabled;
+
+    if (preferences !== undefined) {
+      const existingUser = await request.server.prisma.user.findUnique({
+        where: { id: request.user.id },
+        select: { preferences: true }
+      });
+      const currentPrefs = existingUser?.preferences && typeof existingUser.preferences === 'object'
+        ? existingUser.preferences
+        : {};
+      updateData.preferences = {
+        ...currentPrefs,
+        ...preferences
+      };
+    }
+
     const updatedUser = await request.server.prisma.user.update({
       where: { id: request.user.id },
-      data: {
-        ...(name !== undefined ? { name } : {}),
-        ...(timezone !== undefined ? { timezone } : {})
-      }
+      data: updateData
     });
 
     return reply.send({
@@ -251,10 +268,10 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
     const sanitizedOrgName = user.organization.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
     const sanitizedEmail = user.email.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     const folderName = `${sanitizedEmail}_${userId}`;
-    
+
     const ext = path.extname(data.filename) || '.png';
     const uniqueFilename = `profile_${Date.now()}${ext}`;
-    
+
     // Path: noah-uploads / [organization name] / Profile Photo / [Username_emailid_uniqueid] / [filename]
     const b2Key = `noah-uploads/${sanitizedOrgName}/Profile Photo/${folderName}/${uniqueFilename}`;
 
@@ -302,7 +319,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
 module.exports.getAvatar = async (request, reply) => {
   try {
     const { id } = request.params;
-    
+
     const user = await request.server.prisma.user.findUnique({
       where: { id },
       select: { avatarKey: true, avatarUrl: true }
@@ -338,7 +355,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
   try {
     const { id } = request.params;
     const { email, roleId } = request.body;
-    
+
     // 1. Verify Super Admin role
     let currentUserRole = request.user?.role || "";
     if (request.user?.id) {
@@ -407,7 +424,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
         }
       });
       if (!targetRole) {
-         return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
+        return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
       }
       dataToUpdate.roleId = targetRole.id;
       dataToUpdate.role = targetRole.name;
@@ -420,6 +437,12 @@ module.exports.updateUserAdmin = async (request, reply) => {
         roleRelation: true
       }
     });
+
+    if (roleId && ['Super Admin', 'Admin', 'Platform Admin'].includes(updatedUser.role)) {
+      if (updatedUser.orgId) {
+        await autoAssignNewAdminToWorkspaces(request.server.prisma, updatedUser.orgId, updatedUser.id);
+      }
+    }
 
     return reply.send({
       success: true,
@@ -434,8 +457,8 @@ module.exports.updateUserAdmin = async (request, reply) => {
 module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
   try {
     const { userIds, action } = request.body; // action: 'active', 'inactive', 'delete'
-    
-    // 1. Verify Super Admin role
+
+    // 1. Verify Super Admin or Admin role
     let currentUserRole = request.user?.role || "";
     if (request.user?.id) {
       const liveUser = await request.server.prisma.user.findUnique({
@@ -450,11 +473,11 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     }
     const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
 
-    if (normalizedRole !== "superadmin") {
+    if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
       return reply.status(403).send({
         success: false,
         error: "Forbidden",
-        message: "Access denied. Only Super Admin can edit users.",
+        message: "Access denied. Admin permissions required.",
       });
     }
 
@@ -467,20 +490,57 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     }
 
     if (action === 'delete') {
+      // ONLY Super Admin can delete users
+      if (normalizedRole !== "superadmin") {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Only Super Admin can delete users.",
+        });
+      }
+
+      // Fetch target users to prevent deleting self or other Super Admins
+      const targetUsers = await request.server.prisma.user.findMany({
+        where: { id: { in: userIds } },
+        include: { roleRelation: true }
+      });
+
+      const safeUserIdsToDelete = targetUsers
+        .filter((u) => {
+          if (u.id === request.user.id) return false; // Prevent self deletion
+          const rName = (u.roleRelation?.name || u.role || '').toLowerCase().replace(/[_ -]+/g, "");
+          if (rName === 'superadmin') return false; // Prevent Super Admin deletion
+          return true;
+        })
+        .map((u) => u.id);
+
+      if (safeUserIdsToDelete.length === 0) {
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: "Super Admin and your own account cannot be deleted.",
+        });
+      }
+
       await request.server.prisma.user.deleteMany({
-        where: { id: { in: userIds } }
+        where: { id: { in: safeUserIdsToDelete } }
+      });
+
+      return reply.send({
+        success: true,
+        message: `Successfully deleted ${safeUserIdsToDelete.length} user(s)`
       });
     } else {
       await request.server.prisma.user.updateMany({
         where: { id: { in: userIds } },
         data: { status: action === 'active' ? 'active' : 'pending' }
       });
-    }
 
-    return reply.send({
-      success: true,
-      message: `Successfully updated ${userIds.length} users`
-    });
+      return reply.send({
+        success: true,
+        message: `Successfully updated ${userIds.length} user(s)`
+      });
+    }
 
   } catch (error) {
     request.log.error(error);

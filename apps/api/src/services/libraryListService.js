@@ -15,6 +15,7 @@ async function listItems(prisma, params) {
     dateFrom,
     dateTo,
     tagIds = '',
+    aiTags = '',
     reviewStatus = 'all',
   } = params;
 
@@ -41,17 +42,61 @@ async function listItems(prisma, params) {
   }
 
   const assetConditions = [
-    Prisma.sql`("status" IS NULL OR "status" NOT IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`,
+    Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`,
     Prisma.sql`"deletedAt" IS NULL`
   ];
-  const folderConditions = [];
+  const folderConditions = [
+    Prisma.sql`id::text NOT IN (
+      SELECT "ownerId"::text FROM "assets" 
+      WHERE "ownerId" IS NOT NULL 
+      AND "ownerType" = 'FOLDER' 
+      AND ("status" IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted') OR "deletedAt" IS NOT NULL OR "deletionReason" ILIKE '%Deleted with folder%')
+    )`
+  ];
   const projectConditions = [];
 
-  if (view !== 'shared') {
-    if (view !== 'project') {
-      assetConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
+  let isDefaultWorkspace = false;
+  if (workspaceId) {
+    const ws = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { isDefault: true, orgId: true },
+    });
+    if (ws) {
+      if (ws.isDefault) {
+        isDefaultWorkspace = true;
+      } else {
+        const firstWs = await prisma.workspace.findFirst({
+          where: { orgId: ws.orgId },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        });
+        if (firstWs && firstWs.id === workspaceId) {
+          isDefaultWorkspace = true;
+        }
+      }
     }
-    
+  } else {
+    isDefaultWorkspace = true;
+  }
+
+  if (view !== 'shared') {
+    const isSpecificContainer = view === 'project' || view === 'folder';
+
+    if (!isSpecificContainer) {
+      if (isDefaultWorkspace) {
+        assetConditions.push(Prisma.sql`(
+          "workspace_id" = ${workspaceId}
+          OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId}))
+          OR "global_media" = true
+        )`);
+      } else {
+        assetConditions.push(Prisma.sql`(
+          ("workspace_id" = ${workspaceId} OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId})))
+          AND ("global_media" IS NULL OR "global_media" = false)
+        )`);
+      }
+    }
+
     assetConditions.push(Prisma.sql`(
       "visibility" = 'public' 
       OR ("visibility" = 'private' AND "uploadedByUserId" = ${params.userId}::uuid)
@@ -59,17 +104,23 @@ async function listItems(prisma, params) {
       OR id IN (SELECT "asset_id" FROM "asset_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid))
       OR id IN (
         SELECT "asset_id" FROM "project_sources" WHERE "project_id" IN (
-          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted')) AND "visibility" = 'public' AND "workspace_id" = ${workspaceId}
+          SELECT id FROM "projects" WHERE ("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted')) AND "visibility" = 'public' ${!isSpecificContainer ? Prisma.sql`AND "workspace_id" = ${workspaceId}` : Prisma.empty}
           UNION
-          SELECT "project_id" FROM "project_users" WHERE "user_id" = ${params.userId}::uuid
+          SELECT pu."project_id" FROM "project_users" pu
+            INNER JOIN "projects" p ON p.id = pu."project_id"
+            WHERE pu."user_id" = ${params.userId}::uuid AND ("p"."status" IS NULL OR "p"."status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted')) ${!isSpecificContainer ? Prisma.sql`AND p."workspace_id" = ${workspaceId}` : Prisma.empty}
           UNION
-          SELECT "project_id" FROM "project_groups" WHERE "group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid)
+          SELECT pg."project_id" FROM "project_groups" pg
+            INNER JOIN "projects" p ON p.id = pg."project_id"
+            WHERE pg."group_id" IN (SELECT "groupId" FROM "user_group_members" WHERE "userId" = ${params.userId}::uuid)
+            ${!isSpecificContainer ? Prisma.sql`AND p."workspace_id" = ${workspaceId}` : Prisma.empty}
         )
       )
     )`);
 
-    if (view !== 'project') {
+    if (!isSpecificContainer) {
       folderConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
+      folderConditions.push(Prisma.sql`("parent_folder_id" IS NULL OR "parent_folder_id" = '')`);
       projectConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
     }
     projectConditions.push(Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`);
@@ -191,6 +242,21 @@ async function listItems(prisma, params) {
     }
   }
 
+  if (aiTags) {
+    const selectedAiTags = String(aiTags)
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (selectedAiTags.length > 0) {
+      // AND: asset.aiTags JsonB array must contain every selected tag
+      assetConditions.push(
+        Prisma.sql`"aiTags" @> ${JSON.stringify(selectedAiTags)}::jsonb`,
+      );
+      folderConditions.push(Prisma.sql`false`);
+      projectConditions.push(Prisma.sql`false`);
+    }
+  }
+
   if (reviewStatus && reviewStatus !== 'all') {
     if (reviewStatus === 'New') {
       // Default status: missing metadata, empty value, or explicitly "New"
@@ -287,6 +353,8 @@ async function listItems(prisma, params) {
       include: {
         files: true,
         metadata: true,
+        sources: true,
+        aiHighlight: { select: { summary: true, tags: true } },
         assetTags: { include: { tag: true } },
         ...(view === 'shared' ? {
           shareLinks: {
@@ -298,11 +366,14 @@ async function listItems(prisma, params) {
         } : {})
       }
     }) : [],
-    folderIds.length > 0 ? prisma.folder.findMany({ 
+    folderIds.length > 0 ? prisma.folder.findMany({
       where: { id: { in: folderIds } },
-      include: { _count: { select: { children: true, projects: true } } }
+      include: {
+        sources: true,
+        _count: { select: { children: true, projects: true } }
+      }
     }) : [],
-    projectIds.length > 0 ? prisma.project.findMany({ 
+    projectIds.length > 0 ? prisma.project.findMany({
       where: { id: { in: projectIds }, status: { notIn: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] } },
       include: { _count: { select: { sources: true } } }
     }) : []
@@ -345,6 +416,18 @@ async function listItems(prisma, params) {
             : a.metadata.customProperties;
       }
 
+      const aiTagList = Array.isArray(a.aiTags)
+        ? a.aiTags.filter((t) => typeof t === 'string')
+        : Array.isArray(a.aiHighlight?.tags)
+          ? a.aiHighlight.tags.filter((t) => typeof t === 'string')
+          : [];
+      const userSummary =
+        (typeof customMetadata.summary === 'string' && customMetadata.summary.trim()) ||
+        '';
+      const aiSummary =
+        (typeof a.aiHighlight?.summary === 'string' && a.aiHighlight.summary.trim()) ||
+        '';
+
       return {
         id: a.id,
         title: a.title,
@@ -356,10 +439,16 @@ async function listItems(prisma, params) {
         thumbnail: `/api/media/${encodeURIComponent(a.id)}/thumbnail`,
         uploadedBy: a.uploadedByUserId || null,
         tags: dbTags,
+        aiTags: aiTagList,
+        summary: userSummary || aiSummary || undefined,
         status: a.status,
-        workspaceId: a.workspaceId,
+        visibility: a.visibility,
+        workspaceId: a.workspaceId || workspaceId,
+        globalMedia: Boolean(a.globalMedia),
         customMetadata,
         reviewStatus: customMetadata.reviewStatus || 'New',
+        parentFolderId: a.ownerType === 'FOLDER' ? a.ownerId : null,
+        linkedProjectIds: a.sources ? a.sources.map(ps => ps.projectId) : [],
         isSharedByMe: a.uploadedByUserId === params.userId,
         ...(a.shareLinks ? (() => {
           const nowTs = Date.now();
@@ -378,18 +467,23 @@ async function listItems(prisma, params) {
     } else if (raw.type === 'folder') {
       const f = folders.find(x => x.id === raw.id);
       if (!f) return null;
-      
+
       const ac = folderAssetCounts.find(a => a.ownerId === f.id)?._count?._all || 0;
       const itemCount = (f._count?.children || 0) + (f._count?.projects || 0) + ac;
-      
+
       return {
         id: f.id,
         title: f.name,
         type: 'folder',
         isFolder: true,
         createdAt: f.createdAt.toISOString(),
+        folderColor: f.color || undefined,
         color: f.color,
+        visibility: f.visibility,
         workspaceId: f.workspaceId,
+        parentFolderId: f.parentFolderId || null,
+        linkedProjectIds: f.sources ? f.sources.map(ps => ps.projectId) : [],
+        isAutoGenerated: f.isAutoGenerated,
         itemCount
       };
     } else if (raw.type === 'project') {
@@ -400,7 +494,9 @@ async function listItems(prisma, params) {
         title: p.name,
         type: 'folder',
         isProject: true,
+        folderColor: p.color || undefined,
         createdAt: p.createdAt.toISOString(),
+        visibility: p.visibility,
         workspaceId: p.workspaceId,
         isSharedByMe: Boolean(p.createdById && p.createdById === params.userId),
         itemCount: p._count?.sources || 0

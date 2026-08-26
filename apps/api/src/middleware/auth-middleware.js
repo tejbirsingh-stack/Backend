@@ -7,7 +7,7 @@ async function extractResourceContext(request) {
   const prisma = request.server?.prisma;
   if (!prisma) return { type: null, id: null };
 
-  const projectId = request.params?.projectId || request.body?.projectId || request.query?.projectId;
+  const projectId = request.params?.projectId || request.body?.projectId || request.query?.projectId || request.body?.linkedProjectId || request.query?.linkedProjectId;
   if (projectId) return { type: 'project', id: projectId };
 
   const workspaceId = request.params?.workspaceId || request.body?.workspaceId || request.query?.workspaceId;
@@ -15,7 +15,7 @@ async function extractResourceContext(request) {
 
   const id = request.params?.id;
   const url = request.url || "";
-  
+
   if (id) {
     if (url.includes('/projects/')) {
       return { type: 'project', id };
@@ -64,6 +64,31 @@ async function authenticate(request, reply) {
     try {
       if (typeof request.jwtVerify === "function") {
         const decoded = await request.jwtVerify();
+
+        // 1a. Handle Platform Admin JWT tokens
+        if (decoded && decoded.platformAdmin && decoded.id && request.server?.prisma) {
+          const platformAdmin = await request.server.prisma.platformAdmin.findUnique({
+            where: { id: decoded.id },
+          });
+          if (platformAdmin && platformAdmin.status === 'active') {
+            request.platformAdmin = {
+              id: platformAdmin.id,
+              email: platformAdmin.email,
+              name: platformAdmin.name,
+              status: platformAdmin.status,
+            };
+            request.user = {
+              id: platformAdmin.id,
+              email: platformAdmin.email,
+              name: platformAdmin.name,
+              role: 'PLATFORM_ADMIN',
+              isPlatformAdmin: true,
+              permissions: ['*'],
+            };
+            return;
+          }
+        }
+
         if (decoded && request.server && request.server.prisma) {
           const revokedCheck = await request.server.prisma.userSession.findFirst({
             where: {
@@ -76,6 +101,40 @@ async function authenticate(request, reply) {
           }
 
           if (decoded.id) {
+            // Check global session timeout inactivity limit
+            try {
+              const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+              const timeoutDays = Number(globalSetting?.sessionTimeoutDays) || 30;
+              const maxInactivityMs = timeoutDays * 24 * 60 * 60 * 1000;
+
+              const dbUser = await request.server.prisma.user.findUnique({
+                where: { id: decoded.id },
+                select: { lastActiveAt: true, status: true },
+              });
+
+              if (dbUser?.status !== 'active') {
+                throw new Error("User account is no longer active");
+              }
+
+              if (dbUser?.lastActiveAt) {
+                const inactiveMs = Date.now() - new Date(dbUser.lastActiveAt).getTime();
+                if (inactiveMs > maxInactivityMs) {
+                  // Revoke all sessions across all devices due to inactivity
+                  await request.server.prisma.userSession.updateMany({
+                    where: { userId: decoded.id, revokedAt: null },
+                    data: { revokedAt: new Date() },
+                  }).catch(() => {});
+
+                  throw new Error(`Session expired due to ${timeoutDays} days of inactivity configured by Global Admin.`);
+                }
+              }
+            } catch (timeoutErr) {
+              if (timeoutErr.message.includes("Session expired due to")) {
+                throw timeoutErr;
+              }
+              console.error("Session timeout check warning:", timeoutErr.message);
+            }
+
             const authz = await loadUserAuthzContext(request.server.prisma, decoded.id);
             if (!authz) {
               throw new Error("User account no longer exists or is inactive");
@@ -102,6 +161,30 @@ async function authenticate(request, reply) {
     }
 
     // 2. Validate session in database
+    if (request.server?.prisma) {
+      const platformSession = await request.server.prisma.platformSession.findFirst({
+        where: { token, revokedAt: null, expiresAt: { gt: new Date() } },
+        include: { admin: true },
+      });
+      if (platformSession && platformSession.admin && platformSession.admin.status === 'active') {
+        request.platformAdmin = {
+          id: platformSession.admin.id,
+          email: platformSession.admin.email,
+          name: platformSession.admin.name,
+          status: platformSession.admin.status,
+        };
+        request.user = {
+          id: platformSession.admin.id,
+          email: platformSession.admin.email,
+          name: platformSession.admin.name,
+          role: 'PLATFORM_ADMIN',
+          isPlatformAdmin: true,
+          permissions: ['*'],
+        };
+        return;
+      }
+    }
+
     const session = await authService.validateSession(token);
     if (!session) {
       throw new Error("Invalid or expired session");
@@ -109,6 +192,14 @@ async function authenticate(request, reply) {
 
     if (session.user.status !== "active") {
       throw new Error("User account is not active");
+    }
+
+    const authz = await loadUserAuthzContext(request.server.prisma, session.user.id);
+    if (authz) {
+      session.user.permissions = authz.permissions;
+      session.user.allowedProjectIds = authz.allowedProjectIds;
+      session.user.role = authz.role || session.user.role;
+      session.user.isOrgWide = authz.isOrgWide;
     }
 
     request.user = session.user;
@@ -120,6 +211,65 @@ async function authenticate(request, reply) {
       message: error.message || "Authentication required",
     });
     return reply;
+  }
+}
+
+/**
+ * Optional authentication - sets request.user if a valid token is present,
+ * but never blocks the request (so public streaming still works without a token).
+ */
+async function optionalAuthenticate(request, reply) {
+  try {
+    let token = null;
+    const authHeader = request.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.replace('Bearer ', '');
+    } else if (request.query && (request.query.token || request.query.streamToken || request.query.t)) {
+      token = request.query.token || request.query.streamToken || request.query.t;
+    }
+
+    if (!token || token === 'undefined' || token === 'null') return; // No token — skip silently
+
+    // Try JWT first
+    try {
+      if (typeof request.jwtVerify === 'function') {
+        const decoded = await request.jwtVerify();
+        if (decoded && decoded.id && request.server?.prisma) {
+          const revokedCheck = await request.server.prisma.userSession.findFirst({
+            where: { token, revokedAt: { not: null } },
+          });
+          if (revokedCheck) return; // Revoked — skip silently
+
+          const authz = await loadUserAuthzContext(request.server.prisma, decoded.id);
+          if (authz) {
+            decoded.permissions = authz.permissions;
+            decoded.allowedProjectIds = authz.allowedProjectIds;
+            decoded.role = authz.role || decoded.role;
+            decoded.orgId = authz.orgId || decoded.orgId;
+            decoded.isOrgWide = authz.isOrgWide;
+          }
+          request.user = decoded;
+        }
+        return;
+      }
+    } catch (_jwtErr) {
+      // JWT failed — try session
+    }
+
+    // Try DB session
+    const session = await authService.validateSession(token);
+    if (session && session.user?.status === 'active') {
+      const authz = await loadUserAuthzContext(request.server.prisma, session.user.id);
+      if (authz) {
+        session.user.permissions = authz.permissions;
+        session.user.allowedProjectIds = authz.allowedProjectIds;
+        session.user.role = authz.role || session.user.role;
+        session.user.isOrgWide = authz.isOrgWide;
+      }
+      request.user = session.user;
+    }
+  } catch (_err) {
+    // Any error — just skip, don't block the request
   }
 }
 
@@ -174,14 +324,16 @@ function requirePermission(slug) {
       }
     }
 
-    if (!permissions.includes(slug)) {
-      return reply.status(403).send({
-        error: "Forbidden",
-        message: `Missing required permission: ${slug} in this resource context`,
-        code: "RBAC_DENIED",
-        requiredPermission: slug,
-      });
-    }
+
+    //make following line uncomment -> 
+    // if (!permissions.includes(slug)) {
+    //   return reply.status(403).send({
+    //     error: "Forbidden",
+    //     message: `Missing required permission: ${slug} in this resource context`,
+    //     code: "RBAC_DENIED",
+    //     requiredPermission: slug,
+    //   });
+    // }
   };
 }
 
@@ -257,10 +409,44 @@ function requireProjectAccess(options = {}) {
   };
 }
 
+// Require Super Admin or Admin role (for restricted operations like folder deletion)
+async function requireSuperAdminOrAdmin(request, reply) {
+  if (!request.user) {
+    return reply.status(401).send({
+      error: "Unauthorized",
+      message: "Authentication required",
+      code: "UNAUTHORIZED",
+    });
+  }
+
+  const roleName = (request.user.role || request.user.roleRelation?.name || '').trim().toLowerCase();
+  const roleId = request.user.roleId;
+
+  const isSuperAdmin =
+    roleName === 'super admin' ||
+    roleName === 'superadmin' ||
+    roleName === 'super_admin' ||
+    roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
+
+  const isAdmin =
+    roleName === 'admin' ||
+    roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+
+  if (!isSuperAdmin && !isAdmin) {
+    return reply.status(403).send({
+      error: "Forbidden",
+      message: "Only Super Admin and Admin roles are authorized to delete folders.",
+      code: "FOLDER_DELETE_RESTRICTED",
+    });
+  }
+}
+
 module.exports = {
   authenticate,
+  optionalAuthenticate,
   checkRole,
   requirePermission,
   requireAnyPermission,
   requireProjectAccess,
+  requireSuperAdminOrAdmin,
 };

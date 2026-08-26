@@ -1,3 +1,6 @@
+import dns from 'dns';
+try { dns.setDefaultResultOrder('ipv4first'); } catch (e) {}
+
 import 'dotenv/config';
 import './worker.js';
 import Fastify from 'fastify';
@@ -9,13 +12,13 @@ import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
 import rawBody from 'fastify-raw-body';
-import { PrismaClient } from '@prisma/client';
+
 import Redis from 'ioredis';
 import path from 'path';
 import { logSuccess, logError, ACTOR_TYPE, ACTIVITY_NAME } from './lib/audit-log.js';
 
 // Add global BigInt serializer to prevent fastify/JSON stringify errors
-(BigInt.prototype as any).toJSON = function () {   
+(BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
 
@@ -39,7 +42,7 @@ const compressionService = {};
 
 declare module 'fastify' {
   interface FastifyInstance {
-    prisma: PrismaClient;
+    prisma: any;
     redis: any;
     logger: Logger;
     metrics: MetricsCollector;
@@ -78,17 +81,9 @@ const fastify = Fastify({
   connectionTimeout: 60000
 });
 
-// Initialize database connection
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-const prisma = globalForPrisma.prisma || new PrismaClient({
-  log: ['query', 'info', 'warn', 'error'],
-  datasources: {
-    db: {
-      url: config.DATABASE_URL
-    }
-  }
-});
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+// Use shared singleton Prisma client (connection pool capped in utils/prisma.js)
+// @ts-ignore
+const prisma = require('./utils/prisma.js');
 
 // Initialize Redis connection with Sentinel support
 // const redis = new Redis({
@@ -121,26 +116,20 @@ fastify.decorate('mediaService', mediaService);
 fastify.decorate('compressionService', compressionService);
 fastify.decorate('emailService', emailService);
 
+// @ts-ignore
+import { attachCspFrameAncestors } from './middleware/csp-middleware.js';
+
 // Main setup function to avoid top-level await
 async function setupServer() {
   // Register plugins
   await fastify.register(helmet, {
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        scriptSrc: ["'self'"],
-        imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'", "ws:", "wss:"],
-        fontSrc: ["'self'"],
-        objectSrc: ["'none'"],
-        mediaSrc: ["'self'", "https:", "blob:"],
-        frameSrc: ["'none'"],
-      }
-    },
+    contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" }
   });
+
+  // Attach dynamic CSP frame-ancestors and origin verification hook
+  fastify.addHook('onRequest', attachCspFrameAncestors);
 
   await fastify.register(rawBody, {
     field: 'rawBody', // the raw body will be available on request.rawBody
@@ -274,7 +263,7 @@ async function setupServer() {
       error: error.message,
       stack: error.stack,
       url: request.url,
-      method: request.method 
+      method: request.method
     });
 
     // Increment error metrics
@@ -312,37 +301,45 @@ async function setupServer() {
     });
   });
 
-  try {
-    // API Routes - using plain require to avoid top-level await
-    fastify.register(require('./routes/analytics'), { prefix: '/api/analytics' });
-    fastify.register(require('./routes/annotations'), { prefix: '/api/annotations' });
-    fastify.register(require('./routes/workspaces'), { prefix: '/api/workspaces' });
-    fastify.register(require('./routes/auth-routes'), { prefix: '/api/auth' });
-    fastify.register(require('./routes/collections'), { prefix: '/api/collections' });
-    fastify.register(require('./routes/favorites'), { prefix: '/api/favorites' });
-    fastify.register(require('./routes/compression'), { prefix: '/api/compression' });
-    fastify.register(require('./routes/health-route.js'));
-    fastify.register(require('./routes/media'), { prefix: '/api/media' });
-    fastify.register(require('./routes/organizations'), { prefix: '/api/organizations' });
-    fastify.register(require('./routes/realtime'), { prefix: '/api/ws' });    // WebSocket routes for real-time video features
-    fastify.register(require('./routes/rooms'), { prefix: '/api/rooms' });
-    fastify.register(require('./routes/users'), { prefix: '/api/users' });
-    fastify.register(require('./routes/cron'), { prefix: '/api/cron' });
-    fastify.register(require('./routes/notifications'), { prefix: '/api/notifications' });
-    fastify.register(require('./routes/share-routes'), { prefix: '/api' });
-    fastify.register(require('./routes/user-groups'), { prefix: '/api' });
-    fastify.register(require('./routes/tags'), { prefix: '/api/tags' });
-    fastify.register(require('./routes/library'), { prefix: '/api/library' });
-    fastify.register(require('./routes/platform'), { prefix: '/api/platform' });
-    fastify.register(require('./routes/usage'), { prefix: '/api/usage' });
-    fastify.register(require('./routes/stripe'), { prefix: '/api/stripe' });
+  const routeDefs: Array<{ module: string; options?: any }> = [
+    { module: './routes/analytics', options: { prefix: '/api/analytics' } },
+    { module: './routes/annotations', options: { prefix: '/api/annotations' } },
+    { module: './routes/workspaces', options: { prefix: '/api/workspaces' } },
+    { module: './routes/auth-routes', options: { prefix: '/api/auth' } },
+    { module: './routes/collections', options: { prefix: '/api/collections' } },
+    { module: './routes/favorites', options: { prefix: '/api/favorites' } },
+    { module: './routes/compression', options: { prefix: '/api/compression' } },
+    { module: './routes/health-route.js' },
+    { module: './routes/media', options: { prefix: '/api/media' } },
+    { module: './routes/ai', options: { prefix: '/api/ai' } },
+    { module: './routes/organizations', options: { prefix: '/api/organizations' } },
+    { module: './routes/realtime', options: { prefix: '/api/ws' } },
+    { module: './routes/rooms', options: { prefix: '/api/rooms' } },
+    { module: './routes/users', options: { prefix: '/api/users' } },
+    { module: './routes/cron', options: { prefix: '/api/cron' } },
+    { module: './routes/notifications', options: { prefix: '/api/notifications' } },
+    { module: './routes/share-routes', options: { prefix: '/api' } },
+    { module: './routes/user-groups', options: { prefix: '/api' } },
+    { module: './routes/tags', options: { prefix: '/api/tags' } },
+    { module: './routes/library', options: { prefix: '/api/library' } },
+    { module: './routes/platform', options: { prefix: '/api/platform' } },
+    { module: './routes/usage', options: { prefix: '/api/usage' } },
+    { module: './routes/stripe', options: { prefix: '/api/stripe' } },
+  ];
 
-    console.log('All routes registerd successfully')
-    logSuccess("All routes registered successfully", '', null, null, ACTOR_TYPE.SYSTEM);
-  } catch (err: any) {
-    logError("All routes registered failed", '', null, err, null, ACTOR_TYPE.SYSTEM);
-    logger.warn('Some routes could not be loaded', { error: err.message });
+  for (const { module, options } of routeDefs) {
+    try {
+      const routeModule = require(module);
+      if (options) {
+        fastify.register(routeModule, options);
+      } else {
+        fastify.register(routeModule);
+      }
+    } catch (err: any) {
+      logger.error(`Failed to register route module [${module}]:`, { error: err.message, stack: err.stack });
+    }
   }
+  console.log('All available routes registered successfully.');
 
   // Start server
   try {
@@ -357,6 +354,32 @@ async function setupServer() {
       environment: config.NODE_ENV,
       version: process.env.npm_package_version || '1.0.0'
     });
+
+    // Background worker loop for enforcing session inactivity cleanup based on global_admin_settings
+    const runSessionInactivityCleanup = async () => {
+      try {
+        const globalSetting = await prisma.globalAdminSetting.findFirst();
+        const timeoutDays = Number(globalSetting?.sessionTimeoutDays) || 30;
+        const cutoffDate = new Date(Date.now() - timeoutDays * 24 * 60 * 60 * 1000);
+
+        const result = await prisma.userSession.updateMany({
+          where: {
+            lastActiveAt: { lt: cutoffDate },
+            revokedAt: null,
+          },
+          data: { revokedAt: new Date() },
+        });
+        if (result.count > 0) {
+          logger.info(`Session inactivity cleanup worker revoked ${result.count} inactive sessions older than ${timeoutDays} days.`);
+        }
+      } catch (err: any) {
+        logger.error('Error running session inactivity cleanup worker', { error: err.message });
+      }
+    };
+
+    // Run immediately on boot, then every 1 hour
+    runSessionInactivityCleanup();
+    setInterval(runSessionInactivityCleanup, 60 * 60 * 1000);
   } catch (err: any) {
     logger.error('Failed to start server', { error: err.message });
     process.exit(1);

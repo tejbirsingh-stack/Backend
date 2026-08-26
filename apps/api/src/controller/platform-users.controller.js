@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const {
   resolveRole,
   sendUserInviteEmail,
@@ -11,26 +11,56 @@ async function listUsers(request, reply) {
     const q = String(request.query?.q || '').trim();
     const status = request.query?.status ? String(request.query.status) : undefined;
     const orgId = request.query?.orgId ? String(request.query.orgId) : undefined;
+    const roleId = request.query?.roleId ? String(request.query.roleId) : undefined;
+    const mfa = request.query?.mfa ? String(request.query.mfa) : undefined;
+    const login = request.query?.login ? String(request.query.login) : undefined;
+    const createdFrom = request.query?.createdFrom ? String(request.query.createdFrom) : undefined;
+    const createdTo = request.query?.createdTo ? String(request.query.createdTo) : undefined;
+    const sortBy = String(request.query?.sortBy || 'createdAt');
+    const sortDir = String(request.query?.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
     const take = Math.min(parseInt(request.query?.limit || '50', 10) || 50, 200);
     const skip = parseInt(request.query?.offset || '0', 10) || 0;
 
     const where = {
       ...(status ? { status } : {}),
       ...(orgId ? { orgId } : {}),
+      ...(roleId ? { roleId } : {}),
+      ...(mfa === 'on' ? { mfaEnabled: true } : mfa === 'off' ? { mfaEnabled: false } : {}),
+      ...(login === 'never' ? { lastLoginAt: null } : login === 'has_login' ? { lastLoginAt: { not: null } } : {}),
       ...(q
         ? {
             OR: [
               { email: { contains: q, mode: 'insensitive' } },
               { name: { contains: q, mode: 'insensitive' } },
+              { organization: { name: { contains: q, mode: 'insensitive' } } },
             ],
+          }
+        : {}),
+      ...(createdFrom || createdTo
+        ? {
+            createdAt: {
+              ...(createdFrom ? { gte: new Date(createdFrom) } : {}),
+              ...(createdTo ? { lte: new Date(`${createdTo}T23:59:59.999Z`) } : {}),
+            },
           }
         : {}),
     };
 
+    const sortFieldMap = {
+      name: { name: sortDir },
+      email: { email: sortDir },
+      organization: { organization: { name: sortDir } },
+      role: { roleRelation: { name: sortDir } },
+      status: { status: sortDir },
+      lastLoginAt: { lastLoginAt: sortDir },
+      createdAt: { createdAt: sortDir },
+    };
+    const orderBy = sortFieldMap[sortBy] || { createdAt: sortDir };
+
     const [items, total] = await Promise.all([
       prisma.user.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         take,
         skip,
         select: {
@@ -128,10 +158,10 @@ async function inviteUser(request, reply) {
       });
     }
 
-    if (roleObj.name === 'System Admin') {
+    if (roleObj.name === 'Platform Admin') {
       return reply.status(400).send({
         error: 'ValidationError',
-        message: 'System Admin cannot be assigned via platform invite',
+        message: 'Platform Admin cannot be assigned via platform invite',
         statusCode: 400,
       });
     }
@@ -180,9 +210,9 @@ async function inviteUser(request, reply) {
     }
 
     await writePlatformAudit({
-      activityName: 'User invited',
+      activityName: ACTIVITY_NAME.USER_INVITED,
       description: `Invited ${email} to ${organization.name} as ${roleObj.name}`,
-      activityType: 'user',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId,
     });
@@ -202,15 +232,18 @@ async function inviteUser(request, reply) {
   }
 }
 
-async function listRoles(_request, reply) {
+async function listRoles(request, reply) {
   try {
+    const includePlatformAdmin = request.query?.includePlatformAdmin === 'true';
+
+    const where = includePlatformAdmin ? {} : { name: { not: 'Platform Admin' } };
+
     const roles = await prisma.role.findMany({
-      where: {
-        name: { not: 'System Admin' },
-      },
+      where,
       orderBy: { name: 'asc' },
       select: { id: true, name: true, show: true },
     });
+
     return { success: true, roles };
   } catch (error) {
     console.error('listRoles error:', error);
@@ -255,9 +288,9 @@ async function patchUser(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'User updated',
+      activityName: ACTIVITY_NAME.USER_UPDATED,
       description: `Updated user ${user.email} (${user.status})`,
-      activityType: 'user',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: user.orgId,
     });
@@ -277,25 +310,55 @@ async function listWorkspaces(request, reply) {
   try {
     const q = String(request.query?.q || '').trim();
     const orgId = request.query?.orgId ? String(request.query.orgId) : undefined;
+    const orgStatus = request.query?.orgStatus ? String(request.query.orgStatus) : undefined;
+    const visibility = request.query?.visibility ? String(request.query.visibility) : undefined;
+    const createdFrom = request.query?.createdFrom ? String(request.query.createdFrom) : undefined;
+    const createdTo = request.query?.createdTo ? String(request.query.createdTo) : undefined;
+    const sortBy = String(request.query?.sortBy || 'createdAt');
+    const sortDir = String(request.query?.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
     const take = Math.min(parseInt(request.query?.limit || '50', 10) || 50, 200);
     const skip = parseInt(request.query?.offset || '0', 10) || 0;
 
     const where = {
       ...(orgId ? { orgId } : {}),
+      ...(visibility ? { visibility } : {}),
+      ...(orgStatus ? { organization: { status: orgStatus } } : {}),
       ...(q
         ? {
             OR: [
               { name: { contains: q, mode: 'insensitive' } },
               { description: { contains: q, mode: 'insensitive' } },
+              { organization: { name: { contains: q, mode: 'insensitive' } } },
             ],
+          }
+        : {}),
+      ...(createdFrom || createdTo
+        ? {
+            createdAt: {
+              ...(createdFrom ? { gte: new Date(createdFrom) } : {}),
+              ...(createdTo ? { lte: new Date(`${createdTo}T23:59:59.999Z`) } : {}),
+            },
           }
         : {}),
     };
 
+    // Map frontend sortBy field names to Prisma orderBy fields
+    const sortFieldMap = {
+      name: { name: sortDir },
+      organization: { organization: { name: sortDir } },
+      members: { users: { _count: sortDir } },
+      projects: { projects: { _count: sortDir } },
+      folders: { folders: { _count: sortDir } },
+      assets: { assets: { _count: sortDir } },
+      orgStatus: { organization: { status: sortDir } },
+      createdAt: { createdAt: sortDir },
+    };
+    const orderBy = sortFieldMap[sortBy] || { createdAt: sortDir };
+
     const [items, total] = await Promise.all([
       prisma.workspace.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         take,
         skip,
         include: {

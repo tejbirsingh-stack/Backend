@@ -1,5 +1,5 @@
 const prisma = require('../utils/prisma');
-const { writePlatformAudit } = require('../lib/platform-audit');
+const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const {
   slugify,
   formatWorkspaceName,
@@ -25,9 +25,9 @@ function serializeOrg(org) {
     storageUsedBytes: org.storageUsedBytes?.toString?.() ?? String(org.storageUsedBytes ?? 0),
     currentPlan: org.currentPlan
       ? {
-          ...org.currentPlan,
-          storageQuotaBytes: org.currentPlan.storageQuotaBytes?.toString?.() ?? String(org.currentPlan.storageQuotaBytes ?? 0),
-        }
+        ...org.currentPlan,
+        storageQuotaBytes: org.currentPlan.storageQuotaBytes?.toString?.() ?? String(org.currentPlan.storageQuotaBytes ?? 0),
+      }
       : null,
     _count: org._count,
   };
@@ -37,27 +37,79 @@ async function listOrganizations(request, reply) {
   try {
     const q = String(request.query?.q || '').trim();
     const status = request.query?.status ? String(request.query.status) : undefined;
-    const planType = request.query?.planType ? String(request.query.planType) : undefined;
+    const planId = request.query?.planId
+      ? String(request.query.planId)
+      : request.query?.planType
+        ? String(request.query.planType)
+        : undefined;
+    const subscriptionStatus = request.query?.subscriptionStatus
+      ? String(request.query.subscriptionStatus)
+      : undefined;
+    const minStorageBytes = request.query?.minStorageBytes ? String(request.query.minStorageBytes) : undefined;
+    const maxStorageBytes = request.query?.maxStorageBytes ? String(request.query.maxStorageBytes) : undefined;
+    const createdFrom = request.query?.createdFrom ? String(request.query.createdFrom) : undefined;
+    const createdTo = request.query?.createdTo ? String(request.query.createdTo) : undefined;
+
     const take = Math.min(parseInt(request.query?.limit || '50', 10) || 50, 200);
     const skip = parseInt(request.query?.offset || '0', 10) || 0;
+    const sortBy = request.query?.sortBy ? String(request.query.sortBy) : 'createdAt';
+    const sortDir = request.query?.sortDir === 'asc' ? 'asc' : 'desc';
 
     const where = {
       ...(status ? { status } : {}),
-      ...(planType ? { currentPlan: { name: { equals: planType, mode: 'insensitive' } } } : {}),
-      ...(q
-        ? {
+      ...(planId
+        ? planId === 'none'
+          ? { currentPlanId: null }
+          : {
             OR: [
-              { name: { contains: q, mode: 'insensitive' } },
-              { slug: { contains: q, mode: 'insensitive' } },
+              { currentPlanId: planId },
+              { currentPlan: { name: { equals: planId, mode: 'insensitive' } } },
             ],
           }
         : {}),
+      ...(subscriptionStatus
+        ? subscriptionStatus === 'none'
+          ? { subscriptionStatus: null }
+          : { subscriptionStatus }
+        : {}),
+      ...(minStorageBytes || maxStorageBytes
+        ? {
+          storageUsedBytes: {
+            ...(minStorageBytes ? { gte: BigInt(minStorageBytes) } : {}),
+            ...(maxStorageBytes ? { lte: BigInt(maxStorageBytes) } : {}),
+          },
+        }
+        : {}),
+      ...(createdFrom || createdTo
+        ? {
+          createdAt: {
+            ...(createdFrom ? { gte: new Date(createdFrom) } : {}),
+            ...(createdTo ? { lte: new Date(`${createdTo}T23:59:59.999Z`) } : {}),
+          },
+        }
+        : {}),
+      ...(q
+        ? {
+          OR: [
+            { name: { contains: q, mode: 'insensitive' } },
+            { slug: { contains: q, mode: 'insensitive' } },
+            { currentPlan: { name: { contains: q, mode: 'insensitive' } } },
+            { users: { some: { email: { contains: q, mode: 'insensitive' } } } },
+          ],
+        }
+        : {}),
     };
+
+    let orderBy = { createdAt: sortDir };
+    if (sortBy === 'name') orderBy = { name: sortDir };
+    else if (sortBy === 'status') orderBy = { status: sortDir };
+    else if (sortBy === 'storageUsedBytes') orderBy = { storageUsedBytes: sortDir };
+    else if (sortBy === 'plan') orderBy = { currentPlan: { name: sortDir } };
 
     const [items, total] = await Promise.all([
       prisma.organization.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         take,
         skip,
         include: {
@@ -187,7 +239,7 @@ async function createOrganization(request, reply) {
       if (!emailValidation.isValid) {
         return reply.status(400).send({
           error: 'ValidationError',
-          message: emailValidation.message,
+          message: emailValidation.message || 'Please enter a valid business email address',
           statusCode: 400,
         });
       }
@@ -214,27 +266,54 @@ async function createOrganization(request, reply) {
     } else {
       plan =
         (await prisma.plan.findFirst({
-          where: {
-            OR: [{ id: 'free' }, { name: { equals: 'Free', mode: 'insensitive' } }],
-          },
+          where: { isFree: true, isActive: true },
         })) || null;
     }
 
+    const isFreePlan = Boolean(
+      !plan ||
+      plan.isFree ||
+      plan.id === 'free' ||
+      plan.id === 'none' ||
+      (plan.name && plan.name.toLowerCase() === 'free')
+    );
+    const isPaidPlan = !isFreePlan;
     const requestedSlug = body.slug ? slugify(body.slug) : slugify(name);
     const slug = await ensureUniqueSlug(prisma, requestedSlug);
+
+    // Create Stripe Customer if Stripe service is available
+    let stripeCustomerId = null;
+    try {
+      const stripeService = require('../services/stripe.service');
+      if (adminEmail && stripeService?.createCustomer) {
+        const customer = await stripeService.createCustomer(adminEmail, name);
+        stripeCustomerId = customer?.id || null;
+      }
+    } catch (stripeErr) {
+      console.warn('[platform] Stripe customer creation skipped/failed:', stripeErr.message);
+    }
+
+    let isFreeTrialUsed = false;
+    let planExpiresAt = null;
+
+    if (isFreePlan) {
+      isFreeTrialUsed = true;
+      const expireDate = new Date();
+      const trialDays = plan?.trialDays ? plan.trialDays : 14;
+      expireDate.setDate(expireDate.getDate() + trialDays);
+      planExpiresAt = expireDate;
+    }
 
     const org = await prisma.organization.create({
       data: {
         name,
         slug,
-        planType: plan?.id || 'free',
         currentPlanId: plan?.id || null,
         status: 'active',
-        storageQuotaBytes: plan?.storageQuotaBytes ?? BigInt(5 * 1024 ** 3),
-        maxUsers: plan?.maxUsers ?? 5,
-        maxWorkspaces: plan?.maxWorkspaces ?? 3,
-        features: plan?.features ?? {},
-        subscriptionStatus: plan ? 'active' : 'trialing',
+        subscriptionStatus: isPaidPlan ? 'past_due' : 'active',
+        stripeCustomerId,
+        isFreeTrialUsed,
+        ...(planExpiresAt && { planExpiresAt }),
       },
     });
 
@@ -250,6 +329,8 @@ async function createOrganization(request, reply) {
     });
 
     let adminUser = null;
+    let checkoutUrl = null;
+
     if (adminEmail) {
       const superAdminRole = await resolveSuperAdminRole(prisma);
       adminUser = await prisma.user.create({
@@ -270,11 +351,34 @@ async function createOrganization(request, reply) {
         },
       });
 
+      // Create Stripe Checkout Session if Paid Plan & Stripe Price ID is present
+      if (isPaidPlan && stripeCustomerId && plan?.stripePriceId) {
+        try {
+          const stripeService = require('../services/stripe.service');
+          const frontendUrl =
+            request.headers.origin ||
+            process.env.FRONTEND_URL ||
+            (process.env.NODE_ENV === 'production' ? 'https://qa.noahcloud.ai' : 'http://localhost:5173');
+          const session = await stripeService.createCheckoutSession(
+            stripeCustomerId,
+            plan.stripePriceId,
+            `${frontendUrl}/login?payment=success`,
+            `${frontendUrl}/login?payment=cancelled`
+          );
+          checkoutUrl = session?.url || null;
+        } catch (checkoutErr) {
+          console.warn('[platform] Failed to create Stripe checkout session:', checkoutErr.message);
+        }
+      }
+
       try {
         await sendUserInviteEmail({
           request,
           user: adminUser,
           roleName: superAdminRole.name,
+          orgName: name,
+          planName: plan?.name || (isPaidPlan ? 'Paid' : 'Free'),
+          checkoutUrl,
         });
       } catch (emailErr) {
         console.warn('[platform] Failed to send admin invite email:', emailErr.message);
@@ -290,9 +394,9 @@ async function createOrganization(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Organization created',
-      description: `Created org ${name} (${slug})${adminEmail ? ` with admin ${adminEmail}` : ''}`,
-      activityType: 'organization',
+      activityName: ACTIVITY_NAME.ORGANIZATION_CREATED,
+      description: `Created org ${name} (${slug})${adminEmail ? ` with admin ${adminEmail}` : ''} [Plan: ${plan?.name || 'Free'}]`,
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: org.id,
     });
@@ -302,12 +406,13 @@ async function createOrganization(request, reply) {
       organization: serializeOrg(full),
       adminUser: adminUser
         ? {
-            id: adminUser.id,
-            email: adminUser.email,
-            name: adminUser.name,
-            status: adminUser.status,
-          }
+          id: adminUser.id,
+          email: adminUser.email,
+          name: adminUser.name,
+          status: adminUser.status,
+        }
         : null,
+      checkoutUrl,
     });
   } catch (error) {
     console.error('createOrganization error:', error);
@@ -366,6 +471,39 @@ async function patchOrganization(request, reply) {
       data.subscriptionStatus = body.subscriptionStatus;
     }
 
+    if (body.settings !== undefined && typeof body.settings === 'object') {
+      const {
+        requirePasswordDefault,
+        allowCommentsDefault,
+        allowDownloadOriginalDefault,
+        allowDownloadProxyDefault,
+        showCompanyWatermarkDefault,
+        defaultExpiryDays,
+      } = body.settings;
+      
+      const settingsData = {};
+      if (typeof requirePasswordDefault === 'boolean') settingsData.requirePasswordDefault = requirePasswordDefault;
+      if (typeof allowCommentsDefault === 'boolean') settingsData.allowCommentsDefault = allowCommentsDefault;
+      if (typeof allowDownloadOriginalDefault === 'boolean') settingsData.allowDownloadOriginalDefault = allowDownloadOriginalDefault;
+      if (typeof allowDownloadProxyDefault === 'boolean') settingsData.allowDownloadProxyDefault = allowDownloadProxyDefault;
+      if (typeof showCompanyWatermarkDefault === 'boolean') settingsData.showCompanyWatermarkDefault = showCompanyWatermarkDefault;
+      if (typeof defaultExpiryDays === 'number') settingsData.defaultExpiryDays = defaultExpiryDays;
+
+      if (Object.keys(settingsData).length > 0) {
+        try {
+          if (prisma.organizationSettings?.upsert) {
+            await prisma.organizationSettings.upsert({
+              where: { orgId },
+              update: settingsData,
+              create: { orgId, ...settingsData },
+            });
+          }
+        } catch (settingsError) {
+          console.warn('Could not save org settings:', settingsError.message);
+        }
+      }
+    }
+
     const updated = await prisma.organization.update({
       where: { id: orgId },
       data,
@@ -376,14 +514,28 @@ async function patchOrganization(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Organization updated',
+      activityName: ACTIVITY_NAME.ORGANIZATION_UPDATED,
       description: `Updated org ${updated.name} (${updated.slug})`,
-      activityType: 'organization',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId: updated.id,
     });
 
-    return { success: true, organization: serializeOrg(updated) };
+    let settings = null;
+    try {
+      if (prisma.organizationSettings?.findUnique) {
+        settings = await prisma.organizationSettings.findUnique({ where: { orgId } });
+      }
+    } catch (settingsError) {
+      console.warn('Could not load org settings:', settingsError.message);
+    }
+
+    const res = serializeOrg(updated);
+    if (settings) {
+      res.settings = { ...settings };
+    }
+
+    return { success: true, organization: res };
   } catch (error) {
     console.error('patchOrganization error:', error);
     return reply.status(500).send({
@@ -420,9 +572,9 @@ async function updateWorkspace(request, reply) {
     });
 
     await writePlatformAudit({
-      activityName: 'Workspace updated',
+      activityName: ACTIVITY_NAME.WORKSPACE_UPDATED,
       description: `Updated workspace ${updated.name}`,
-      activityType: 'workspace',
+      activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
       orgId,
     });
