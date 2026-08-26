@@ -466,15 +466,15 @@ module.exports.register = async (request, reply) => {
           where: { isFree: true, isActive: true }
         });
       }
-      
+
       const isFreePlan = Boolean(plan && plan.isFree);
       let planExpiresAt = null;
-      
+
       if (isFreePlan) {
-         const trialDays = plan.trialDays ?? 3;
-         const expires = new Date();
-         expires.setDate(expires.getDate() + trialDays);
-         planExpiresAt = expires;
+        const trialDays = plan.trialDays ?? 3;
+        const expires = new Date();
+        expires.setDate(expires.getDate() + trialDays);
+        planExpiresAt = expires;
       }
 
       organization = await request.server.prisma.organization.create({
@@ -2224,7 +2224,6 @@ module.exports.completeSignup = async (request, reply) => {
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
-<<<<<<< HEAD
     const dbPlan = await request.server.prisma.plan.findUnique({
       where: { id: planId },
     }).catch(() => null);
@@ -2287,27 +2286,13 @@ module.exports.completeSignup = async (request, reply) => {
     };
 
     const targetPlanLimits = PLAN_LIMITS_MAP[planId] || PLAN_LIMITS_MAP.free;
-=======
-    let dbPlan = null;
-    if (planId && planId !== "free") {
-      dbPlan = await request.server.prisma.plan.findUnique({
-        where: { id: planId },
-      }).catch(() => null);
-    }
-    
-    if (!dbPlan) {
-      dbPlan = await request.server.prisma.plan.findFirst({
-        where: { isFree: true, isActive: true },
-      }).catch(() => null);
-    }
->>>>>>> tenant-admin-changes
 
     const isFreePlan = Boolean(dbPlan && dbPlan.isFree);
 
     const isMonthly = (billingCycle || "annual").toLowerCase() === "monthly";
     const now = new Date();
     const expiresAtDate = new Date(now);
-    
+
     if (isFreePlan) {
       const trialDays = dbPlan.trialDays ?? 3;
       expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);
