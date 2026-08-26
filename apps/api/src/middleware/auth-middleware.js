@@ -64,6 +64,31 @@ async function authenticate(request, reply) {
     try {
       if (typeof request.jwtVerify === "function") {
         const decoded = await request.jwtVerify();
+
+        // 1a. Handle Platform Admin JWT tokens
+        if (decoded && decoded.platformAdmin && decoded.id && request.server?.prisma) {
+          const platformAdmin = await request.server.prisma.platformAdmin.findUnique({
+            where: { id: decoded.id },
+          });
+          if (platformAdmin && platformAdmin.status === 'active') {
+            request.platformAdmin = {
+              id: platformAdmin.id,
+              email: platformAdmin.email,
+              name: platformAdmin.name,
+              status: platformAdmin.status,
+            };
+            request.user = {
+              id: platformAdmin.id,
+              email: platformAdmin.email,
+              name: platformAdmin.name,
+              role: 'PLATFORM_ADMIN',
+              isPlatformAdmin: true,
+              permissions: ['*'],
+            };
+            return;
+          }
+        }
+
         if (decoded && request.server && request.server.prisma) {
           const revokedCheck = await request.server.prisma.userSession.findFirst({
             where: {
@@ -136,6 +161,30 @@ async function authenticate(request, reply) {
     }
 
     // 2. Validate session in database
+    if (request.server?.prisma) {
+      const platformSession = await request.server.prisma.platformSession.findFirst({
+        where: { token, revokedAt: null, expiresAt: { gt: new Date() } },
+        include: { admin: true },
+      });
+      if (platformSession && platformSession.admin && platformSession.admin.status === 'active') {
+        request.platformAdmin = {
+          id: platformSession.admin.id,
+          email: platformSession.admin.email,
+          name: platformSession.admin.name,
+          status: platformSession.admin.status,
+        };
+        request.user = {
+          id: platformSession.admin.id,
+          email: platformSession.admin.email,
+          name: platformSession.admin.name,
+          role: 'PLATFORM_ADMIN',
+          isPlatformAdmin: true,
+          permissions: ['*'],
+        };
+        return;
+      }
+    }
+
     const session = await authService.validateSession(token);
     if (!session) {
       throw new Error("Invalid or expired session");

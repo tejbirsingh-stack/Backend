@@ -130,4 +130,31 @@ async function seedDefaultContentIntoWorkspace(prisma, { orgId, workspaceId, org
   return { seeded, skipped };
 }
 
-module.exports = { seedDefaultContentIntoWorkspace };
+/**
+ * Sync enabled default content items to all existing workspaces where isDefault = true.
+ */
+async function syncGlobalMediaToAllDefaultWorkspaces(prisma) {
+  if (!prisma) return { seededTotal: 0, workspaceCount: 0 };
+
+  const defaultWorkspaces = await prisma.workspace.findMany({
+    where: { isDefault: true },
+    include: { organization: { select: { name: true } } },
+  });
+
+  let seededTotal = 0;
+  for (const ws of defaultWorkspaces) {
+    const res = await seedDefaultContentIntoWorkspace(prisma, {
+      orgId: ws.orgId,
+      workspaceId: ws.id,
+      orgName: ws.organization?.name || 'organization',
+    });
+    seededTotal += res.seeded || 0;
+  }
+
+  return { seededTotal, workspaceCount: defaultWorkspaces.length };
+}
+
+module.exports = {
+  seedDefaultContentIntoWorkspace,
+  syncGlobalMediaToAllDefaultWorkspaces,
+};

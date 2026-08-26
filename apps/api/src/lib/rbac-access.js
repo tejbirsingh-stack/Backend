@@ -95,10 +95,13 @@ async function assertAssetAccess(prisma, user, filenameOrId) {
       ownerType: true,
       ownerId: true,
       workspaceId: true,
+      globalMedia: true,
     },
   });
 
   if (!asset) return false;
+
+  if (asset.globalMedia) return true;
 
   if (user.orgId && asset.orgId && asset.orgId !== user.orgId) {
     return false;

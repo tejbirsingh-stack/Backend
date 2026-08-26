@@ -390,6 +390,17 @@ class StripeService {
   async cancelSubscriptionAtPeriodEnd(subscriptionId) {
     try {
       const stripe = await getStripe();
+      
+      // First retrieve the Stripe subscription to check if it has a schedule attached
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+      
+      // If it is managed by a schedule (e.g. for a pending downgrade), we must release the schedule 
+      // before we are allowed to modify the cancelation behavior of the underlying subscription directly.
+      if (subscription.schedule) {
+        const scheduleId = typeof subscription.schedule === 'string' ? subscription.schedule : subscription.schedule.id;
+        await stripe.subscriptionSchedules.release(scheduleId);
+      }
+
       return await stripe.subscriptions.update(subscriptionId, {
         cancel_at_period_end: true,
       });

@@ -337,8 +337,8 @@ enum ReviewStatus {
 
 model Asset {
   id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orgId        String       @db.Uuid
-  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String?      @db.Uuid
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
   title        String       @db.VarChar(255)
   type         String       @db.VarChar(50) // 'video', 'audio', 'image', 'document'
   status       String       @default("active") @db.VarChar(50) // 'active', 'archived', 'trash'
@@ -346,6 +346,8 @@ model Asset {
   compressedKey     String?      @db.VarChar(1000) // Deterministic key for the compressed proxy file
   aiTags       Json         @default("[]") @db.JsonB
   reviewStatus ReviewStatus @default(New)
+
+  globalMedia     Boolean      @default(false) @map("global_media")
 
   createdAt DateTime  @default(now()) @db.Timestamptz(6)
   updatedAt DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
@@ -357,8 +359,8 @@ model Asset {
   files                   AssetFile[]
   metadata                AssetMetadata?
   transcodeJobs           TranscodeJob[]
-  ownerType               MediaAssetOwnerType // WORKSPACE, FOLDER, or PROJECT
-  ownerId                 String              @db.Uuid // points to Workspace.id, Folder.id, or Project.id depending on ownerType
+  ownerType               MediaAssetOwnerType? // WORKSPACE, FOLDER, or PROJECT
+  ownerId                 String?              @db.Uuid // points to Workspace.id, Folder.id, or Project.id depending on ownerType
   uploadedByUserId        String?             @db.Uuid
   uploadedBy              User?               @relation("UploadedBy", fields: [uploadedByUserId], references: [id])
   workspaceId             String?             @map("workspace_id")
@@ -388,6 +390,7 @@ model Asset {
   @@index([type])
   @@index([compressedKey])
   @@index([ownerType, ownerId])
+  @@index([globalMedia])
   @@map("assets")
 }
 
@@ -1115,6 +1118,8 @@ model Plan {
   sortOrder          Int      @default(0)
   ctaLabel           String?  @db.VarChar(100)
   isActive           Boolean  @default(true)
+  isFree             Boolean  @default(false)
+  trialDays          Int?
   createdAt          DateTime @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
@@ -1382,7 +1387,8 @@ model AiEmbedding {
   chunkText  String                       @map("chunk_text") @db.Text
   startMs    Int?                         @map("start_ms")
   endMs      Int?                         @map("end_ms")
-  embedding  Json?
+  // pgvector — read/write via $executeRaw / $queryRaw only (not Prisma Client fields)
+  embedding  Unsupported("vector(1536)")
 
   asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)

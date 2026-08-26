@@ -117,6 +117,7 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
     highlights: 'skipped',
     embeddings: 'skipped',
   };
+  const stepErrors: string[] = [];
 
   try {
     if (!(await isAiEnabledForOrg(orgId, prisma))) {
@@ -133,18 +134,28 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
         steps.highlights = await highlightTranscriptForAsset(prisma, assetId, orgId, force);
       } catch (highlightErr: any) {
         steps.highlights = 'failed';
-        console.error('[AI] highlights step failed:', highlightErr?.message || highlightErr);
+        const msg = highlightErr?.message || String(highlightErr);
+        stepErrors.push(`highlights: ${msg}`);
+        console.error('[AI] highlights step failed:', msg);
       }
       try {
         steps.embeddings = await embedTranscriptForAsset(prisma, assetId, orgId, force);
       } catch (embedErr: any) {
         steps.embeddings = 'failed';
-        console.error('[AI] embeddings step failed:', embedErr?.message || embedErr);
+        const msg = embedErr?.message || String(embedErr);
+        const meta =
+          embedErr?.meta !== undefined ? ` meta=${JSON.stringify(embedErr.meta)}` : '';
+        stepErrors.push(`embeddings: ${msg}`);
+        console.error('[AI] embeddings step failed:', msg + meta);
       }
     }
     await prisma.aiAnalysisJob.update({
       where: { id: analysisJob.id },
-      data: { status: 'completed', steps, error: null },
+      data: {
+        status: 'completed',
+        steps,
+        error: stepErrors.length > 0 ? stepErrors.join('; ') : null,
+      },
     });
   } catch (err: any) {
     steps.asr = 'failed';

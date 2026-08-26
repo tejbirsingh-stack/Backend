@@ -86,6 +86,14 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
             return reply.code(400).send({ success: false, error: "Type is Required!" });
         }
 
+        const targetAsset = await request.server.prisma.asset.findUnique({
+            where: { id: mediaId },
+            select: { globalMedia: true }
+        });
+        if (targetAsset?.globalMedia) {
+            return reply.code(403).send({ success: false, error: "Annotations and comments are disabled for global starter assets." });
+        }
+
         // Handle PAGE_STATE upsert to allow frontend to easily sync everything at once
         if (type === 'PAGE_STATE') {
             const existing = await request.server.prisma.annotation.findFirst({

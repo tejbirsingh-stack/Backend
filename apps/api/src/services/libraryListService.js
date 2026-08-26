@@ -42,7 +42,7 @@ async function listItems(prisma, params) {
   }
 
   const assetConditions = [
-    Prisma.sql`("status" IS NULL OR "status" NOT IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`,
+    Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`,
     Prisma.sql`"deletedAt" IS NULL`
   ];
   const folderConditions = [
@@ -55,14 +55,46 @@ async function listItems(prisma, params) {
   ];
   const projectConditions = [];
 
+  let isDefaultWorkspace = false;
+  if (workspaceId) {
+    const ws = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { isDefault: true, orgId: true },
+    });
+    if (ws) {
+      if (ws.isDefault) {
+        isDefaultWorkspace = true;
+      } else {
+        const firstWs = await prisma.workspace.findFirst({
+          where: { orgId: ws.orgId },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        });
+        if (firstWs && firstWs.id === workspaceId) {
+          isDefaultWorkspace = true;
+        }
+      }
+    }
+  } else {
+    isDefaultWorkspace = true;
+  }
+
   if (view !== 'shared') {
     const isSpecificContainer = view === 'project' || view === 'folder';
 
     if (!isSpecificContainer) {
-      assetConditions.push(Prisma.sql`(
-        "workspace_id" = ${workspaceId}
-        OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId}))
-      )`);
+      if (isDefaultWorkspace) {
+        assetConditions.push(Prisma.sql`(
+          "workspace_id" = ${workspaceId}
+          OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId}))
+          OR "global_media" = true
+        )`);
+      } else {
+        assetConditions.push(Prisma.sql`(
+          ("workspace_id" = ${workspaceId} OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId})))
+          AND ("global_media" IS NULL OR "global_media" = false)
+        )`);
+      }
     }
 
     assetConditions.push(Prisma.sql`(
@@ -411,7 +443,8 @@ async function listItems(prisma, params) {
         summary: userSummary || aiSummary || undefined,
         status: a.status,
         visibility: a.visibility,
-        workspaceId: a.workspaceId,
+        workspaceId: a.workspaceId || workspaceId,
+        globalMedia: Boolean(a.globalMedia),
         customMetadata,
         reviewStatus: customMetadata.reviewStatus || 'New',
         parentFolderId: a.ownerType === 'FOLDER' ? a.ownerId : null,
