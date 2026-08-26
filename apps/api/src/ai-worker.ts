@@ -93,6 +93,9 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
     throw new Error(`Asset ${assetId} not found`);
   }
   const orgId = job.data.orgId || asset.orgId;
+  if (!orgId) {
+    throw new Error(`Asset ${assetId} has no orgId and none provided in job`);
+  }
 
   const analysisJob = await prisma.aiAnalysisJob.upsert({
     where: { assetId },
