@@ -127,7 +127,7 @@ function writePlatformAudit({
 }) {
     const isError = Boolean(error) || (activityType && String(activityType).toUpperCase() === 'ERROR');
     const userDetail = {
-        id: admin?.id || null,
+        id: null,
         name: admin?.name || roles.PLATFORM_ADMIN,
         email: admin?.email || null,
         role: roles.PLATFORM_ADMIN,
