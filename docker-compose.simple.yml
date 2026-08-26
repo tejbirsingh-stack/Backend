@@ -3,7 +3,8 @@ version: '3.8'
 services:
   # PostgreSQL - Core database
   postgres:
-    image: postgres:16-alpine
+    # pgvector is required for AI embeddings. postgres:16-alpine does not ship the extension.
+    image: pgvector/pgvector:pg16
     container_name: noah-postgres-simple
     environment:
       POSTGRES_DB: noah_dev

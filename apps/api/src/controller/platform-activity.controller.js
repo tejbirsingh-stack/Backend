@@ -38,7 +38,7 @@ function parseReportFilters(query = {}) {
 function orgWhere(filters) {
   return {
     ...(filters.status ? { status: filters.status } : {}),
-    ...(filters.planType ? { planType: filters.planType } : {}),
+    ...(filters.planType ? { currentPlanId: filters.planType } : {}),
     ...(filters.orgId ? { id: filters.orgId } : {}),
   };
 }
@@ -59,38 +59,59 @@ async function listPlatformActivity(request, reply) {
       ? String(request.query.activityType)
       : undefined;
     const actorType = request.query?.actorType ? String(request.query.actorType) : undefined;
+    const userRole = request.query?.userRole ? String(request.query.userRole) : undefined;
     const q = String(request.query?.q || '').trim();
     const take = Math.min(parseInt(request.query?.limit || '100', 10) || 100, 500);
+    const skip = parseInt(request.query?.offset || '0', 10) || 0;
     const hasDateFilter = Boolean(
       request.query?.from || request.query?.to || request.query?.periodDays,
     );
     const filters = hasDateFilter ? parseReportFilters(request.query || {}) : null;
 
-    const logs = await prisma.auditLog.findMany({
-      where: {
-        deletedAt: null,
-        ...(filters ? { createdAt: { gte: filters.from, lte: filters.to } } : {}),
-        ...(orgId ? { orgId } : {}),
-        ...(activityType ? { activityType } : {}),
-        ...(actorType ? { actorType } : {}),
-        ...(q
-          ? {
-              OR: [
-                { activityName: { contains: q, mode: 'insensitive' } },
-                { description: { contains: q, mode: 'insensitive' } },
-                { userEmail: { contains: q, mode: 'insensitive' } },
-              ],
-            }
-          : {}),
-      },
-      orderBy: { createdAt: 'desc' },
-      take,
-      include: {
-        organization: { select: { id: true, name: true, slug: true } },
-      },
-    });
+    const sortBy = request.query?.sortBy ? String(request.query.sortBy) : 'createdAt';
+    const sortDir = String(request.query?.sortDir || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
 
-    return { success: true, activities: logs };
+    let orderBy = { createdAt: sortDir };
+    if (sortBy === 'activityName') orderBy = { activityName: sortDir };
+    else if (sortBy === 'description') orderBy = { description: sortDir };
+    else if (sortBy === 'activityType') orderBy = { activityType: sortDir };
+    else if (sortBy === 'userEmail') orderBy = { userEmail: sortDir };
+    else if (sortBy === 'actorType') orderBy = { actorType: sortDir };
+    else if (sortBy === 'userRole') orderBy = { userRole: sortDir };
+    else if (sortBy === 'organization') orderBy = { organization: { name: sortDir } };
+
+    const where = {
+      deletedAt: null,
+      ...(filters ? { createdAt: { gte: filters.from, lte: filters.to } } : {}),
+      ...(orgId ? { orgId } : {}),
+      ...(activityType ? { activityType } : {}),
+      ...(actorType ? { actorType } : {}),
+      ...(userRole ? { userRole } : {}),
+      ...(q
+        ? {
+            OR: [
+              { activityName: { contains: q, mode: 'insensitive' } },
+              { description: { contains: q, mode: 'insensitive' } },
+              { userEmail: { contains: q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const [logs, total] = await Promise.all([
+      prisma.auditLog.findMany({
+        where,
+        orderBy,
+        take,
+        skip,
+        include: {
+          organization: { select: { id: true, name: true, slug: true } },
+        },
+      }),
+      prisma.auditLog.count({ where }),
+    ]);
+
+    return { success: true, total, activities: logs };
   } catch (error) {
     console.error('listPlatformActivity error:', error);
     return reply.status(500).send({
@@ -104,9 +125,9 @@ async function listPlatformActivity(request, reply) {
 async function buildGrowthReport(filters) {
   const where = orgWhere(filters);
 
-  const [orgsByPlan, newOrgs, storageAgg, loginEvents, suspendedOrgs] = await Promise.all([
+  const [orgsByPlan, newOrgs, storageAgg, loginEvents, suspendedOrgs, allPlans] = await Promise.all([
     prisma.organization.groupBy({
-      by: ['planType'],
+      by: ['currentPlanId'],
       where,
       _count: { _all: true },
     }),
@@ -118,7 +139,7 @@ async function buildGrowthReport(filters) {
     }),
     prisma.organization.aggregate({
       where,
-      _sum: { storageUsedBytes: true, storageQuotaBytes: true },
+      _sum: { storageUsedBytes: true },
     }),
     prisma.auditLog.count({
       where: {
@@ -130,7 +151,7 @@ async function buildGrowthReport(filters) {
           ? {
               organization: {
                 ...(filters.status ? { status: filters.status } : {}),
-                ...(filters.planType ? { planType: filters.planType } : {}),
+                ...(filters.planType ? { currentPlanId: filters.planType } : {}),
               },
             }
           : {}),
@@ -139,7 +160,25 @@ async function buildGrowthReport(filters) {
     prisma.organization.count({
       where: { ...where, status: 'suspended' },
     }),
+    prisma.plan.findMany(),
   ]);
+
+  const planMap = new Map(allPlans.map((p) => [p.id, p.name]));
+
+  let storageQuotaBytes = 0n;
+  for (const row of orgsByPlan) {
+    const plan = allPlans.find((p) => p.id === row.currentPlanId);
+    if (plan?.storageQuotaBytes) {
+      storageQuotaBytes += BigInt(plan.storageQuotaBytes) * BigInt(row._count._all);
+    }
+  }
+
+  const planConversion = orgsByPlan.map((row) => ({
+    planType: row.currentPlanId ? (planMap.get(row.currentPlanId) || row.currentPlanId) : 'Free',
+    count: row._count._all,
+  }));
+
+  const storageUsedBytes = storageAgg._sum.storageUsedBytes || 0n;
 
   return {
     periodDays: filters.periodDays,
@@ -148,12 +187,9 @@ async function buildGrowthReport(filters) {
     newOrganizations: newOrgs,
     loginEvents,
     suspendedOrganizations: suspendedOrgs,
-    planConversion: orgsByPlan.map((row) => ({
-      planType: row.planType,
-      count: row._count._all,
-    })),
-    storageUsedBytes: (storageAgg._sum.storageUsedBytes || 0n).toString(),
-    storageQuotaBytes: (storageAgg._sum.storageQuotaBytes || 0n).toString(),
+    planConversion,
+    storageUsedBytes: storageUsedBytes.toString(),
+    storageQuotaBytes: storageQuotaBytes.toString(),
   };
 }
 
@@ -163,7 +199,7 @@ async function buildOrganizationsReport(filters) {
     orderBy: { createdAt: 'desc' },
     take: 500,
     include: {
-      currentPlan: { select: { name: true, slug: true } },
+      currentPlan: { select: { id: true, name: true, storageQuotaBytes: true } },
       _count: { select: { users: true, workspaces: true, assets: true } },
     },
   });
@@ -173,13 +209,13 @@ async function buildOrganizationsReport(filters) {
     name: org.name,
     slug: org.slug,
     status: org.status,
-    planType: org.planType,
-    planName: org.currentPlan?.name || org.planType,
+    planType: org.currentPlan?.name || 'Free',
+    planName: org.currentPlan?.name || 'Free',
     users: org._count.users,
     workspaces: org._count.workspaces,
     assets: org._count.assets,
-    storageUsedBytes: org.storageUsedBytes.toString(),
-    storageQuotaBytes: org.storageQuotaBytes.toString(),
+    storageUsedBytes: (org.storageUsedBytes || 0n).toString(),
+    storageQuotaBytes: (org.currentPlan?.storageQuotaBytes || 0n).toString(),
     createdAt: org.createdAt.toISOString(),
   }));
 }
@@ -192,7 +228,7 @@ async function buildUsersReport(filters) {
         ? {
             organization: {
               ...(filters.status ? { status: filters.status } : {}),
-              ...(filters.planType ? { planType: filters.planType } : {}),
+              ...(filters.planType ? { currentPlanId: filters.planType } : {}),
               ...(filters.orgId ? { id: filters.orgId } : {}),
             },
           }
@@ -210,7 +246,15 @@ async function buildUsersReport(filters) {
       lastLoginAt: true,
       createdAt: true,
       roleRelation: { select: { name: true } },
-      organization: { select: { id: true, name: true, slug: true, status: true, planType: true } },
+      organization: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          status: true,
+          currentPlan: { select: { name: true } },
+        },
+      },
     },
   });
 
@@ -224,7 +268,7 @@ async function buildUsersReport(filters) {
     organization: user.organization?.name || '',
     organizationSlug: user.organization?.slug || '',
     organizationStatus: user.organization?.status || '',
-    planType: user.organization?.planType || '',
+    planType: user.organization?.currentPlan?.name || '',
     lastLoginAt: user.lastLoginAt ? user.lastLoginAt.toISOString() : '',
     createdAt: user.createdAt.toISOString(),
   }));
@@ -239,18 +283,16 @@ async function buildUsageReport(filters) {
       id: true,
       name: true,
       slug: true,
-      planType: true,
       status: true,
       storageUsedBytes: true,
-      storageQuotaBytes: true,
-      maxUsers: true,
+      currentPlan: { select: { name: true, storageQuotaBytes: true, maxUsers: true } },
       _count: { select: { users: true, assets: true, workspaces: true } },
     },
   });
 
   return orgs.map((org) => {
-    const used = Number(org.storageUsedBytes);
-    const quota = Number(org.storageQuotaBytes);
+    const used = Number(org.storageUsedBytes || 0n);
+    const quota = Number(org.currentPlan?.storageQuotaBytes || 0n);
     const utilization =
       quota > 0 ? Math.round((used / quota) * 1000) / 10 : 0;
 
@@ -259,13 +301,13 @@ async function buildUsageReport(filters) {
       name: org.name,
       slug: org.slug,
       status: org.status,
-      planType: org.planType,
+      planType: org.currentPlan?.name || '',
       usersUsed: org._count.users,
-      maxUsers: org.maxUsers,
+      maxUsers: org.currentPlan?.maxUsers ?? 0,
       workspaces: org._count.workspaces,
       assets: org._count.assets,
-      storageUsedBytes: org.storageUsedBytes.toString(),
-      storageQuotaBytes: org.storageQuotaBytes.toString(),
+      storageUsedBytes: (org.storageUsedBytes || 0n).toString(),
+      storageQuotaBytes: (org.currentPlan?.storageQuotaBytes || 0n).toString(),
       storageUtilizationPercent: utilization,
     };
   });
@@ -281,7 +323,7 @@ async function buildActivityReport(filters) {
         ? {
             organization: {
               ...(filters.status ? { status: filters.status } : {}),
-              ...(filters.planType ? { planType: filters.planType } : {}),
+              ...(filters.planType ? { currentPlanId: filters.planType } : {}),
             },
           }
         : {}),
@@ -301,6 +343,7 @@ async function buildActivityReport(filters) {
     description: log.description || '',
     actorType: log.actorType || '',
     userEmail: log.userEmail || '',
+    userRole: log.userRole || '',
     organization: log.organization?.name || '',
     organizationSlug: log.organization?.slug || '',
   }));

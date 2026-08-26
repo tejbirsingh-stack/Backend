@@ -1,13 +1,14 @@
 import 'dotenv/config';
 import { Worker, Job } from 'bullmq';
 import Redis from 'ioredis';
-import { PrismaClient } from '@prisma/client';
+
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 // @ts-ignore
 import B2StorageService from './b2-storage.cjs';
 import { v4 as uuidv4 } from 'uuid';
+import './ai-worker.js';
 
 // 1. Initialize DB and Cache connections (reusing config)
 const redisConnection = new Redis({
@@ -17,9 +18,8 @@ const redisConnection = new Redis({
   maxRetriesPerRequest: null, // Required by BullMQ
 });
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-const prisma = globalForPrisma.prisma || new PrismaClient();
-if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+// @ts-ignore
+const prisma = require('./utils/prisma.js');
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,
@@ -113,7 +113,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
     await prisma.asset.update({
       where: { id: assetId },
       data: { compressedKey: compressedKey }
-    }).catch(err => console.error(`[Job ${job.id}] Failed to save compressedKey:`, err.message));
+    }).catch((err: any) => console.error(`[Job ${job.id}] Failed to save compressedKey:`, err.message));
     const outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400);
 
     let outputs: any = {};
@@ -129,7 +129,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
       outputs = {
-        'mp4:1080p': { url: outputUrl },
+        'mp4': { url: outputUrl },
         'jpg:300x#10%': { url: thumbUrl1 },
         'jpg:300x#30%': { url: thumbUrl2 },
         'jpg:300x#50%': { url: thumbUrl3 },
@@ -172,7 +172,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       await prisma.transcodeJob.updateMany({
         where: { assetId: assetId, provider: "coconut" },
         data: { jobId: jobData.id.toString() }
-      }).catch(err => console.error(`[Job ${job.id}] Failed to save Job ID to db:`, err.message));
+      }).catch((err: any) => console.error(`[Job ${job.id}] Failed to save Job ID to db:`, err.message));
     }
 
   } catch (error: any) {
@@ -182,12 +182,12 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       await prisma.transcodeJob.updateMany({
         where: { assetId: assetId, provider: "coconut" },
         data: { status: 'failed' }
-      }).catch((dbErr) => console.error('Failed to write failure status to transcode job:', dbErr));
+      }).catch((dbErr: any) => console.error('Failed to write failure status to transcode job:', dbErr));
 
       await prisma.asset.update({
         where: { id: assetId },
         data: { status: 'failed' }
-      }).catch((dbErr) => console.error('Failed to write failure status to asset:', dbErr));
+      }).catch((dbErr: any) => console.error('Failed to write failure status to asset:', dbErr));
     }
 
     throw error;

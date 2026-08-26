@@ -1,4 +1,4 @@
-const { isOrgWideRole, PERMISSIONS } = require('./rbac-policy');
+const { isOrgWideRole, getRolePermissions } = require('./rbac-policy');
 
 async function loadUserAuthzContext(prisma, userId) {
   if (!prisma || !userId) return null;
@@ -36,9 +36,9 @@ async function loadUserAuthzContext(prisma, userId) {
   const role = user.roleRelation?.name || null;
   let permissions = (user.roleRelation?.permissions || []).map((rp) => rp.permission.slug);
 
-  // Safety fallback for Super Admin / System Admin
-  if ((role === 'Super Admin' || role === 'System Admin') && permissions.length === 0) {
-    permissions = PERMISSIONS.map((p) => p.slug);
+  // Safety fallback for Super Admin / Platform Admin if permissions array is empty
+  if ((role === 'Super Admin' || role === 'Platform Admin') && permissions.length === 0) {
+    permissions = await getRolePermissions(prisma, user.roleId);
   }
 
   const allowedProjectIds = user.projectUsers.map((p) => p.projectId);
@@ -95,10 +95,13 @@ async function assertAssetAccess(prisma, user, filenameOrId) {
       ownerType: true,
       ownerId: true,
       workspaceId: true,
+      globalMedia: true,
     },
   });
 
   if (!asset) return false;
+
+  if (asset.globalMedia) return true;
 
   if (user.orgId && asset.orgId && asset.orgId !== user.orgId) {
     return false;

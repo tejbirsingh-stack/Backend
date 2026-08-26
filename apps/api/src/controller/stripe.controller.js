@@ -1,6 +1,7 @@
 const stripeService = require('../services/stripe.service.js');
-const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+const prisma = require('../utils/prisma');
+const { resolveOrgBranding } = require('../services/branding.service.js');
+const { buildCustomInvoicePdf } = require('../services/invoicePdf.service.js');
 
 function getFrontendUrl(req) {
   if (req) {
@@ -80,6 +81,7 @@ async function recordPaymentEvent({
           orgId: orgId || paymentLog.orgId,
           userId: userId || paymentLog.userId,
           stripeCustomerId: stripeCustomerId || paymentLog.stripeCustomerId,
+          stripePaymentIntentId: stripePaymentIntentId || paymentLog.stripePaymentIntentId,
           stripeSubscriptionId: stripeSubscriptionId || paymentLog.stripeSubscriptionId,
           status: status !== 'PENDING' ? status : paymentLog.status,
           amountCents: amountCents || paymentLog.amountCents,
@@ -126,6 +128,20 @@ class StripeController {
       const org = await prisma.organization.findUnique({ where: { id: orgId } });
       if (!org) return reply.code(404).send({ error: 'Organization not found' });
 
+      // Auto-heal dirty seed state: if plan was deleted directly in DB, the foreign key might be violated on next update
+      if (org.currentPlanId) {
+        const planExists = await prisma.plan.findUnique({ where: { id: org.currentPlanId } });
+        if (!planExists) {
+          console.warn(`[Stripe] Auto-healing invalid currentPlanId for org ${org.id}`);
+          await prisma.organization.update({
+            where: { id: org.id },
+            data: { currentPlanId: null, subscriptionStatus: null },
+          });
+          org.currentPlanId = null;
+          org.subscriptionStatus = null;
+        }
+      }
+
       let customerId = org.stripeCustomerId;
       if (customerId) {
         try {
@@ -146,10 +162,22 @@ class StripeController {
       }
 
       if (!customerId) {
+        const metadata = org.metadata || {};
+        const billingAddr = metadata.billingAddress;
+        const invConfig = metadata.invoiceConfig;
+
         const customer = await stripeService.createCustomer(
-          request.user.email,
-          org.name,
-          { orgId: org.id }
+          invConfig?.invoiceEmail || request.user.email,
+          invConfig?.companyName || org.name,
+          { orgId: org.id },
+          billingAddr?.line1 ? {
+            line1: billingAddr.line1 || '',
+            line2: billingAddr.line2 || '',
+            city: billingAddr.city || '',
+            state: billingAddr.state || '',
+            postal_code: billingAddr.postalCode || '',
+            country: billingAddr.country || 'US',
+          } : null
         );
         customerId = customer.id;
         await prisma.organization.update({
@@ -180,15 +208,26 @@ class StripeController {
             const isYearly = matchingPlan.yearlyPriceId === priceId;
             const newInterval = isYearly ? 'year' : 'month';
 
+            const getPlanRank = (pName, pId, cents) => {
+              const str = (pName || pId || '').toLowerCase();
+              if (str.includes('enterprise') || cents === 5000 || cents === 54000) return 3;
+              if (str.includes('premium') || cents === 2500 || cents === 27000) return 2;
+              if (str.includes('basic') || cents === 1000 || cents === 10800) return 1;
+              return 0;
+            };
+
+            const currentPlanName = org.currentPlan?.name || org.metadata?.planId;
+            const currentRank = getPlanRank(currentPlanName, org.currentPlanId, currentPriceCents);
+            const targetRank = getPlanRank(matchingPlan.name, matchingPlan.id, 0);
+
             // Determine if this plan change is an upgrade or a downgrade
             let isDowngrade = false;
-            if (currentInterval === 'year' && newInterval === 'month') {
+            if (targetRank < currentRank) {
               isDowngrade = true;
-            } else if (currentInterval === newInterval) {
-              const newPriceCents = isYearly
-                ? (matchingPlan.yearlyPrice || 27000)
-                : (matchingPlan.monthlyPrice || 2500);
-              isDowngrade = newPriceCents < currentPriceCents;
+            } else if (targetRank === currentRank) {
+              if (currentInterval === 'year' && newInterval === 'month') {
+                isDowngrade = true;
+              }
             }
 
             const updatedSub = await stripeService.updateSubscription(activeSub.id, priceId, isDowngrade);
@@ -198,7 +237,7 @@ class StripeController {
               where: { id: org.id },
               data: {
                 currentPlanId: isDowngrade ? org.currentPlanId : (matchingPlan.id !== 'custom' ? matchingPlan.id : undefined),
-                subscriptionStatus: isDowngrade ? 'canceling' : 'active',
+                subscriptionStatus: 'active',
                 planExpiresAt: expiresAt,
                 metadata: {
                   ...(typeof org.metadata === 'object' ? org.metadata : {}),
@@ -215,14 +254,17 @@ class StripeController {
               include: { currentPlan: true },
             });
 
-            const latestInvoice = updatedSub.latest_invoice;
-            const amountPaidCents = typeof latestInvoice === 'object' ? latestInvoice?.amount_paid || 0 : 0;
+            const latestInvoice = typeof updatedSub.latest_invoice === 'object' ? updatedSub.latest_invoice : null;
+            const amountPaidCents = latestInvoice?.amount_paid || (isYearly ? (matchingPlan.yearlyPriceCents || 27000) : (matchingPlan.monthlyPriceCents || 2500));
+            const invoicePdf = latestInvoice?.invoice_pdf || null;
+            const invoiceUrl = latestInvoice?.hosted_invoice_url || null;
 
             await recordPaymentEvent({
               orgId: org.id,
               userId: request.user?.id || null,
               stripeCustomerId: customerId,
               stripeSubscriptionId: updatedSub.id,
+              stripePaymentIntentId: (typeof latestInvoice?.payment_intent === 'object' ? latestInvoice.payment_intent.id : latestInvoice?.payment_intent) || null,
               eventType: isDowngrade ? 'subscription_downgrade_scheduled' : 'subscription_prorated_upgrade',
               status: 'SUCCESS',
               amountCents: amountPaidCents,
@@ -232,6 +274,8 @@ class StripeController {
               metadata: {
                 planName: matchingPlan.name,
                 billingCycle: newInterval === 'year' ? 'annual' : 'monthly',
+                invoicePdf,
+                invoiceUrl,
                 isDowngrade,
               },
             });
@@ -245,6 +289,15 @@ class StripeController {
               isDowngrade,
               message: responseMessage,
               organization: updatedOrg,
+              checkoutDetails: {
+                planName: matchingPlan.name,
+                billingCycle: newInterval === 'year' ? 'annual' : 'monthly',
+                amountPaidCents,
+                currency: updatedSub.currency || 'usd',
+                invoicePdf,
+                invoiceUrl,
+                isDowngrade,
+              },
             });
           } else if (useSavedCard) {
             // Check if customer already has a saved card attached
@@ -338,10 +391,23 @@ class StripeController {
                 },
               });
 
+              const latestInvoice = typeof newSubscription.latest_invoice === 'object' ? newSubscription.latest_invoice : null;
+              const amountPaidCents = latestInvoice?.amount_paid || (newInterval === 'year' ? (matchingPlan.yearlyPriceCents || 10800) : (matchingPlan.monthlyPriceCents || 1000));
+              const invoicePdf = latestInvoice?.invoice_pdf || null;
+              const invoiceUrl = latestInvoice?.hosted_invoice_url || null;
+
               return reply.send({
                 directUpgrade: true,
                 message: `Successfully subscribed to ${matchingPlan.name} using your saved card!`,
                 organization: updatedOrg,
+                checkoutDetails: {
+                  planName: matchingPlan.name,
+                  billingCycle: newInterval === 'year' ? 'annual' : 'monthly',
+                  amountPaidCents,
+                  currency: 'usd',
+                  invoicePdf,
+                  invoiceUrl,
+                },
               });
             }
           }
@@ -386,11 +452,21 @@ class StripeController {
       }
 
       const baseUrl = getFrontendUrl(request);
+      const { successUrl, cancelUrl } = request.body || {};
+      
+      const finalSuccessUrl = successUrl 
+        ? `${baseUrl}${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}` 
+        : `${baseUrl}/home/settings/accounts/plan?success=true&session_id={CHECKOUT_SESSION_ID}`;
+        
+      const finalCancelUrl = cancelUrl 
+        ? `${baseUrl}${cancelUrl}` 
+        : `${baseUrl}/home/settings/accounts/plan?canceled=true`;
+
       const session = await stripeService.createCheckoutSession(
         customerId,
         checkoutPriceId,
-        `${baseUrl}/home/settings/accounts/plan?success=true&session_id={CHECKOUT_SESSION_ID}`,
-        `${baseUrl}/home/settings/accounts/plan?canceled=true`
+        finalSuccessUrl,
+        finalCancelUrl
       );
 
       // Log Payment Audit Event
@@ -400,7 +476,7 @@ class StripeController {
         stripeCustomerId: customerId,
         stripeSessionId: session.id,
         eventType: 'checkout_session_created',
-        status: 'SUCCESS',
+        status: 'PENDING',
         planId: priceId,
         metadata: { checkoutUrl: session.url },
       });
@@ -560,9 +636,45 @@ class StripeController {
         }
       }
 
-      const invoice = session.invoice;
-      const invoicePdf = invoice?.invoice_pdf || null;
-      const invoiceUrl = invoice?.hosted_invoice_url || null;
+      // Extract invoice details cleanly with fallback retrieval if session.invoice is a string ID or missing PDF
+      let invoiceObj = typeof session.invoice === 'object' ? session.invoice : null;
+      let invoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice?.id;
+
+      if (!invoiceId && session.subscription && typeof session.subscription === 'object') {
+        const subLatest = session.subscription.latest_invoice;
+        invoiceObj = invoiceObj || (typeof subLatest === 'object' ? subLatest : null);
+        invoiceId = invoiceId || (typeof subLatest === 'string' ? subLatest : subLatest?.id);
+      }
+
+      if ((!invoiceObj || !invoiceObj.invoice_pdf) && invoiceId) {
+        try {
+          const fetchedInv = await stripeService.retrieveInvoice(invoiceId);
+          if (fetchedInv) invoiceObj = fetchedInv;
+        } catch (fetchErr) {
+          console.error('[StripeController] Error fetching invoice by ID:', fetchErr);
+        }
+      }
+
+      const customerId = typeof session.customer === 'string' ? session.customer : session.customer?.id;
+
+      if ((!invoiceObj || !invoiceObj.invoice_pdf) && customerId) {
+        try {
+          const recentInvoices = await stripeService.listInvoices(customerId, 1);
+          if (recentInvoices?.data?.[0]) {
+            invoiceObj = recentInvoices.data[0];
+          }
+        } catch (listErr) {
+          console.error('[StripeController] Error fetching recent customer invoice:', listErr);
+        }
+      }
+
+      const invId = invoiceObj?.id || invoiceId;
+      const customPdfUrl = invId
+        ? `/api/stripe/invoices/${invId}/download-pdf`
+        : `/api/stripe/download-invoice-pdf?sessionId=${session.id}`;
+
+      const invoicePdf = customPdfUrl;
+      const invoiceUrl = customPdfUrl;
 
       // Log Successful Sync Payment Event
       await recordPaymentEvent({
@@ -706,7 +818,17 @@ class StripeController {
         return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
 
-      return reply.send({ success: true, subscriptions });
+      const isDowngradeScheduled = org.metadata?.isDowngradeScheduled === true;
+      const scheduledDowngrade = isDowngradeScheduled
+        ? {
+            planId: org.metadata?.scheduledPlanId || 'basic',
+            planName: org.metadata?.scheduledPlanName || 'Basic Plan',
+            billingCycle: org.metadata?.scheduledBillingCycle || 'monthly',
+            effectiveDate: org.planExpiresAt || org.metadata?.expiresAt,
+          }
+        : null;
+
+      return reply.send({ success: true, subscriptions, scheduledDowngrade });
     } catch (error) {
       request.log.error(error);
       return reply.code(500).send({ error: 'Failed to fetch subscriptions', details: error.message });
@@ -824,6 +946,157 @@ class StripeController {
   }
 
   /**
+   * Cancel a Scheduled Downgrade (Restore current active plan)
+   */
+  async cancelScheduledDowngrade(request, reply) {
+    try {
+      const orgId = request.user?.orgId;
+      if (!orgId) return reply.code(400).send({ error: 'Missing orgId' });
+
+      const org = await prisma.organization.findUnique({ where: { id: orgId } });
+      if (!org) return reply.code(404).send({ error: 'Organization not found' });
+
+      const currentMetadata = typeof org.metadata === 'object' ? org.metadata : {};
+
+      const updatedMetadata = {
+        ...currentMetadata,
+        isDowngradeScheduled: false,
+        scheduledPlanId: undefined,
+        scheduledPlanName: undefined,
+        scheduledBillingCycle: undefined,
+      };
+
+      await prisma.organization.update({
+        where: { id: org.id },
+        data: {
+          subscriptionStatus: 'active',
+          metadata: updatedMetadata,
+        },
+      });
+
+      if (org.stripeCustomerId) {
+        try {
+          const activeSubs = await stripeService.listActiveSubscriptions(org.stripeCustomerId);
+          const subToResume = activeSubs?.data?.find((s) => s.cancel_at_period_end);
+          if (subToResume) {
+            await stripeService.resumeSubscription(subToResume.id);
+          }
+        } catch (err) {
+          console.error('[StripeController] Error resuming Stripe subscription during downgrade cancellation:', err);
+        }
+      }
+
+      await recordPaymentEvent({
+        orgId: org.id,
+        userId: request.user?.id || null,
+        stripeCustomerId: org.stripeCustomerId,
+        eventType: 'scheduled_downgrade_canceled',
+        status: 'SUCCESS',
+        metadata: { isDowngradeScheduled: false },
+      });
+
+      return reply.send({
+        success: true,
+        message: 'Scheduled downgrade canceled successfully. You will remain on your current plan!',
+      });
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(500).send({ error: 'Failed to cancel scheduled downgrade', details: error.message });
+    }
+  }
+
+  /**
+   * Get historical invoices for the organization
+   */
+  async getInvoices(request, reply) {
+    try {
+      const orgId = request.user?.orgId || request.user?.organizationId;
+      if (!orgId) {
+        return reply.code(400).send({ error: 'User is not associated with an organization' });
+      }
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+      });
+
+      if (!org) {
+        return reply.code(440).send({ error: 'Organization not found' });
+      }
+
+      let stripeInvoices = [];
+      if (org.stripeCustomerId) {
+        const res = await stripeService.listInvoices(org.stripeCustomerId, 50);
+        stripeInvoices = res?.data || [];
+      }
+
+      const formattedInvoices = stripeInvoices.map((inv) => {
+        // Find line item that represents positive plan charge or fallback to first line
+        const posLine = inv.lines?.data?.find((l) => l.amount > 0) || inv.lines?.data?.[0];
+        const rawDesc = posLine?.description || inv.description || '';
+
+        let description = `${org.name} Subscription`;
+        if (/premium/i.test(rawDesc)) {
+          description = 'Premium Plan — Subscription';
+        } else if (/basic/i.test(rawDesc)) {
+          description = 'Basic Plan — Subscription';
+        } else if (/enterprise/i.test(rawDesc)) {
+          description = 'Enterprise Plan — Subscription';
+        } else if (rawDesc) {
+          description = rawDesc.replace(/^1\s*[\u00d7xX]\s*/i, '').replace(/\s*\([^)]*\)$/, '').trim();
+        }
+
+        // Net charge amount (display $0.00 for $0 / credit adjustments instead of negative string)
+        const netAmountCents = Math.max(0, inv.total > 0 ? inv.total : 0);
+        const formattedAmount = `$${(netAmountCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+        const dateFormatted = new Intl.DateTimeFormat('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }).format(new Date((inv.created || Date.now() / 1000) * 1000));
+
+        let status = 'Paid';
+        if (inv.status === 'open') status = 'Open';
+        else if (inv.status === 'draft') status = 'Draft';
+        else if (inv.status === 'uncollectible' || inv.status === 'void') status = 'Void';
+
+        return {
+          id: inv.id,
+          invoiceNumber: inv.number || inv.id,
+          date: dateFormatted,
+          createdTimestamp: (inv.created || 0) * 1000,
+          description,
+          status,
+          amount: formattedAmount,
+          amountCents: netAmountCents,
+          paidCents: inv.amount_paid || 0,
+          invoicePdf: `/api/stripe/invoices/${inv.id}/download-pdf`,
+          invoiceUrl: `/api/stripe/invoices/${inv.id}/download-pdf`,
+        };
+      });
+
+      const totalInvoices = formattedInvoices.length;
+      const paidInvoices = formattedInvoices.filter((i) => i.status === 'Paid');
+      const lastPaidInvoice = paidInvoices[0] || null;
+      // Calculate Lifetime Spend as actual cash collected by Stripe across paid invoices
+      const lifetimeSpendCents = stripeInvoices.reduce((sum, inv) => sum + (inv.amount_paid || 0), 0);
+      const lifetimeSpendFormatted = `$${(lifetimeSpendCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+
+      return reply.send({
+        success: true,
+        invoices: formattedInvoices,
+        stats: {
+          totalInvoices,
+          lastPaymentDate: lastPaidInvoice ? lastPaidInvoice.date : '—',
+          lifetimeSpend: lifetimeSpendFormatted,
+        },
+      });
+    } catch (error) {
+      request.log ? request.log.error(error) : console.error('[StripeController] getInvoices error:', error);
+      return reply.code(500).send({ error: 'Failed to fetch invoices', details: error.message });
+    }
+  }
+
+  /**
    * Stripe Webhook Handler
    */
   async handleWebhook(request, reply) {
@@ -890,6 +1163,13 @@ class StripeController {
                     orgId: org.id,
                     stripeCustomerId: customerId,
                     stripeSessionId: session.id,
+                    stripePaymentIntentId: session.payment_intent 
+                      ? String(session.payment_intent) 
+                      : (fullSession?.invoice?.payment_intent 
+                          ? String(fullSession.invoice.payment_intent) 
+                          : (fullSession?.subscription?.latest_invoice?.payment_intent 
+                              ? String(fullSession.subscription.latest_invoice.payment_intent) 
+                              : null)),
                     stripeSubscriptionId: String(session.subscription || ''),
                     eventType: 'webhook_checkout_completed',
                     status: 'SUCCESS',
@@ -900,6 +1180,25 @@ class StripeController {
                   });
                 }
               }
+            }
+          }
+          break;
+        }
+        case 'checkout.session.expired': {
+          const session = event.data.object;
+          const customerId = session.customer;
+
+          if (customerId) {
+            const orgs = await prisma.organization.findMany({ where: { stripeCustomerId: customerId } });
+            for (const org of orgs) {
+              await recordPaymentEvent({
+                orgId: org.id,
+                stripeCustomerId: customerId,
+                stripeSessionId: session.id,
+                eventType: 'checkout.session.expired',
+                status: 'FAILED',
+                failureReason: 'Checkout abandoned or expired',
+              });
             }
           }
           break;
@@ -1072,6 +1371,296 @@ class StripeController {
     } catch (error) {
       request.log.error(error);
       return reply.code(500).send({ error: 'Failed to remove payment method', details: error.message });
+    }
+  }
+
+  /**
+   * Get billing address and invoice configuration for the current organization
+   */
+  async getBillingDetails(request, reply) {
+    try {
+      const orgId = request.user?.orgId;
+      if (!orgId) return reply.code(400).send({ error: 'Missing orgId' });
+
+      const org = await prisma.organization.findUnique({ where: { id: orgId } });
+      if (!org) return reply.code(404).send({ error: 'Organization not found' });
+
+      const metadata = org.metadata || {};
+      const billingAddress = metadata.billingAddress || {
+        companyName: org.name || '',
+        line1: '',
+        line2: '',
+        city: '',
+        state: '',
+        postalCode: '',
+        country: 'US',
+      };
+      const invoiceConfig = metadata.invoiceConfig || {
+        companyName: org.name || '',
+        taxId: '',
+        invoiceEmail: request.user?.email || '',
+        billingContact: request.user?.name || '',
+      };
+
+      return reply.send({
+        success: true,
+        billingAddress,
+        invoiceConfig,
+      });
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(500).send({ error: 'Failed to fetch billing details', details: error.message });
+    }
+  }
+
+  /**
+   * Update billing address for organization & sync with Stripe Customer
+   */
+  async updateBillingAddress(request, reply) {
+    try {
+      const orgId = request.user?.orgId;
+      if (!orgId) return reply.code(400).send({ error: 'Missing orgId' });
+
+      const { companyName, line1, line2, city, state, postalCode, country } = request.body || {};
+
+      const org = await prisma.organization.findUnique({ where: { id: orgId } });
+      if (!org) return reply.code(404).send({ error: 'Organization not found' });
+
+      const newAddress = {
+        companyName: companyName !== undefined ? companyName : org.name,
+        line1: line1 || '',
+        line2: line2 || '',
+        city: city || '',
+        state: state || '',
+        postalCode: postalCode || '',
+        country: country || 'US',
+      };
+
+      const updatedMetadata = {
+        ...(typeof org.metadata === 'object' && org.metadata !== null ? org.metadata : {}),
+        billingAddress: newAddress,
+      };
+
+      await prisma.organization.update({
+        where: { id: orgId },
+        data: { metadata: updatedMetadata },
+      });
+
+      if (org.stripeCustomerId) {
+        await stripeService.updateCustomer(org.stripeCustomerId, {
+          name: newAddress.companyName || org.name,
+          address: {
+            line1: newAddress.line1,
+            line2: newAddress.line2,
+            city: newAddress.city,
+            state: newAddress.state,
+            postal_code: newAddress.postalCode,
+            country: newAddress.country,
+          },
+        }).catch((err) => console.error('[Stripe Customer Address Sync Warning]', err.message));
+      }
+
+      return reply.send({
+        success: true,
+        message: 'Billing address updated successfully',
+        billingAddress: newAddress,
+      });
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(500).send({ error: 'Failed to update billing address', details: error.message });
+    }
+  }
+
+  /**
+   * Update invoice configuration for organization & sync with Stripe Customer
+   */
+  async updateInvoiceConfig(request, reply) {
+    try {
+      const orgId = request.user?.orgId;
+      if (!orgId) return reply.code(400).send({ error: 'Missing orgId' });
+
+      const { companyName, taxId, invoiceEmail, billingContact } = request.body || {};
+
+      const org = await prisma.organization.findUnique({ where: { id: orgId } });
+      if (!org) return reply.code(404).send({ error: 'Organization not found' });
+
+      const newInvoiceConfig = {
+        companyName: companyName !== undefined ? companyName : org.name,
+        taxId: taxId || '',
+        invoiceEmail: invoiceEmail || request.user?.email || '',
+        billingContact: billingContact || request.user?.name || '',
+      };
+
+      const updatedMetadata = {
+        ...(typeof org.metadata === 'object' && org.metadata !== null ? org.metadata : {}),
+        invoiceConfig: newInvoiceConfig,
+      };
+
+      await prisma.organization.update({
+        where: { id: orgId },
+        data: { metadata: updatedMetadata },
+      });
+
+      if (org.stripeCustomerId && newInvoiceConfig.invoiceEmail) {
+        await stripeService.updateCustomer(org.stripeCustomerId, {
+          name: newInvoiceConfig.companyName || org.name,
+          email: newInvoiceConfig.invoiceEmail,
+        }).catch((err) => console.error('[Stripe Customer Invoice Config Sync Warning]', err.message));
+      }
+
+      return reply.send({
+        success: true,
+        message: 'Invoice configuration updated successfully',
+        invoiceConfig: newInvoiceConfig,
+      });
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(500).send({ error: 'Failed to update invoice configuration', details: error.message });
+    }
+  }
+
+  /**
+   * Generates and downloads a Custom PDF for a Stripe Invoice incorporating Org Branding
+   */
+  async downloadCustomInvoicePdf(request, reply) {
+    try {
+      const orgId = request.user?.orgId || request.user?.organizationId;
+      if (!orgId) {
+        return reply.code(400).send({ error: 'User is not associated with an organization' });
+      }
+
+      const { invoiceId } = request.params || {};
+      const sessionId = request.query?.sessionId || request.query?.session_id;
+
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+      });
+
+      let stripeInvoice = null;
+      let customerId = org?.stripeCustomerId;
+
+      if (invoiceId && invoiceId !== 'latest' && invoiceId !== 'null' && invoiceId !== 'undefined') {
+        stripeInvoice = await stripeService.retrieveInvoice(invoiceId).catch(() => null);
+      }
+
+      if (!stripeInvoice && sessionId) {
+        const session = await stripeService.retrieveCheckoutSession(sessionId).catch(() => null);
+        if (session) {
+          customerId = customerId || (typeof session.customer === 'string' ? session.customer : session.customer?.id);
+          let invId = typeof session.invoice === 'string' ? session.invoice : session.invoice?.id;
+          if (!invId && session.subscription) {
+            const subLatest = typeof session.subscription === 'object' ? session.subscription.latest_invoice : null;
+            invId = typeof subLatest === 'string' ? subLatest : subLatest?.id;
+          }
+          if (invId) {
+            stripeInvoice = await stripeService.retrieveInvoice(invId).catch(() => null);
+          }
+        }
+      }
+
+      if (!stripeInvoice && customerId) {
+        const recentInvoices = await stripeService.listInvoices(customerId, 1).catch(() => null);
+        stripeInvoice = recentInvoices?.data?.[0] || null;
+      }
+
+      // Format billing address string from org metadata or Stripe customer address
+      let billingAddressStr = '';
+      const ba = org?.metadata?.billingAddress;
+      if (ba && (ba.line1 || ba.companyName)) {
+        billingAddressStr = [ba.companyName || org?.name, ba.line1, ba.line2, `${ba.city || ''} ${ba.state || ''} ${ba.postalCode || ''}`.trim(), ba.country]
+          .filter(Boolean)
+          .join(', ');
+      } else if (stripeInvoice?.customer_address) {
+        const ca = stripeInvoice.customer_address;
+        billingAddressStr = [ca.line1, ca.line2, `${ca.city || ''} ${ca.state || ''} ${ca.postal_code || ''}`.trim(), ca.country]
+          .filter(Boolean)
+          .join(', ');
+      }
+
+      // Map Stripe Invoice fields into standardized InvoiceData object
+      const currency = (stripeInvoice?.currency || 'usd').toLowerCase();
+      const currencySymbol = currency === 'eur' ? '€' : currency === 'gbp' ? '£' : currency === 'inr' ? '₹' : '$';
+
+      const netAmountCents = stripeInvoice ? Math.max(0, stripeInvoice.total || 0) : 0;
+      const formattedTotal = `${currencySymbol}${(netAmountCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+      const formattedSubtotal = `${currencySymbol}${((stripeInvoice?.subtotal || netAmountCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+      const formattedAmountDue = `${currencySymbol}${((stripeInvoice?.amount_due ?? netAmountCents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+
+      const issueDateStr = stripeInvoice?.created
+        ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(stripeInvoice.created * 1000))
+        : new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date());
+
+      const dueDateStr = stripeInvoice?.due_date
+        ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(stripeInvoice.due_date * 1000))
+        : issueDateStr;
+
+      // Line items mapping
+      const lines = [];
+      if (stripeInvoice?.lines?.data?.length > 0) {
+        stripeInvoice.lines.data.forEach((line) => {
+          const itemAmount = `${currencySymbol}${(line.amount / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+          const unitPrice = line.price?.unit_amount
+            ? `${currencySymbol}${(line.price.unit_amount / 100).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+            : itemAmount;
+
+          let periodStr = '';
+          if (line.period?.start && line.period?.end) {
+            const pStart = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(line.period.start * 1000));
+            const pEnd = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(line.period.end * 1000));
+            periodStr = `${pStart} – ${pEnd}`;
+          }
+
+          lines.push({
+            description: line.description || `${org.name} Subscription`,
+            quantity: line.quantity || 1,
+            unitPrice,
+            amount: itemAmount,
+            period: periodStr,
+          });
+        });
+      } else {
+        lines.push({
+          description: `${org.name} Subscription Plan`,
+          quantity: 1,
+          unitPrice: formattedTotal,
+          amount: formattedTotal,
+        });
+      }
+
+      const invoiceData = {
+        invoiceNumber: stripeInvoice?.number || stripeInvoice?.id || `INV-${Date.now().toString().slice(-6)}`,
+        issueDate: issueDateStr,
+        dueDate: dueDateStr,
+        customerName: stripeInvoice?.customer_name || org.name || 'Valued Customer',
+        customerEmail: stripeInvoice?.customer_email || request.user?.email || '',
+        billingAddress: billingAddressStr,
+        currency: currency.toUpperCase(),
+        currencySymbol,
+        lines,
+        subtotal: formattedSubtotal,
+        tax: stripeInvoice?.tax ? `${currencySymbol}${(stripeInvoice.tax / 100).toFixed(2)}` : null,
+        discount: stripeInvoice?.total_discount_amounts?.[0]?.amount
+          ? `${currencySymbol}${(stripeInvoice.total_discount_amounts[0].amount / 100).toFixed(2)}`
+          : null,
+        total: formattedTotal,
+        amountDue: formattedAmountDue,
+        status: stripeInvoice?.status || (stripeInvoice?.paid ? 'paid' : 'paid'),
+      };
+
+      // Fetch org branding details (logo, accountName, accentColor)
+      const orgBranding = await resolveOrgBranding(prisma, orgId).catch(() => ({}));
+
+      // Generate custom PDF binary buffer
+      const pdfBuffer = await buildCustomInvoicePdf(invoiceData, orgBranding);
+
+      reply
+        .header('Content-Type', 'application/pdf')
+        .header('Content-Disposition', `inline; filename="Invoice-${invoiceData.invoiceNumber}.pdf"`)
+        .send(pdfBuffer);
+    } catch (error) {
+      request.log.error(error);
+      console.error('[StripeController downloadCustomInvoicePdf Error]', error);
+      return reply.code(500).send({ error: 'Failed to generate custom invoice PDF', details: error.message });
     }
   }
 }

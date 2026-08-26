@@ -26,10 +26,10 @@
     "start:api": "cd apps/api && npm run dev",
     "start:web": "cd apps/web && npm run dev",
     "start:compression": "cd apps/compression && cargo run",
-    "docker:up": "docker-compose -f docker-compose.dev.yml up -d",
-    "docker:down": "docker-compose -f docker-compose.dev.yml down",
-    "docker:reset": "docker-compose -f docker-compose.dev.yml down -v",
-    "docker:simple": "docker-compose -f docker-compose.simple.yml up -d"
+    "docker:up": "docker compose -f docker-compose.dev.yml up -d",
+    "docker:down": "docker compose -f docker-compose.dev.yml down",
+    "docker:reset": "docker compose -f docker-compose.dev.yml down -v",
+    "docker:simple": "docker compose -f docker-compose.simple.yml up -d"
   },
   "devDependencies": {
     "@prisma/client": "^6.15.0",
@@ -39,8 +39,8 @@
     "typescript": "^5.6.0"
   },
   "engines": {
-    "node": ">=20.0.0",
-    "npm": ">=9.0.0"
+    "node": "^20.19.0",
+    "npm": ">=10.0.0"
   },
   "keywords": [
     "media",
@@ -66,7 +66,6 @@
     "@fastify/rate-limit": "^10.0.0",
     "@fastify/static": "^8.2.0",
     "@fastify/websocket": "^11.2.0",
-    "canvas": "2.11.2",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "fastify": "^5.4.0",

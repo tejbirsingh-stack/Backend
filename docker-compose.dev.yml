@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # PostgreSQL with TimescaleDB extension
   postgres:
-    image: timescale/timescaledb:2.14.2-pg16
+    image: pgvector/pgvector:pg16
     container_name: noah-postgres
     environment:
       POSTGRES_DB: noah_dev
@@ -11,26 +11,20 @@ services:
       POSTGRES_PASSWORD: noah_dev_password
       TIMESCALEDB_TELEMETRY: off
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
     networks:
       - noah-network
-    command: >
-      postgres
-      -c shared_preload_libraries=timescaledb
-      -c max_connections=200
-      -c shared_buffers=256MB
-      -c effective_cache_size=1GB
-      -c work_mem=4MB
+
 
   # Redis Cluster with Sentinel for high availability
   redis-master:
     image: redis:7.2-alpine
     container_name: noah-redis-master
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: redis-server --requirepass noah_redis_password --maxmemory 512mb --maxmemory-policy allkeys-lru
     networks:
       - noah-network
@@ -182,7 +176,7 @@ services:
       dockerfile: ./apps/api/Dockerfile.dev
     container_name: noah-api
     ports:
-      - "3001:3001"
+      - "3002:3001"
     environment:
       NODE_ENV: development
       DATABASE_URL: postgresql://noah_user:noah_dev_password@pgbouncer:5432/noah_dev

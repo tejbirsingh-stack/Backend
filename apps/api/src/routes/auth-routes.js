@@ -43,10 +43,23 @@ async function routes(fastify, options) {
   if (authController.getMe) fastify.get("/me", { preHandler: authenticate }, authController.getMe);
 
   //8. Forgot password route
-  if (authController.forgotPassword) fastify.post("/forgot-password", authController.forgotPassword);
+  if (authController.forgotPassword) {
+    fastify.post("/forgot-password", {
+      config: { rateLimit: { max: 10, timeWindow: "15 minutes" } }
+    }, authController.forgotPassword);
+  }
+
+  //8b. Validate reset token route
+  if (authController.validateResetToken) {
+    fastify.get("/validate-reset-token", authController.validateResetToken);
+  }
 
   //9. Reset password route
-  if (authController.resetPassword) fastify.post("/reset-password", authController.resetPassword);
+  if (authController.resetPassword) {
+    fastify.post("/reset-password", {
+      config: { rateLimit: { max: 10, timeWindow: "15 minutes" } }
+    }, authController.resetPassword);
+  }
 
   //10 Google login route
   if (authController.googleLogin) {

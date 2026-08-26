@@ -95,7 +95,7 @@ async function main() {
 
     console.log('\n🎉 Database seeding completed successfully!');
     console.log('\n📋 Test Accounts:');
-    console.log('  System Admin: admin@visitdetroit.com / VisitDetroit2025!');
+    console.log('  Platform Admin: admin@visitdetroit.com / VisitDetroit2025!');
     console.log('  Org Admin: john.smith@visitdetroit.com / Detroit2025!');
     console.log('  Team Member: sarah.johnson@visitdetroit.com / Detroit2025!');
     console.log('  Team Member: mike.wilson@visitdetroit.com / Detroit2025!');

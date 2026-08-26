@@ -22,7 +22,7 @@
    - ⚠️ Need Backblaze B2 credentials configured
 
 ### Demo Test Accounts
-- **System Admin**: admin@visitdetroit.com / VisitDetroit2025!
+- **Platform Admin**: admin@visitdetroit.com / VisitDetroit2025!
 - **Org Admin**: john.smith@visitdetroit.com / Detroit2025!
 - **Team Member**: sarah.johnson@visitdetroit.com / Detroit2025!
 - **Team Member**: mike.wilson@visitdetroit.com / Detroit2025!

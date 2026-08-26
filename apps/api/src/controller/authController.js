@@ -7,9 +7,10 @@ const jwksClient = require("jwks-rsa");
 const { logSuccess, logError, ACTIVITY_NAME } = require("../lib/audit-log");
 const { loadUserAuthzContext } = require("../lib/rbac-access");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
-const { autoAssignAdminsToWorkspace } = require("../services/workspace.service");
+const { autoAssignAdminsToWorkspace, autoAssignNewAdminToWorkspaces } = require("../services/workspace.service");
 const { createDefaultWorkspace: createDefaultWorkspaceWithStarterContent } = require("../lib/platform-provision");
-const { ACCESS_LEVEL } = require("../lib/rolesPermissions");
+const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
+const { resolveOrgBranding } = require("../services/branding.service");
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -20,6 +21,8 @@ function slugifyWorkspaceName(value) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
 }
+
+const { computeAiEnabledSync } = require("../services/ai/aiEntitlement");
 
 function formatOrganization(org) {
   if (!org) return null;
@@ -48,6 +51,7 @@ function formatOrganization(org) {
     maxWorkspaces,
     maxProjects,
     features,
+    aiEnabled: computeAiEnabledSync(org),
   };
 }
 
@@ -263,7 +267,11 @@ module.exports.login = async (request, reply) => {
         });
 
         // 4. Send the email using our new email service function
-        await request.server.emailService.sendMfaCode(user.email, user.name || "User", otpCode);
+        const orgBranding = await resolveOrgBranding(request.server.prisma, user.orgId);
+        await request.server.emailService.sendMfaCode(user.email, user.name || "User", otpCode, {
+          orgLogoUrl: orgBranding?.logoUrl,
+          orgName: orgBranding?.accountName,
+        });
         logSuccess(ACTIVITY_NAME.USER_LOGIN, "MFA OTP sent successfully during login.", null, user);  //Log user activity
 
         // console.log('check'); return;
@@ -325,7 +333,9 @@ module.exports.login = async (request, reply) => {
       allowedProjectIds,
       organization: user.organization,
       timezone: user.timezone,
-      avatarUrl: user.avatarUrl
+      avatarUrl: user.avatarUrl,
+      shareLinkActivityEnabled: user.shareLinkActivityEnabled,
+      preferences: user.preferences
     };
     const token = await reply.jwtSign(payload);
 
@@ -336,6 +346,15 @@ module.exports.login = async (request, reply) => {
       request.ip,
       token
     );
+
+    // Update last login and activity timestamps
+    await request.server.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        lastLoginAt: new Date(),
+        lastActiveAt: new Date(),
+      },
+    });
 
     logSuccess(ACTIVITY_NAME.USER_LOGIN, "Login successful.", null, user);  //Log user activity
 
@@ -359,7 +378,7 @@ module.exports.login = async (request, reply) => {
 
 
 module.exports.register = async (request, reply) => {
-  const { name, email, password, orgId, orgName, phone, hubspotUtk } = request.body;
+  const { name, email, password, orgId, orgName, phone, hubspotUtk, planId } = request.body;
 
   try {
     // Validate required fields
@@ -439,15 +458,35 @@ module.exports.register = async (request, reply) => {
       const derivedOrgName = formatDomainToOrgName(email, orgName || name);
       const rawOrgName = orgName || name || email.split('@')[0];
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
-      const freePlan = await request.server.prisma.plan.findFirst({
-        where: { name: { equals: 'free', mode: 'insensitive' } }
-      });
+      let plan = null;
+      if (planId) {
+        plan = await request.server.prisma.plan.findUnique({
+          where: { id: planId }
+        });
+      }
+      if (!plan) {
+        plan = await request.server.prisma.plan.findFirst({
+          where: { isFree: true, isActive: true }
+        });
+      }
+      
+      const isFreePlan = Boolean(plan && plan.isFree);
+      let planExpiresAt = null;
+      
+      if (isFreePlan) {
+         const trialDays = plan.trialDays ?? 3;
+         const expires = new Date();
+         expires.setDate(expires.getDate() + trialDays);
+         planExpiresAt = expires;
+      }
+
       organization = await request.server.prisma.organization.create({
         data: {
           name: derivedOrgName,
           slug: `${slugBase}-${Date.now()}`,
-          currentPlanId: freePlan ? freePlan.id : null,
-          isFreeTrialUsed: false,
+          currentPlanId: plan ? plan.id : null,
+          isFreeTrialUsed: isFreePlan,
+          planExpiresAt: planExpiresAt,
         },
         include: { currentPlan: true },
       });
@@ -460,6 +499,7 @@ module.exports.register = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: finalOrgId,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -519,29 +559,8 @@ module.exports.register = async (request, reply) => {
       },
     });
 
-    // Auto-assign the user to the newly created default workspace and run admin auto-assign
+    // Assign Super Admins / Admins to this newly created workspace (which skips public now)
     if (request.newWorkspaceId) {
-      // Get the ID for Full Access
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
-
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: request.newWorkspaceId,
-            userId: user.id
-          }
-        },
-        update: {},
-        create: {
-          workspaceId: request.newWorkspaceId,
-          userId: user.id,
-          memberType: 'MEMBER',
-          accessLevelId: fullAccessId
-        }
-      });
-      // Assign Super Admins / Admins now that the first user exists
       await autoAssignAdminsToWorkspace(request.server.prisma, finalOrgId, request.newWorkspaceId);
     }
 
@@ -607,7 +626,11 @@ module.exports.register = async (request, reply) => {
       const frontendUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
       const verificationUrl = `${frontendUrl}/verify-email?token=${verificationToken}`;
       const emailService = request.server.emailService || require("../services/email-service");
-      await emailService.sendEmailVerification(user.email, user.name || "User", verificationUrl);
+      const orgBranding = await resolveOrgBranding(request.server.prisma, user.orgId);
+      await emailService.sendEmailVerification(user.email, user.name || "User", verificationUrl, {
+        orgLogoUrl: orgBranding?.logoUrl,
+        orgName: orgBranding?.accountName,
+      });
     } catch (emailErr) {
       console.error("Failed to send verification email during registration:", emailErr);
     }
@@ -784,6 +807,12 @@ module.exports.registerRole = async (request, reply) => {
       },
     });
     user.role = roleObj.name;
+
+    if (['Super Admin', 'Admin', 'Platform Admin'].includes(user.role)) {
+      if (user.orgId) {
+        await autoAssignNewAdminToWorkspaces(request.server.prisma, user.orgId, user.id);
+      }
+    }
 
     // 7. Generate Password Setup Token
     const resetToken = await authService.createPasswordResetToken(user.id);
@@ -976,6 +1005,8 @@ module.exports.getMe = async (request, reply) => {
         timezone: true,
         avatarUrl: true,
         mfaEnabled: true,
+        shareLinkActivityEnabled: true,
+        preferences: true,
         lastLoginAt: true,
         lastActiveAt: true,
         createdAt: true,
@@ -1077,58 +1108,59 @@ module.exports.getMe = async (request, reply) => {
 
 // 8. Forgot Password Handler
 module.exports.forgotPassword = async (request, reply) => {
-  const { email } = request.body;
+  const { email } = request.body || {};
 
   try {
     // Validate input
-    if (!email) {
+    if (!email || typeof email !== "string" || !email.trim()) {
       return reply.status(400).send({
         error: "Bad Request",
         message: "Email is required",
       });
     }
 
-    // Find the user
-    const user = await authService.findUserByEmail(email);
+    const cleanEmail = email.trim().toLowerCase();
 
-    // If user doesn't exist, still return success to prevent email enumeration
+    // Find the user by email in user table
+    const user = await authService.findUserByEmail(cleanEmail);
+
     if (!user) {
-      return {
-        success: true,
-        message:
-          "If an account exists for this email, a password reset link has been sent",
-      };
+      return reply.status(404).send({
+        error: "Not Found",
+        message: "No account found with this email address.",
+      });
     }
 
-    // Check user status
     if (user.status !== "active") {
-      return {
-        success: true,
-        message:
-          "If an account exists for this email, a password reset link has been sent",
-      };
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "This account is inactive or suspended.",
+      });
     }
 
-    // Generate token
+    // Generate dedicated password-reset JWT with 12-hour expiry and unique jti
     const resetToken = await authService.createPasswordResetToken(user.id);
 
-    const frontendUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
+    const frontendUrl =
+      request.headers.origin ||
+      process.env.FRONTEND_URL ||
+      (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:3002");
     const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
 
-    // Use the email service to send the email
-    // This is a placeholder - you'll need to implement email sending
-    console.log(`Password reset email for ${user.email}: ${resetUrl}`);
-
-    // In production, you would use:
-    await request.server.emailService.sendPasswordReset(user.email, user.name, resetUrl);
+    const emailService = request.server?.emailService || require("../services/email-service");
+    const emailSender = emailService.sendPasswordReset ? emailService : (new (require("../services/email-service"))());
+    const orgBranding = await resolveOrgBranding(request.server.prisma, user.orgId);
+    await emailSender.sendPasswordReset(user.email, user.name, resetUrl, {
+      orgLogoUrl: orgBranding?.logoUrl,
+      orgName: orgBranding?.accountName,
+    });
 
     logSuccess(ACTIVITY_NAME.FORGOT_PASSWORD, "Password reset link requested.", null, user);
 
-    return {
+    return reply.send({
       success: true,
-      message:
-        "If an account exists for this email, a password reset link has been sent",
-    };
+      message: `Password reset link has been sent to ${user.email}.`,
+    });
   } catch (error) {
     console.error("Forgot password error:", error);
     logError("FORGOT PASSWORD", "Password reset link request failed.", request, error);
@@ -1137,12 +1169,54 @@ module.exports.forgotPassword = async (request, reply) => {
       message: "Failed to process password reset request",
     });
   }
-}
+};
 
-// 9. Reset Password Handle
+// 8b. Validate Reset Token Handler
+module.exports.validateResetToken = async (request, reply) => {
+  const token = request.query?.token || request.body?.token;
+
+  if (!token) {
+    return reply.status(400).send({
+      valid: false,
+      message: "Token is required",
+    });
+  }
+
+  try {
+    const validation = await authService.validatePasswordResetToken(token);
+
+    if (!validation) {
+      return reply.status(400).send({
+        valid: false,
+        message: "This link is invalid or has expired. Please request a new link.",
+      });
+    }
+
+    const isInvite = Boolean(
+      validation.user.status === 'inactive' ||
+      validation.user.status === 'pending' ||
+      !validation.user.passwordHash
+    );
+
+    return reply.send({
+      valid: true,
+      isInvite,
+      userStatus: validation.user.status,
+    });
+  } catch (error) {
+    console.error("Validate reset token error:", error);
+    return reply.status(400).send({
+      valid: false,
+      message: "This link is invalid or has expired. Please request a new link.",
+    });
+  }
+};
+
+// 9. Reset Password Handler
 module.exports.resetPassword = async (request, reply) => {
-  const { token, newPassword, password, name } = request.body || {};
-  const finalPassword = newPassword || password;
+  const { token, password, confirmPassword, newPassword } = request.body || {};
+  const finalPassword = password || newPassword;
+  const matchConfirmPassword = confirmPassword || finalPassword;
 
   try {
     // Validate input
@@ -1153,139 +1227,47 @@ module.exports.resetPassword = async (request, reply) => {
       });
     }
 
-    // Verify token and get user ID
-    const userId = await authService.verifyPasswordResetToken(token);
-
-    if (!userId) {
+    if (finalPassword !== matchConfirmPassword) {
       return reply.status(400).send({
         error: "Bad Request",
-        message: "Invalid or expired setup/reset token",
+        message: "Password and confirm password must match",
       });
     }
 
-    // Get the user with organization details
-    const user = await request.server.prisma.user.findUnique({
-      where: { id: userId },
-      include: { organization: true },
+    await authService.resetUserPassword(token, finalPassword);
+
+    return reply.send({
+      success: true,
+      message: "Password updated successfully.",
     });
-
-    if (!user) {
-      return reply.status(400).send({
-        error: "Bad Request",
-        message: "User not found",
-      });
-    }
-
-    // Hash the new password
-    const passwordHash = await authService.hashPassword(finalPassword);
-
-    // Prepare update data: update password, activate status, and set name if provided
-    const updateData = {
-      passwordHash,
-      status: "active",
-      emailVerified: true,
-    };
-    if (name && typeof name === "string" && name.trim().length > 0) {
-      updateData.name = name.trim();
-    }
-
-    // Update the user's account in database
-    const updatedUser = await request.server.prisma.user.update({
-      where: { id: userId },
-      data: updateData,
-      include: { organization: true },
-    });
-
-    // Revoke all active sessions for security upon password change
-    await authService.revokeAllUserSessions(userId);
-
-    // --- HUBSPOT BACKGROUND SYNC BLOCK ---
-    const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
-    const formId = process.env.HUBSPOT_FORM_ID?.trim();
-    const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
-
-    //get first name from name
-    const firstName = name.trim().split(/\s+/)[0];
-    // Automatically create a default workspace for the new user and add them as a member
-    const defaultWorkspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
-      name: `${firstName}-Workspace`,
-      description: "Default workspace for " + name,
-      color: "#4f46e5",
-      orgId: updatedUser?.orgId,
-      orgName: updatedUser?.organization?.name || firstName,
-      uploadedByUserId: updatedUser?.id,
-    });
-    // Add the user as a WorkspaceUser so the workspace appears in their sidebar
-    await request.server.prisma.workspaceUser.create({
-      data: {
-        workspaceId: defaultWorkspace.id,
-        userId: updatedUser.id,
-      }
-    }).catch((err) => console.warn('Could not create WorkspaceUser for default workspace:', err));
-    if (portalId && formId) {
-      const userName = updatedUser.name || updatedUser.email.split('@')[0];
-      const [firstname, ...lastnameParts] = userName.split(" ");
-      const lastname = lastnameParts.join(" ") || "";
-      const hubspotEndpoint = `https://api.hsforms.com/submissions/v3/integration/secure/submit/${portalId}/${formId}`;
-
-      const headers = { "Content-Type": "application/json" };
-      if (accessToken) {
-        headers["Authorization"] = `Bearer ${accessToken}`;
-      }
-
-      if (typeof fetch !== 'undefined') {
-        fetch(hubspotEndpoint, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            fields: [
-              { objectTypeId: "0-1", name: "email", value: updatedUser.email },
-              { objectTypeId: "0-1", name: "firstname", value: firstname },
-              { objectTypeId: "0-1", name: "lastname", value: lastname },
-              { objectTypeId: "0-1", name: "company", value: updatedUser.organization ? updatedUser.organization.name : "" },
-              { objectTypeId: "0-1", name: "phone", value: updatedUser.phone || "" },
-            ],
-            context: {
-              pageUri: request.headers.referer || "",
-              pageName: "Account Setup / Password Reset Page",
-              ipAddress: request.ip,
-            },
-            skipValidation: true,
-          }),
-        })
-          .then(async (res) => {
-            if (!res.ok) {
-              const errText = await res.text();
-              console.error("HubSpot Form submit failed response (resetPassword):", errText);
-            } else {
-              console.log("Successfully synced setup/resetPassword to HubSpot Form");
-            }
-          })
-          .catch((err) => {
-            console.error("HubSpot Form API Connection error (resetPassword):", err.message);
-          });
-      }
-    }
-
-    logSuccess(ACTIVITY_NAME.RESET_PASSWORD, "Password reset successfully.", null, updatedUser);
-
-    // Return success
-    return { success: true, message: "Account setup / password reset completed successfully" };
   } catch (error) {
-    console.error("Reset password / account setup error:", error);
-    logError(ACTIVITY_NAME.RESET_PASSWORD, "Password reset failed.", request, error);
-    return reply.status(500).send({
-      error: "Internal Server Error",
-      message: "Failed to setup account / reset password",
+    console.error("Reset password error:", error);
+    return reply.status(400).send({
+      error: "Bad Request",
+      message: error.message || "Failed to reset password",
     });
   }
-}
+};
 
 //10. Google Login Hander
 module.exports.googleLogin = async (request, reply) => {
   const { idToken } = request.body || {};
   const clientId = process.env.GOOGLE_CLIENT_ID || "967923512322-0oullb620hh9se1ff0prs8stvbspi829.apps.googleusercontent.com";
   const googleClient = new OAuth2Client(clientId);
+
+  // Global SSO enforcement check
+  try {
+    const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+    if (globalSetting && !globalSetting.ssoConfigured) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Single sign-on (SSO) is disabled by Global Admin.",
+      });
+    }
+  } catch (settingErr) {
+    console.error("Error checking global SSO setting:", settingErr);
+  }
 
   if (!idToken) {
     return reply.status(400).send({
@@ -1449,6 +1431,7 @@ module.exports.googleLogin = async (request, reply) => {
           description: "Default workspace for " + fullName,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -1456,26 +1439,7 @@ module.exports.googleLogin = async (request, reply) => {
       // Assign Super Admins / Admins
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the user gets access to this new workspace
-      await request.server.prisma.workspaceUser.upsert({
-        where: {
-          workspaceId_userId: {
-            workspaceId: newWorkspace.id,
-            userId: user.id
-          }
-        },
-        update: {},
-        create: {
-          workspaceId: newWorkspace.id,
-          userId: user.id,
-          memberType: 'MEMBER',
-          accessLevelId: fullAccessId
-        }
-      });
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -1586,6 +1550,20 @@ module.exports.googleLogin = async (request, reply) => {
 module.exports.microsoftLogin = async (request, reply) => {
   const { idToken } = request.body;
   const clientId = process.env.MICROSOFT_CLIENT_ID;
+
+  // Global SSO enforcement check
+  try {
+    const globalSetting = await request.server.prisma.globalAdminSetting.findFirst();
+    if (globalSetting && !globalSetting.ssoConfigured) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Single sign-on (SSO) is disabled by Global Admin.",
+      });
+    }
+  } catch (settingErr) {
+    console.error("Error checking global SSO setting:", settingErr);
+  }
 
   if (!idToken) {
     return reply.status(400).send({
@@ -1736,6 +1714,7 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + name,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
           isDefault: true,
         }
       });
@@ -1748,32 +1727,13 @@ module.exports.microsoftLogin = async (request, reply) => {
           description: "Default workspace for " + orgName,
           color: "#4f46e5",
           orgId: organization.id,
+          visibility: 'public',
+          isDefault: true,
         }
       });
       await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, newWorkspace2.id);
 
-      let fullAccessId = null;
-      const foundLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: ACCESS_LEVEL.FULL_ACCESS } });
-      if (foundLevel) fullAccessId = foundLevel.id;
 
-      // Ensure the new user gets access to these workspaces
-      for (const wid of [newWorkspace1.id, newWorkspace2.id]) {
-        await request.server.prisma.workspaceUser.upsert({
-          where: {
-            workspaceId_userId: {
-              workspaceId: wid,
-              userId: user.id
-            }
-          },
-          update: {},
-          create: {
-            workspaceId: wid,
-            userId: user.id,
-            memberType: 'MEMBER',
-            accessLevelId: fullAccessId
-          }
-        });
-      }
 
       // Automatically create default share settings for the new organization
       await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);
@@ -2079,6 +2039,8 @@ module.exports.sendSignupOtp = async (request, reply) => {
     const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
+    let targetOrgId = null;
+
     if (existingUser) {
       await request.server.prisma.user.update({
         where: { id: existingUser.id },
@@ -2087,6 +2049,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
           emailOtpExpiresAt: expiresAt,
         },
       });
+      targetOrgId = existingUser.orgId;
     } else {
       // Create a new organization for pending registration using email domain
       const derivedOrgName = formatDomainToOrgName(normalizedEmail);
@@ -2111,13 +2074,18 @@ module.exports.sendSignupOtp = async (request, reply) => {
           orgId: pendingOrg.id,
         },
       });
+      targetOrgId = pendingOrg.id;
     }
 
     // Send OTP email
     const emailService = request.server.emailService || require("../services/email-service");
     if (emailService && typeof emailService.sendMfaCode === "function") {
       try {
-        await emailService.sendMfaCode(normalizedEmail, "New Member", otpCode);
+        const orgBranding = targetOrgId ? await resolveOrgBranding(request.server.prisma, targetOrgId) : null;
+        await emailService.sendMfaCode(normalizedEmail, "New Member", otpCode, {
+          orgLogoUrl: orgBranding?.logoUrl,
+          orgName: orgBranding?.accountName,
+        });
       } catch (eErr) {
         console.warn("Could not send OTP email via emailService:", eErr.message);
       }
@@ -2259,77 +2227,28 @@ module.exports.completeSignup = async (request, reply) => {
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
-    const dbPlan = await request.server.prisma.plan.findUnique({
-      where: { id: planId },
-    }).catch(() => null);
+    let dbPlan = null;
+    if (planId && planId !== "free") {
+      dbPlan = await request.server.prisma.plan.findUnique({
+        where: { id: planId },
+      }).catch(() => null);
+    }
+    
+    if (!dbPlan) {
+      dbPlan = await request.server.prisma.plan.findFirst({
+        where: { isFree: true, isActive: true },
+      }).catch(() => null);
+    }
 
-    const GB_BYTES = BigInt(1024 * 1024 * 1024);
-    const PLAN_LIMITS_MAP = {
-      free: {
-        storageQuotaBytes: BigInt(5) * GB_BYTES,
-        maxUsers: 5,
-        features: [
-          '5 GB Storage',
-          '5 Members',
-          'Basic media library & folders',
-          'Share links with view access',
-          'Mobile & desktop access',
-          'Community support',
-        ],
-      },
-      basic: {
-        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
-        maxUsers: 5,
-        features: [
-          '300 MB Storage',
-          '5 Members',
-          'Media library essentials',
-          'Share links & file comments',
-          'Activity feed & project overview',
-          'Mobile & desktop access',
-          'Email support',
-        ],
-      },
-      premium: {
-        storageQuotaBytes: BigInt(15) * GB_BYTES,
-        maxUsers: 10,
-        features: [
-          '15 GB Storage',
-          '10 Members',
-          'Review & annotate video/audio',
-          'Advanced filters & reporting',
-          'Custom labels, priorities & checklists',
-          'Project insights & team analytics',
-          'Billing & usage tracking',
-          'Priority support',
-        ],
-      },
-      enterprise: {
-        storageQuotaBytes: BigInt(20) * GB_BYTES,
-        maxUsers: 15,
-        features: [
-          '20 GB Storage',
-          '15 Members',
-          'Dedicated account manager',
-          'Custom integrations & automation',
-          'SSO & role-based access control',
-          'KPI dashboards & reporting tools',
-          'Onboarding support',
-        ],
-      },
-    };
-
-    const targetPlanLimits = PLAN_LIMITS_MAP[planId] || PLAN_LIMITS_MAP.free;
-
-    const selectedStorageQuotaBytes = dbPlan ? dbPlan.storageQuotaBytes : targetPlanLimits.storageQuotaBytes;
-    const selectedMaxUsers = dbPlan ? dbPlan.maxUsers : targetPlanLimits.maxUsers;
-    const selectedFeatures = dbPlan ? dbPlan.features : targetPlanLimits.features;
+    const isFreePlan = Boolean(dbPlan && dbPlan.isFree);
 
     const isMonthly = (billingCycle || "annual").toLowerCase() === "monthly";
     const now = new Date();
     const expiresAtDate = new Date(now);
-    if (planId === "free") {
-      expiresAtDate.setDate(expiresAtDate.getDate() + 3);
+    
+    if (isFreePlan) {
+      const trialDays = dbPlan.trialDays ?? 3;
+      expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);
     } else if (isMonthly) {
       expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
     } else {
@@ -2352,8 +2271,8 @@ module.exports.completeSignup = async (request, reply) => {
       website: companyWebsite || null,
       teamSize: teamSize || null,
       primaryFocus: firstFocus || null,
-      planId: planId,
-      billingCycle: planId === "free" ? "3days" : (isMonthly ? "monthly" : "annual"),
+      planId: dbPlan ? dbPlan.id : planId,
+      billingCycle: isFreePlan ? `${dbPlan?.trialDays ?? 3}days` : (isMonthly ? "monthly" : "annual"),
       planSelectedAt: now.toISOString(),
       expiresAt: expiresAtDate.toISOString(),
       subtotalCents,
@@ -2365,7 +2284,7 @@ module.exports.completeSignup = async (request, reply) => {
       name: derivedOrgName,
       slug: uniqueSlug,
       currentPlanId: dbPlan ? dbPlan.id : null,
-      isFreeTrialUsed: true,
+      isFreeTrialUsed: isFreePlan,
       metadata: orgMetadata,
       planExpiresAt: expiresAtDate,
     };
@@ -2470,31 +2389,19 @@ module.exports.completeSignup = async (request, reply) => {
       });
     }
 
-    const workspace = await createDefaultWorkspaceWithStarterContent(request.server.prisma, {
-      name: formattedWorkspaceName,
-      description: `Workspace for ${formattedWorkspaceName}`,
-      color: "#4f46e5",
-      orgId: organization.id,
-      orgName: organization.name,
-      uploadedByUserId: user.id,
+    const workspace = await request.server.prisma.workspace.create({
+      data: {
+        name: formattedWorkspaceName,
+        description: `Workspace for ${formattedWorkspaceName}`,
+        color: "#4f46e5",
+        orgId: organization.id,
+        visibility: 'public', // <--- Explicitly make it public
+        isDefault: true,
+      },
     });
 
     // Assign Super Admins / Admins
     await autoAssignAdminsToWorkspace(request.server.prisma, organization.id, workspace.id);
-
-    await request.server.prisma.workspaceUser.upsert({
-      where: {
-        workspaceId_userId: {
-          workspaceId: workspace.id,
-          userId: user.id,
-        }
-      },
-      update: {},
-      create: {
-        workspaceId: workspace.id,
-        userId: user.id,
-      },
-    });
 
     // Automatically create default share settings for the new organization
     await ensureDefaultOrganizationSettings(request.server.prisma, organization.id);

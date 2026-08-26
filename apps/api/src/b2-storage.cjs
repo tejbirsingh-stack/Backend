@@ -1,3 +1,6 @@
+const dns = require('dns');
+try { dns.setDefaultResultOrder('ipv4first'); } catch (e) {}
+
 const {
   S3Client,
   ListObjectsV2Command,
@@ -30,26 +33,37 @@ class B2StorageService {
     // Initialize S3 client for B2 (S3-compatible)
     this.s3Client = null;
     this.bucket = null;
+    this.endpoint = null;
     this.enabled = false;
 
+    const keyId = config && config.keyId ? String(config.keyId).trim() : null;
+    const applicationKey = config && config.applicationKey ? String(config.applicationKey).trim() : null;
+    const bucketName = config && config.bucketName ? String(config.bucketName).trim() : null;
+    const endpoint = config && config.endpoint ? String(config.endpoint).trim() : 'https://s3.us-west-002.backblazeb2.com';
+    const region = config && config.region ? String(config.region).trim() : 'us-west-002';
+
     // Check if B2 configuration is provided
-    if (config && config.keyId && config.applicationKey && config.bucketName) {
+    if (keyId && applicationKey && bucketName) {
+      this.endpoint = endpoint;
       this.s3Client = new S3Client({
-        region: config.region || 'us-west-002',
-        endpoint: config.endpoint || 'https://s3.us-west-002.backblazeb2.com',
+        region: region,
+        endpoint: this.endpoint,
         credentials: {
-          accessKeyId: config.keyId,
-          secretAccessKey: config.applicationKey,
+          accessKeyId: keyId,
+          secretAccessKey: applicationKey,
         },
         forcePathStyle: true, // Required for B2
+        // B2 doesn't support AWS checksum extensions — disable them
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+        responseChecksumValidation: 'WHEN_REQUIRED',
       });
 
-      this.bucket = config.bucketName;
+      this.bucket = bucketName;
       this.enabled = true;
 
       console.log('✅ B2 Storage Service initialized');
       console.log(`  Bucket: ${this.bucket}`);
-      console.log(`  Endpoint: ${config.endpoint || 'https://s3.us-west-002.backblazeb2.com'}`);
+      console.log(`  Endpoint: ${this.endpoint}`);
     } else {
       console.log('⚠️ B2 Storage Service disabled - missing configuration');
     }
@@ -185,6 +199,23 @@ class B2StorageService {
       return null;
     }
   }
+
+  /**
+   * Get direct public URL for a file in public bucket/endpoint
+   */
+  getPublicUrl(key) {
+    if (!key) return null;
+    if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
+      return key;
+    }
+    if (this.endpoint && this.bucket) {
+      const cleanEndpoint = this.endpoint.replace(/\/$/, '');
+      const cleanKey = String(key).replace(/^\//, '');
+      return `${cleanEndpoint}/${this.bucket}/${cleanKey}`;
+    }
+    return null;
+  }
+
 
   /**
    * Get presigned URL for uploading a file (PUT)
