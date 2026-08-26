@@ -19,7 +19,7 @@ phases:
 
   build:
     commands:
-      - echo "Building backend image..."
+      - echo "Building backend image.."
       - docker build -f apps/api/Dockerfile -t "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" -t "$ECR_REGISTRY/$ECR_REPO:latest" .
 
   post_build:
