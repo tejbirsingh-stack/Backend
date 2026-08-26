@@ -32,6 +32,37 @@ function formatWorkspaceNameWithSuffix(value) {
     return `${trimmed}-Workspace-ARK`;
 }
 
+async function getPendingOrDeletedFolderIds(prismaClient) {
+    try {
+        const pendingAssets = await prismaClient.asset.findMany({
+            where: {
+                OR: [
+                    { type: 'folder' },
+                    { deletionReason: { contains: 'Deleted with folder' } }
+                ]
+            },
+            select: { ownerId: true, ownerType: true, type: true, status: true, deletionReason: true }
+        }).catch(() => []);
+
+        const pendingSet = new Set();
+        pendingAssets.forEach(a => {
+            if (a.type === 'folder' && a.ownerId && a.ownerType === 'FOLDER' && a.status !== 'active') {
+                pendingSet.add(String(a.ownerId));
+            }
+            if (a.deletionReason) {
+                const match = a.deletionReason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]/i);
+                if (match && match[1]) {
+                    pendingSet.add(match[1]);
+                }
+            }
+        });
+        return Array.from(pendingSet);
+    } catch (err) {
+        console.error('Error in getPendingOrDeletedFolderIds:', err);
+        return [];
+    }
+}
+
 module.exports.storeWorkplace = async (request, reply) => {
     try {
         const userRoleName = typeof request.user?.role === 'string' ? request.user.role : '';
@@ -465,18 +496,39 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
         const folderIds = allWorkspaceFolders.map(f => f.id);
 
         if (tagsArray.length === 0) {
+            const pendingFolderIds = await getPendingOrDeletedFolderIds(prisma);
             folders = await prisma.folder.findMany({
                 where: {
                     workspaceId: id,
                     parentId: null,
+                    ...(pendingFolderIds.length > 0 ? { id: { notIn: pendingFolderIds } } : {})
                 },
                 include: {
                     sources: true,
+                    _count: { select: { children: true, projects: true } }
                 },
                 orderBy: {
                     createdAt: 'desc',
                 },
             });
+
+            const rootFolderIds = folders.map(f => f.id);
+            const folderAssetCounts = rootFolderIds.length > 0 ? await prisma.asset.groupBy({
+                by: ['ownerId'],
+                where: {
+                    ownerType: 'FOLDER',
+                    ownerId: { in: rootFolderIds },
+                    deletedAt: null,
+                    status: { notIn: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] }
+                },
+                _count: { _all: true }
+            }) : [];
+            const countMap = new Map(folderAssetCounts.map(c => [String(c.ownerId), c._count._all]));
+
+            folders = folders.map(f => ({
+                ...f,
+                itemCount: (f._count?.children || 0) + (f._count?.projects || 0) + (countMap.get(String(f.id)) || 0)
+            }));
 
             allProjects = await prisma.project.findMany({
                 where: {
@@ -1315,9 +1367,11 @@ module.exports.findFolderData = async (request, reply) => {
             }
         }
 
+        const pendingFolderIds = await getPendingOrDeletedFolderIds(prisma);
         const folders = await prisma.folder.findMany({
             where: {
                 parentId: id,
+                ...(pendingFolderIds.length > 0 ? { id: { notIn: pendingFolderIds } } : {})
             },
             include: {
                 sources: true,
@@ -1404,10 +1458,12 @@ module.exports.findFolderTreeData = async (request, reply) => {
             select: { id: true, name: true, parentId: true }
         });
 
-        // Fetch all media assets inside these folders or marked deleted with this folderId
+        // Fetch all media assets inside these folders or marked deleted with this folderId (excluding globalMedia and placeholder folder assets)
         const allAssets = await prisma.asset.findMany({
             where: {
+                type: { not: 'folder' },
                 status: { notIn: ['trash', 'deleted'] },
+                globalMedia: false,
                 OR: [
                     { ownerId: { in: folderIdList } },
                     { collectionAssets: { some: { collectionId: { in: folderIdList } } } },
@@ -1457,7 +1513,9 @@ async function handleUnselectedItemsPreservation(prisma, { workspaceId, targetFo
     const deletedAssetIdSet = new Set(finalAssetIdsToDelete || []);
 
     const unselectedFolderIds = (allFolderIds || []).filter(fId => !deletedFolderIdSet.has(fId));
-    const unselectedAssetIds = (allFolderAssets || []).map(a => a.id).filter(aId => !deletedAssetIdSet.has(aId));
+    const unselectedAssetIds = (allFolderAssets || [])
+        .filter(a => a.type !== 'folder' && !deletedAssetIdSet.has(a.id))
+        .map(a => a.id);
 
     if (unselectedFolderIds.length === 0 && unselectedAssetIds.length === 0) {
         return;
@@ -1616,9 +1674,10 @@ module.exports.deleteFolder = async (request, reply) => {
 
         const folderIdList = Array.from(allSubfolderIds);
 
-        // All assets owned by these folders or marked with deletionReason containing this folderId
+        // All assets owned by these folders or marked with deletionReason containing this folderId (excluding globalMedia)
         const allFolderAssets = await prisma.asset.findMany({
             where: {
+                globalMedia: false,
                 OR: [
                     { ownerType: 'FOLDER', ownerId: { in: folderIdList } },
                     { deletionReason: { contains: id } },
@@ -1649,13 +1708,24 @@ module.exports.deleteFolder = async (request, reply) => {
 
             const workspaceId = targetFolder?.workspaceId || liveUser?.workspaceId;
 
+            // Purge temporary placeholder folder assets for this folder request first
+            await prisma.asset.deleteMany({
+                where: {
+                    type: 'folder',
+                    OR: [
+                        { ownerId: { in: folderIdList } },
+                        { deletionReason: { contains: id } }
+                    ]
+                }
+            }).catch(() => null);
+
             // Preserve unselected items and move top-most unselected items to Restore folder if parent deleted
             await handleUnselectedItemsPreservation(prisma, {
                 workspaceId,
                 targetFolderIds,
                 finalAssetIdsToDelete,
                 allFolderIds: folderIdList,
-                allFolderAssets
+                allFolderAssets: allFolderAssets.filter(a => a.type !== 'folder')
             });
 
             for (const asset of assetsToDelete) {
@@ -1788,10 +1858,10 @@ module.exports.deleteFolder = async (request, reply) => {
                 });
             }
 
-            // Always create/update a FOLDER_REQUEST placeholder asset for Super Admin Delete Management tracking
+            // Always create/update a FOLDER placeholder asset for Super Admin Delete Management tracking
             try {
                 const existingReq = await prisma.asset.findFirst({
-                    where: { ownerType: 'FOLDER_REQUEST', ownerId: id }
+                    where: { ownerType: 'FOLDER', ownerId: id, type: 'folder' }
                 }).catch(() => null);
 
                 if (existingReq) {
@@ -1812,7 +1882,7 @@ module.exports.deleteFolder = async (request, reply) => {
                             type: 'folder',
                             status: 'pending_super_admin',
                             visibility: 'public',
-                            ownerType: 'FOLDER_REQUEST',
+                            ownerType: 'FOLDER',
                             ownerId: id,
                             workspaceId: targetFolder.workspaceId,
                             deletedAt: new Date(),
@@ -1869,8 +1939,8 @@ module.exports.restoreFolder = async (request, reply) => {
         await prisma.asset.deleteMany({
             where: {
                 type: 'folder',
-                ownerType: 'FOLDER',
                 OR: [
+                    { ownerType: 'FOLDER' },
                     { ownerId: { in: folderIdList } },
                     { deletionReason: { contains: id } }
                 ]
@@ -1919,6 +1989,7 @@ async function getAllProjectAssetIdsAndObjects(prismaClient, projectId) {
             where: {
                 ownerType: 'PROJECT',
                 ownerId: projectId,
+                globalMedia: false,
                 status: { notIn: ['trash', 'deleted'] }
             },
             include: { files: true, metadata: true }
@@ -1933,6 +2004,7 @@ async function getAllProjectAssetIdsAndObjects(prismaClient, projectId) {
             ? await prismaClient.asset.findMany({
                 where: {
                     id: { in: assetSourceIds },
+                    globalMedia: false,
                     status: { notIn: ['trash', 'deleted'] }
                 },
                 include: { files: true, metadata: true }
@@ -1967,6 +2039,7 @@ async function getAllProjectAssetIdsAndObjects(prismaClient, projectId) {
                 where: {
                     ownerType: 'FOLDER',
                     ownerId: { in: folderIdList },
+                    globalMedia: false,
                     status: { notIn: ['trash', 'deleted'] }
                 },
                 include: { files: true, metadata: true }
@@ -3468,3 +3541,5 @@ module.exports.deleteWorkspace = async (request, reply) => {
         });
     }
 };
+
+module.exports.getPendingOrDeletedFolderIds = getPendingOrDeletedFolderIds;
