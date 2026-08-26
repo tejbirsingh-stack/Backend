@@ -1008,7 +1008,9 @@ class B2StorageService {
       throw new Error('B2 Storage is not configured');
     }
 
-    await this.ensureBucketCors().catch(() => { });
+    // NOTE: B2 does not support the PutBucketCors S3 API — this call hangs and causes upload timeouts.
+    // CORS must be configured manually via the Backblaze B2 dashboard.
+    // await this.ensureBucketCors().catch(() => { });
 
     try {
       const command = new CreateMultipartUploadCommand({
