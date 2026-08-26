@@ -2227,70 +2227,6 @@ module.exports.completeSignup = async (request, reply) => {
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
-<<<<<<< HEAD
-    const dbPlan = await request.server.prisma.plan.findUnique({
-      where: { id: planId },
-    }).catch(() => null);
-
-
-    const GB_BYTES = BigInt(1024 * 1024 * 1024);
-    const PLAN_LIMITS_MAP = {
-      free: {
-        storageQuotaBytes: BigInt(5) * GB_BYTES,
-        maxUsers: 5,
-        features: [
-          '5 GB Storage',
-          '5 Members',
-          'Basic media library & folders',
-          'Share links with view access',
-          'Mobile & desktop access',
-          'Community support',
-        ],
-      },
-      basic: {
-        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
-        maxUsers: 5,
-        features: [
-          '300 MB Storage',
-          '5 Members',
-          'Media library essentials',
-          'Share links & file comments',
-          'Activity feed & project overview',
-          'Mobile & desktop access',
-          'Email support',
-        ],
-      },
-      premium: {
-        storageQuotaBytes: BigInt(15) * GB_BYTES,
-        maxUsers: 10,
-        features: [
-          '15 GB Storage',
-          '10 Members',
-          'Review & annotate video/audio',
-          'Advanced filters & reporting',
-          'Custom labels, priorities & checklists',
-          'Project insights & team analytics',
-          'Billing & usage tracking',
-          'Priority support',
-        ],
-      },
-      enterprise: {
-        storageQuotaBytes: BigInt(20) * GB_BYTES,
-        maxUsers: 15,
-        features: [
-          '20 GB Storage',
-          '15 Members',
-          'Dedicated account manager',
-          'Custom integrations & automation',
-          'SSO & role-based access control',
-          'KPI dashboards & reporting tools',
-          'Onboarding support',
-        ],
-      },
-    };
-
-    const targetPlanLimits = PLAN_LIMITS_MAP[planId] || PLAN_LIMITS_MAP.free;
-=======
     let dbPlan = null;
     if (planId && planId !== "free") {
       dbPlan = await request.server.prisma.plan.findUnique({
@@ -2303,7 +2239,6 @@ module.exports.completeSignup = async (request, reply) => {
         where: { isFree: true, isActive: true },
       }).catch(() => null);
     }
->>>>>>> tenant-admin-changes
 
     const isFreePlan = Boolean(dbPlan && dbPlan.isFree);
 
