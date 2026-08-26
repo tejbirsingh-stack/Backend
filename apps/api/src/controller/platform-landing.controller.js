@@ -54,23 +54,47 @@ function serializeLanding(page) {
 
 async function getLandingPage(request, reply) {
   try {
-    const slug = String(request.query?.slug || request.params?.slug || 'main');
-    let page = await prisma.landingPage.findUnique({ where: { slug } });
-    if (!page) {
-      page = await prisma.landingPage.create({
+    let baseSlug = String(request.query?.slug || request.params?.slug || 'main');
+    if (baseSlug.endsWith('-draft')) baseSlug = baseSlug.replace('-draft', '');
+    const draftSlug = `${baseSlug}-draft`;
+
+    let [livePage, draftPage] = await Promise.all([
+      prisma.landingPage.findUnique({ where: { slug: baseSlug } }),
+      prisma.landingPage.findUnique({ where: { slug: draftSlug } }),
+    ]);
+
+    if (!livePage) {
+      livePage = await prisma.landingPage.create({
         data: {
-          slug,
-          status: 'draft',
+          slug: baseSlug,
+          status: 'published',
           heroTitle: 'A library worthy of your beautiful work.',
           heroSubtitle:
             'NOAH Cloud is the media intelligence layer for modern teams — find anything, review on the timeline, and share finished work without leaving your library.',
           ctaLabel: 'Start free trial',
           ctaHref: '/signup',
           sections: DEFAULT_SECTIONS,
+          publishedAt: new Date(),
         },
       });
     }
-    return { success: true, page: serializeLanding(page) };
+
+    if (!draftPage) {
+      draftPage = await prisma.landingPage.create({
+        data: {
+          slug: draftSlug,
+          status: 'draft',
+          heroTitle: livePage.heroTitle,
+          heroSubtitle: livePage.heroSubtitle,
+          ctaLabel: livePage.ctaLabel,
+          ctaHref: livePage.ctaHref,
+          sections: livePage.sections,
+        },
+      });
+    }
+
+    const latest = livePage.updatedAt > draftPage.updatedAt ? livePage : draftPage;
+    return { success: true, page: serializeLanding(latest) };
   } catch (error) {
     console.error('getLandingPage error:', error);
     return reply.status(500).send({
@@ -83,9 +107,11 @@ async function getLandingPage(request, reply) {
 
 async function updateLandingPage(request, reply) {
   try {
-    const slug = String(request.params?.slug || 'main');
+    let baseSlug = String(request.params?.slug || 'main');
+    if (baseSlug.endsWith('-draft')) baseSlug = baseSlug.replace('-draft', '');
     const body = request.body || {};
     const data = {};
+    
     if (body.status !== undefined) {
       if (!['draft', 'published'].includes(body.status)) {
         return reply.status(400).send({
@@ -94,9 +120,9 @@ async function updateLandingPage(request, reply) {
           statusCode: 400,
         });
       }
-      data.status = body.status;
-      if (body.status === 'published') data.publishedAt = new Date();
     }
+    const status = body.status || 'draft';
+    
     const heroTitle = body.heroTitle ?? body.heroHeadline ?? body.title;
     const heroSubtitle = body.heroSubtitle ?? body.heroSubheadline;
     const ctaLabel = body.ctaLabel ?? body.heroCtaLabel;
@@ -110,25 +136,73 @@ async function updateLandingPage(request, reply) {
     }
     data.updatedById = request.platformAdmin?.id || null;
 
-    const page = await prisma.landingPage.upsert({
-      where: { slug },
-      create: {
-        slug,
-        heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
-        heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
-        ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
-        ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
-        sections: normalizeSections(body.sections, body.plansEnabled),
-        status: data.status || 'draft',
-        publishedAt: data.publishedAt || null,
-        updatedById: data.updatedById,
-      },
-      update: data,
-    });
+    let page;
+
+    if (status === 'draft') {
+      const draftSlug = `${baseSlug}-draft`;
+      page = await prisma.landingPage.upsert({
+        where: { slug: draftSlug },
+        create: {
+          slug: draftSlug,
+          heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
+          heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
+          ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
+          ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
+          sections: normalizeSections(body.sections, body.plansEnabled),
+          status: 'draft',
+          updatedById: data.updatedById,
+        },
+        update: {
+          ...data,
+          status: 'draft',
+        },
+      });
+    } else {
+      // status === 'published'
+      data.publishedAt = new Date();
+      data.status = 'published';
+
+      page = await prisma.landingPage.upsert({
+        where: { slug: baseSlug },
+        create: {
+          slug: baseSlug,
+          heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
+          heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
+          ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
+          ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
+          sections: normalizeSections(body.sections, body.plansEnabled),
+          status: 'published',
+          publishedAt: data.publishedAt,
+          updatedById: data.updatedById,
+        },
+        update: data,
+      });
+
+      // Keep draft in sync
+      const draftSlug = `${baseSlug}-draft`;
+      await prisma.landingPage.upsert({
+        where: { slug: draftSlug },
+        create: {
+          slug: draftSlug,
+          heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
+          heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
+          ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
+          ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
+          sections: normalizeSections(body.sections, body.plansEnabled),
+          status: 'draft',
+          updatedById: data.updatedById,
+        },
+        update: {
+          ...data,
+          status: 'draft',
+          publishedAt: null,
+        },
+      });
+    }
 
     await writePlatformAudit({
       activityName: ACTIVITY_NAME.LANDING_PAGE_UPDATED,
-      description: `Updated landing page "${slug}" (${page.status})`,
+      description: `Updated landing page "${baseSlug}" (${page.status})`,
       activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });

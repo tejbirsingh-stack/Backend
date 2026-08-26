@@ -1119,7 +1119,7 @@ model Plan {
   ctaLabel           String?  @db.VarChar(100)
   isActive           Boolean  @default(true)
   isFree             Boolean  @default(false)
-  trialDays          Int?
+  trialDays          Int? 
   createdAt          DateTime @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
