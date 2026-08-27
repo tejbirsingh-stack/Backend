@@ -1363,6 +1363,42 @@ model AiAnalysisJob {
   @@map("ai_analysis_jobs")
 }
 
+/// Platform-level popup notification shown to all users on dashboard login
+model DashboardNotification {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  isEnabled Boolean  @default(false) @map("is_enabled")
+  title     String?  @map("title") @db.VarChar(255)
+  body      String?  @map("body") @db.Text
+  ctaLabel  String?  @map("cta_label") @db.VarChar(100)
+  ctaUrl    String?  @map("cta_url") @db.VarChar(500)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  images    DashboardNotificationImage[]
+
+  @@map("dashboard_notifications")
+}
+
+/// Images attached to a DashboardNotification, stored in B2 under notification-media/
+model DashboardNotificationImage {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  notificationId String               @db.Uuid @map("notification_id")
+  notification   DashboardNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  filePath       String               @map("file_path") @db.VarChar(1000) // B2 key
+  fileName       String               @map("file_name") @db.VarChar(500)
+  mimeType       String               @map("mime_type") @db.VarChar(100)
+  sizeBytes      BigInt               @map("size_bytes")
+  sortOrder      Int                  @default(0) @map("sort_order")
+  /// Cached presigned URL to avoid regenerating on every popup load
+  cachedUrl         String?  @map("cached_url") @db.Text
+  cachedUrlExpiresAt DateTime? @map("cached_url_expires_at") @db.Timestamptz(6)
+  createdAt      DateTime             @default(now()) @db.Timestamptz(6)
+
+  @@index([notificationId])
+  @@map("dashboard_notification_images")
+}
+
+
 model AiTranscriptSegment {
   id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   assetId   String @db.Uuid
