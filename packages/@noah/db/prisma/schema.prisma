@@ -1363,6 +1363,21 @@ model AiAnalysisJob {
   @@map("ai_analysis_jobs")
 }
 
+/// Platform-level popup notification shown to all users on dashboard login
+model DashboardNotification {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  isEnabled Boolean  @default(false) @map("is_enabled")
+  title     String?  @map("title") @db.VarChar(255)
+  body      String?  @map("body") @db.Text
+  ctaLabel  String?  @map("cta_label") @db.VarChar(100)
+  ctaUrl    String?  @map("cta_url") @db.VarChar(500)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@map("dashboard_notifications")
+}
+
+
 model AiTranscriptSegment {
   id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   assetId   String @db.Uuid

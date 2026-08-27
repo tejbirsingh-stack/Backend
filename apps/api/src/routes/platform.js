@@ -70,6 +70,10 @@ const {
   getGlobalSecuritySettings,
   updateGlobalSecuritySettings,
 } = require('../controller/platform-security.controller');
+const {
+  getDashboardNotification,
+  updateDashboardNotification,
+} = require('../controller/platform-dashboard-notification.controller');
 
 /**
  * Platform Admin API — NOAH operator console.
@@ -160,6 +164,10 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   // Global Security Settings
   fastify.get('/security', getGlobalSecuritySettings);
   fastify.put('/security', { preHandler: requirePlatformAdmin }, updateGlobalSecuritySettings);
+
+  // Dashboard Notification
+  fastify.get('/dashboard-notification', getDashboardNotification);
+  fastify.patch('/dashboard-notification', { preHandler: requirePlatformAdmin }, updateDashboardNotification);
 
   done();
 };
