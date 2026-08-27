@@ -2,6 +2,7 @@
 const emailService = require('../services/email-service');
 const { createNotification } = require('./notificationController');
 const { resolveOrgBranding } = require('../services/branding.service');
+const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/audit-log');
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -271,11 +272,17 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
             })();
         }
 
+        if (type !== 'PAGE_STATE') {
+            const itemPath = await buildItemPath(request.server.prisma, 'asset', mediaId);
+            logSuccess(ACTIVITY_NAME.ANNOTATION_CREATED, `Annotation added to media "${itemPath}".`, request);
+        }
+
         return reply.code(201).send({
             success: true,
             annotations: newAnnotation,
         });
     } catch (error) {
+        logError(ACTIVITY_NAME.ANNOTATION_CREATED, "Failed to Create annotation", error, request);
         request.log.error(error);
         return reply.code(500).send({
             success: false,
@@ -434,11 +441,15 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
             })();
         }
 
+        const itemPath = await buildItemPath(request.server.prisma, 'asset', existing.assetId);
+        logSuccess(ACTIVITY_NAME.ANNOTATION_UPDATED, `Annotation updated on media "${itemPath}".`, request);
+
         return reply.send({
             success: true,
             annotations: update,
         });
     } catch (error) {
+        logError(ACTIVITY_NAME.ANNOTATION_UPDATED, "Failed to update annotation", error, request);
         request.log.error(error);
         return reply.code(500).send({
             success: false,
@@ -493,11 +504,15 @@ module.exports.deleteMediaAnnotations = async (request, reply) => {
             where: { id },
         });
 
+        const itemPath = await buildItemPath(request.server.prisma, 'asset', existing.assetId);
+        logSuccess(ACTIVITY_NAME.ANNOTATION_DELETED, `Annotation deleted from media "${itemPath}".`, request);
+
         return reply.send({
             success: true,
             message: "Annotation deleted successfully",
         });
     } catch (error) {
+        logError(ACTIVITY_NAME.ANNOTATION_DELETED, "Failed to delete annotation", error, request);
         request.log.error(error);
         return reply.code(500).send({
             success: false,

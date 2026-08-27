@@ -1,6 +1,67 @@
 const prisma = require('../utils/prisma.js');
 const { roles } = require('./rolesPermissions');
 
+async function buildItemPath(prisma, type, id) {
+    try {
+        let pathParts = [];
+        let currentFolderId = null;
+        let workspaceId = null;
+
+        if (type === 'asset') {
+            const asset = await prisma.asset.findUnique({ where: { id } });
+            if (!asset) return 'Unknown Asset';
+            pathParts.push(asset.title || 'Untitled Asset');
+
+            if (asset.ownerType === 'WORKSPACE') {
+                workspaceId = asset.ownerId;
+            } else if (asset.ownerType === 'FOLDER') {
+                currentFolderId = asset.ownerId;
+            } else if (asset.ownerType === 'PROJECT') {
+                const project = await prisma.project.findUnique({ where: { id: asset.ownerId } });
+                if (project) {
+                    pathParts.unshift(project.name);
+                    workspaceId = project.workspaceId;
+                    if (project.ownerType === 'FOLDER') currentFolderId = project.folderId;
+                }
+            }
+        } else if (type === 'project') {
+            const project = await prisma.project.findUnique({ where: { id } });
+            if (!project) return 'Unknown Project';
+            pathParts.push(project.name);
+            workspaceId = project.workspaceId;
+            if (project.ownerType === 'FOLDER') currentFolderId = project.folderId;
+        } else if (type === 'folder') {
+            currentFolderId = id;
+        }
+
+        // Traverse folders upward
+        while (currentFolderId) {
+            const folder = await prisma.folder.findUnique({ where: { id: currentFolderId } });
+            if (!folder) break;
+            if (type === 'folder' && id === currentFolderId) {
+                pathParts.push(folder.name);
+            } else {
+                pathParts.unshift(folder.name);
+            }
+            workspaceId = folder.workspaceId;
+            currentFolderId = folder.parentId;
+        }
+
+        // Get workspace name
+        if (workspaceId) {
+            const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
+            if (workspace) {
+                pathParts.unshift(workspace.name);
+            }
+        }
+
+        return pathParts.join(' -> ');
+    } catch (err) {
+        console.error('Error building item path:', err);
+        return 'Unknown Item';
+    }
+}
+
 const ACTOR_TYPE = {
     USER: 'user',
     SYSTEM: 'system',
@@ -13,36 +74,77 @@ const ACTIVITY_TYPE = {
 };
 
 const ACTIVITY_NAME = {
-    USER_LOGIN: 'USER LOGIN',
-    USER_REGISTER: 'USER REGISTER',
-    FORGOT_PASSWORD: "FORGOT PASSWORD",
-    RESET_PASSWORD: "RESET PASSWORD",
-    CLEANUP_AUDIT_LOGS: 'CLEANUP AUDIT LOGS',
-    UPLOAD_VIDEO: 'UPLOAD VIDEO',
-    WORKSPACE_CREATED: "WORKSPACE CREATED",
-    FAVORITE_ADDED: 'FAVORITE ADDED',
-    FAVORITE_REMOVED: 'FAVORITE REMOVED',
-    
+    USER_LOGIN: 'User Login',
+    USER_REGISTER: 'User Register',
+    FORGOT_PASSWORD: "Forgot Password",
+    RESET_PASSWORD: "Reset Password",
+    CLEANUP_AUDIT_LOGS: 'Cleanup Audit Logs',
+    UPLOAD_VIDEO: 'Upload Video',
+    WORKSPACE_CREATED: "Workspace Created",
+    FAVORITE_ADDED: 'Favorite Added',
+    FAVORITE_REMOVED: 'Favorite Removed',
+
+    // Dashboard User & Organization Settings
+    PROFILE_UPDATED: 'Profile Updated',
+    PROFILE_PHOTO_UPLOADED: 'Profile Photo Uploaded',
+    USER_ADMIN_UPDATED: 'User Admin Updated',
+    USERS_DELETED: 'Users Deleted',
+    USERS_BULK_UPDATED: 'Users Bulk Updated',
+    COMPANY_INFO_UPDATED: 'Company Info Updated',
+    COMPANY_LOGO_UPLOADED: 'Company Logo Uploaded',
+    SHARE_SETTINGS_UPDATED: 'Share Settings Updated',
+    BRANDING_SETTINGS_UPDATED: 'Branding Settings Updated',
+    BRANDING_HEADER_UPLOADED: 'Branding Header Uploaded',
+
+    // Folders & Projects
+    FOLDER_CREATED: 'Folder Created',
+    FOLDER_UPDATED: 'Folder Updated',
+    FOLDER_DELETED: 'Folder Deleted',
+    FOLDER_MOVED: 'Folder Moved',
+    PROJECT_CREATED: 'Project Created',
+    PROJECT_UPDATED: 'Project Updated',
+    PROJECT_DELETED: 'Project Deleted',
+
+    // Tags
+    TAG_CREATED: 'Tag Created',
+    TAG_UPDATED: 'Tag Updated',
+    TAG_DELETED: 'Tag Deleted',
+
+    // Media
+    MEDIA_UPLOADED: 'Media Uploaded',
+    MEDIA_RENAMED: 'Media Renamed',
+    MEDIA_MOVED: 'Media Moved',
+    MEDIA_SOFT_DELETED: 'Media Soft Deleted',
+    MEDIA_RESTORED: 'Media Restored',
+    MEDIA_PERMANENTLY_DELETED: 'Media Permanently Deleted',
+
+    //Annotation
+    ANNOTATION_CREATED: 'Annotation Created',
+    ANNOTATION_UPDATED: 'Annotation Updated',
+    ANNOTATION_DELETED: 'Annotation Deleted',
+    PROJECT_LINKED: 'Project Linked',
+    PROJECT_UNLINKED: 'Project Unlinked',
+
     // Platform Activities
-    PLAN_CREATED: 'Plan created',
-    PLAN_UPDATED: 'Plan updated',
-    PLAN_DELETED: 'Plan deleted',
-    ORGANIZATION_CREATED: 'Organization created',
-    ORGANIZATION_UPDATED: 'Organization updated',
-    WORKSPACE_UPDATED: 'Workspace updated',
-    SUBSCRIPTION_OVERRIDE: 'Subscription override',
-    MODERATION_FLAG_CREATED: 'Moderation flag created',
-    MODERATION_FLAG_UPDATED: 'Moderation flag updated',
-    ASSET_FORCE_DELETED: 'Asset force-deleted',
-    LANDING_PAGE_UPDATED: 'Landing page updated',
-    DEMO_REQUEST_SUBMITTED: 'Demo request submitted',
-    PLATFORM_ADMIN_LOGIN: 'Platform admin login',
-    PLATFORM_ADMIN_LOGOUT: 'Platform admin logout',
-    DEFAULT_CONTENT_UPLOADED: 'Default content uploaded',
-    DEFAULT_CONTENT_UPDATED: 'Default content updated',
-    DEFAULT_CONTENT_DELETED: 'Default content deleted',
-    USER_INVITED: 'User invited',
-    USER_UPDATED: 'User updated'
+    PLAN_CREATED: 'Plan Created',
+    PLAN_UPDATED: 'Plan Updated',
+    PLAN_DELETED: 'Plan Deleted',
+    ORGANIZATION_CREATED: 'Organization Created',
+    ORGANIZATION_UPDATED: 'Organization Updated',
+    WORKSPACE_UPDATED: 'Workspace Updated',
+    SUBSCRIPTION_OVERRIDE: 'Subscription Override',
+    MODERATION_FLAG_CREATED: 'Moderation Flag Created',
+    MODERATION_FLAG_UPDATED: 'Moderation Flag Updated',
+    ASSET_FORCE_DELETED: 'Asset Force-Deleted',
+    LANDING_PAGE_UPDATED: 'Landing Page Updated',
+    DEMO_REQUEST_SUBMITTED: 'Demo Request Submitted',
+    PLATFORM_ADMIN_LOGIN: 'Platform Admin Login',
+    PLATFORM_ADMIN_LOGOUT: 'Platform Admin Logout',
+    DEFAULT_CONTENT_UPLOADED: 'Default Content Uploaded',
+    DEFAULT_CONTENT_UPDATED: 'Default Content Updated',
+    DEFAULT_CONTENT_DELETED: 'Default Content Deleted',
+    USER_INVITED: 'User Invited',
+    USER_UPDATED: 'User Updated',
 };
 
 async function errorToString(error) {
@@ -161,5 +263,6 @@ module.exports = {
     recordActivity,
     ACTOR_TYPE,
     ACTIVITY_TYPE,
-    ACTIVITY_NAME
+    ACTIVITY_NAME,
+    buildItemPath
 };

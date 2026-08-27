@@ -1,5 +1,5 @@
 // User and Team Management Controller
-const { roles } = require('../lib');
+const { roles, logSuccess, logError, ACTIVITY_NAME, ACTIVITY_TYPE } = require('../lib');
 const { autoAssignNewAdminToWorkspaces } = require('../services/workspace.service');
 const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
@@ -226,12 +226,14 @@ module.exports.updateProfile = async (request, reply) => {
       data: updateData
     });
 
+    logSuccess(ACTIVITY_NAME.PROFILE_UPDATED, `User updated their personal profile settings`, request);
     return reply.send({
       success: true,
       user: updatedUser
     });
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.PROFILE_UPDATED, `Failed to update personal profile`, request, error);
     return reply.code(500).send({ error: "Failed to update profile", message: error.message });
   }
 };
@@ -304,6 +306,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
       }
     });
 
+    logSuccess(ACTIVITY_NAME.PROFILE_PHOTO_UPLOADED, `User updated their profile photo`, request);
     return reply.send({
       success: true,
       avatarUrl: internalAvatarUrl,
@@ -312,6 +315,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
     });
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.PROFILE_PHOTO_UPLOADED, `Failed to upload profile photo`, request, error);
     return reply.code(500).send({ error: "Failed to upload profile photo", message: error.message });
   }
 };
@@ -444,6 +448,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
       }
     }
 
+    logSuccess(ACTIVITY_NAME.USER_ADMIN_UPDATED, `Admin updated user ${updatedUser.email} profile/role`, request);
     return reply.send({
       success: true,
       user: updatedUser
@@ -451,6 +456,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
 
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.USER_ADMIN_UPDATED, `Failed to update user via admin`, request, error);
     return reply.code(500).send({ error: "Failed to update user", message: error.message });
   }
 };
@@ -526,6 +532,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
         where: { id: { in: safeUserIdsToDelete } }
       });
 
+      logSuccess(ACTIVITY_NAME.USERS_DELETED, `Admin deleted ${safeUserIdsToDelete.length} user(s)`, request);
       return reply.send({
         success: true,
         message: `Successfully deleted ${safeUserIdsToDelete.length} user(s)`
@@ -536,6 +543,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
         data: { status: action === 'active' ? 'active' : 'pending' }
       });
 
+      logSuccess(ACTIVITY_NAME.USERS_BULK_UPDATED, `Admin updated status of ${userIds.length} user(s) to ${action}`, request);
       return reply.send({
         success: true,
         message: `Successfully updated ${userIds.length} user(s)`
@@ -544,6 +552,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
 
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.USERS_BULK_UPDATED, `Failed to perform bulk update on users`, request, error);
     return reply.status(500).send({
       success: false,
       error: "Internal Server Error",
