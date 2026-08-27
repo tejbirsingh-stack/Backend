@@ -73,6 +73,8 @@ const {
 const {
   getDashboardNotification,
   updateDashboardNotification,
+  uploadNotificationImage,
+  deleteNotificationImage,
 } = require('../controller/platform-dashboard-notification.controller');
 
 /**
@@ -168,6 +170,8 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   // Dashboard Notification
   fastify.get('/dashboard-notification', getDashboardNotification);
   fastify.patch('/dashboard-notification', { preHandler: requirePlatformAdmin }, updateDashboardNotification);
+  fastify.post('/dashboard-notification/images', { preHandler: requirePlatformAdmin }, uploadNotificationImage);
+  fastify.delete('/dashboard-notification/images/:imageId', { preHandler: requirePlatformAdmin }, deleteNotificationImage);
 
   done();
 };
