@@ -14,13 +14,13 @@ function slugify(value, fallback = 'org') {
 
 function formatWorkspaceName(value) {
   let trimmed = String(value || 'Workspace').trim();
-  if (trimmed.endsWith('-Workspace-ARK')) return trimmed;
+  if (trimmed.endsWith('-ARK')) return trimmed;
   trimmed = trimmed
     .replace(/-Workspace$/i, '')
     .replace(/-ARK$/i, '')
     .replace(/-Workspace-ARK$/i, '')
     .trim();
-  return `${trimmed || 'Workspace'}-Workspace-ARK`;
+  return `${trimmed || 'Workspace'}-ARK`;
 }
 
 async function ensureUniqueSlug(prisma, baseSlug) {

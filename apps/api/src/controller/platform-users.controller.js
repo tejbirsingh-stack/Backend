@@ -158,10 +158,10 @@ async function inviteUser(request, reply) {
       });
     }
 
-    if (roleObj.name === 'Platform Admin') {
+    if (roleObj.name === 'Platform Admin' || roleObj.name === 'Super Admin') {
       return reply.status(400).send({
         error: 'ValidationError',
-        message: 'Platform Admin cannot be assigned via platform invite',
+        message: `${roleObj.name} cannot be assigned via platform invite`,
         statusCode: 400,
       });
     }

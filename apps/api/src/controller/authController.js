@@ -73,13 +73,13 @@ function formatDomainToOrgName(email, defaultName) {
 }
 
 function formatWorkspaceNameWithSuffix(value) {
-  if (!value || typeof value !== "string") return "Workspace-ARK";
+  if (!value || typeof value !== "string") return "ARK";
   let trimmed = value.trim();
-  if (trimmed.endsWith("-Workspace-ARK")) {
+  if (trimmed.endsWith("-ARK")) {
     return trimmed;
   }
   trimmed = trimmed.replace(/-Workspace$/i, "").replace(/-ARK$/i, "").replace(/-Workspace-ARK$/i, "").trim();
-  return `${trimmed}-Workspace-ARK`;
+  return `${trimmed}-ARK`;
 }
 
 async function syncToHubspot(payload) {
@@ -2227,83 +2227,18 @@ module.exports.completeSignup = async (request, reply) => {
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
-<<<<<<< HEAD
     let dbPlan = null;
     if (planId && planId !== "free") {
       dbPlan = await request.server.prisma.plan.findUnique({
         where: { id: planId },
       }).catch(() => null);
     }
-    
+
     if (!dbPlan) {
       dbPlan = await request.server.prisma.plan.findFirst({
         where: { isFree: true, isActive: true },
       }).catch(() => null);
     }
-=======
-    const dbPlan = await request.server.prisma.plan.findUnique({
-      where: { id: planId },
-    }).catch(() => null);
-
-
-    const GB_BYTES = BigInt(1024 * 1024 * 1024);
-    const PLAN_LIMITS_MAP = {
-      free: {
-        storageQuotaBytes: BigInt(5) * GB_BYTES,
-        maxUsers: 5,
-        features: [
-          '5 GB Storage',
-          '5 Members',
-          'Basic media library & folders',
-          'Share links with view access',
-          'Mobile & desktop access',
-          'Community support',
-        ],
-      },
-      basic: {
-        storageQuotaBytes: BigInt(300) * BigInt(1024 * 1024),
-        maxUsers: 5,
-        features: [
-          '300 MB Storage',
-          '5 Members',
-          'Media library essentials',
-          'Share links & file comments',
-          'Activity feed & project overview',
-          'Mobile & desktop access',
-          'Email support',
-        ],
-      },
-      premium: {
-        storageQuotaBytes: BigInt(15) * GB_BYTES,
-        maxUsers: 10,
-        features: [
-          '15 GB Storage',
-          '10 Members',
-          'Review & annotate video/audio',
-          'Advanced filters & reporting',
-          'Custom labels, priorities & checklists',
-          'Project insights & team analytics',
-          'Billing & usage tracking',
-          'Priority support',
-        ],
-      },
-      enterprise: {
-        storageQuotaBytes: BigInt(20) * GB_BYTES,
-        maxUsers: 15,
-        features: [
-          '20 GB Storage',
-          '15 Members',
-          'Dedicated account manager',
-          'Custom integrations & automation',
-          'SSO & role-based access control',
-          'KPI dashboards & reporting tools',
-          'Onboarding support',
-        ],
-      },
-    };
-
-    const targetPlanLimits = PLAN_LIMITS_MAP[planId] || PLAN_LIMITS_MAP.free;
->>>>>>> 773dfbba4d86840d0602c185ce3ad02c6eefe4c7
 
     const isFreePlan = Boolean(dbPlan && dbPlan.isFree);
 
