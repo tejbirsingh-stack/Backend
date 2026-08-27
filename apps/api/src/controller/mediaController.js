@@ -4,6 +4,7 @@ const fs = require("fs");
 const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
+const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/audit-log');
 const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
@@ -1586,13 +1587,16 @@ module.exports.restoreSoftDelete = async (request, reply) => {
         console.warn("Could not restore file from B2:", b2Error.message);
       }
     }
-
+    
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
+    logSuccess(ACTIVITY_NAME.MEDIA_RESTORED, `File "${itemPath}" restored from trash.`, request);
     return reply.send({
       success: true,
       message: restoredFromDb ? "File restored successfully" : "File restore attempted"
     });
   } catch (error) {
     console.error("Error restoring file:", error);
+    logError(ACTIVITY_NAME.MEDIA_RESTORED, `Failed to restore file`, request, error);
     return reply.code(500).send({
       success: false,
       error: error.message
@@ -1602,6 +1606,7 @@ module.exports.restoreSoftDelete = async (request, reply) => {
 
 //8. Permanently delete a file from B2
 module.exports.deletePermanently = async (request, reply) => {
+  let itemPath = 'Unknown Item';
   try {
     const { filename } = request.params;
 
@@ -1658,6 +1663,7 @@ module.exports.deletePermanently = async (request, reply) => {
             }
           }
 
+          itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
           const totalSize = assetToDelete.files.reduce((acc, f) => acc + Number(f.sizeBytes || 0), 0);
           await request.server.prisma.asset.delete({
             where: { id: filename }
@@ -1704,7 +1710,7 @@ module.exports.deletePermanently = async (request, reply) => {
       });
     }
 
-
+    logSuccess(ACTIVITY_NAME.MEDIA_PERMANENTLY_DELETED, `File "${itemPath}" permanently deleted from database and B2.`, request);
     return reply.send({
       success: true,
       message: "File permanently deleted",
@@ -1714,6 +1720,7 @@ module.exports.deletePermanently = async (request, reply) => {
       }
     });
   } catch (error) {
+    logError(ACTIVITY_NAME.MEDIA_PERMANENTLY_DELETED, `Failed to permanently delete file`, request, error);
     return reply.code(500).send({
       success: false,
       error: error.message,
@@ -1936,7 +1943,6 @@ module.exports.getMediaFile = async (request, reply) => {
         metadata: {},
         compressionStatus: "completed",
       });
-
       return reply.send({ success: true, asset });
     }
 
@@ -2295,6 +2301,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
     }
 
     if (!reply.raw.writableEnded) {
+      const itemPath = await buildItemPath(request.server.prisma, 'asset', uploadedFiles[0].id);
+      logSuccess(ACTIVITY_NAME.MEDIA_UPLOADED, `Uploaded ${uploadedFiles.length} file(s) successfully to ${itemPath}.`, request);
       reply.raw.write(JSON.stringify({
         type: "complete",
         asset: uploadedFiles[0],
@@ -2310,6 +2318,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
   } catch (error) {
     console.error("Upload error:", error);
+    logError(ACTIVITY_NAME.MEDIA_UPLOADED, `Failed to upload media file`, request, error);
     if (!reply.raw.writableEnded) {
       reply.raw.write(JSON.stringify({
         type: "error",
@@ -4766,7 +4775,9 @@ module.exports.moveMediaFile = async (request, reply) => {
         workspaceId: newWorkspaceId
       }
     });
-
+    
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', mediaIds[0]);
+    logSuccess(ACTIVITY_NAME.MEDIA_MOVED, `Moved ${mediaIds?.length || 1} media file(s) (e.g. ${itemPath}).`, request);
     return reply.code(200).send({
       success: true,
       message: 'Media moved successfully.',
@@ -4774,6 +4785,7 @@ module.exports.moveMediaFile = async (request, reply) => {
     });
   } catch (error) {
     console.error('Failed to move media:', error);
+    logError(ACTIVITY_NAME.MEDIA_MOVED, `Failed to move media`, request, error);
     return reply.code(500).send({ success: false, message: 'Internal Server Error' });
   }
 };
@@ -4820,10 +4832,12 @@ module.exports.renameMediaAsset = async (request, reply) => {
       where: { id: assetId },
       data: { title: title.trim() }
     });
-
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', assetId);
+    logSuccess(ACTIVITY_NAME.MEDIA_RENAMED, `Media file renamed to "${itemPath}" successfully.`, request);
     return reply.send({ success: true, asset: updatedAsset });
   } catch (error) {
     console.error("Failed to rename media asset:", error);
+    logError(ACTIVITY_NAME.MEDIA_RENAMED, `Failed to rename media`, request, error);
     return reply.code(500).send({ success: false, error: error.message });
   }
 };

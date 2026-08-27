@@ -139,7 +139,7 @@ module.exports.createTag = async (request, reply) => {
         });
 
         const dto = await buildTagDto(tag);
-        logSuccess(ACTIVITY_NAME?.TAG_CREATED ?? 'TAG_CREATED', `Tag "${tag.name}" created.`, request);
+        logSuccess(ACTIVITY_NAME.TAG_CREATED, `Tag "${tag.name}" created.`, request);
 
         return reply.code(201).send({ success: true, data: dto });
     } catch (error) {
@@ -147,7 +147,7 @@ module.exports.createTag = async (request, reply) => {
             return reply.code(409).send({ success: false, message: 'A tag with this name already exists under the same parent.' });
         }
         console.error(error);
-        logError(ACTIVITY_NAME?.TAG_CREATED ?? 'TAG_CREATED', 'Failed to create tag.', request, error);
+        logError(ACTIVITY_NAME.TAG_CREATED, 'Failed to create tag.', request, error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
@@ -259,7 +259,7 @@ module.exports.updateTag = async (request, reply) => {
         });
 
         const dto = await buildTagDto(updated);
-        logSuccess(ACTIVITY_NAME?.TAG_UPDATED ?? 'TAG_UPDATED', `Tag "${updated.name}" updated.`, request);
+        logSuccess(ACTIVITY_NAME.TAG_UPDATED, `Tag "${updated.name}" updated.`, request);
 
         return reply.code(200).send({ success: true, data: dto });
     } catch (error) {
@@ -267,7 +267,7 @@ module.exports.updateTag = async (request, reply) => {
             return reply.code(409).send({ success: false, message: 'A tag with this name already exists under the same parent.' });
         }
         console.error(error);
-        logError(ACTIVITY_NAME?.TAG_UPDATED ?? 'TAG_UPDATED', 'Failed to update tag.', request, error);
+        logError(ACTIVITY_NAME.TAG_UPDATED, 'Failed to update tag.', request, error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
@@ -311,11 +311,11 @@ module.exports.deleteTag = async (request, reply) => {
         // Detach AssetTag and ProjectTag rows (FK cascade handles this, but explicit for clarity)
         await prisma.tag.delete({ where: { id } });
 
-        logSuccess(ACTIVITY_NAME?.TAG_DELETED ?? 'TAG_DELETED', `Tag "${tag.name}" deleted.`, request);
+        logSuccess(ACTIVITY_NAME.TAG_DELETED, `Tag "${tag.name}" deleted.`, request);
         return reply.code(200).send({ success: true, message: `Tag "${tag.name}" deleted successfully.` });
     } catch (error) {
         console.error(error);
-        logError(ACTIVITY_NAME?.TAG_DELETED ?? 'TAG_DELETED', 'Failed to delete tag.', request, error);
+        logError(ACTIVITY_NAME.TAG_DELETED, 'Failed to delete tag.', request, error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
