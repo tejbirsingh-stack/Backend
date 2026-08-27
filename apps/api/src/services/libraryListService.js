@@ -82,12 +82,12 @@ async function listItems(prisma, params) {
     if (!isSpecificContainer) {
       if (isDefaultWorkspace) {
         assetConditions.push(Prisma.sql`(
-          ("workspace_id" = ${workspaceId} AND ("ownerType" IS NULL OR "ownerType" != 'FOLDER'))
+          ("workspace_id" = ${workspaceId} AND ("ownerType" IS NULL OR "ownerType" != 'FOLDER' OR "ownerId" IN (SELECT id FROM "folders" WHERE "is_auto_generated" = true)))
           OR "global_media" = true
         )`);
       } else {
         assetConditions.push(Prisma.sql`(
-          ("workspace_id" = ${workspaceId} AND ("ownerType" IS NULL OR "ownerType" != 'FOLDER'))
+          ("workspace_id" = ${workspaceId} AND ("ownerType" IS NULL OR "ownerType" != 'FOLDER' OR "ownerId" IN (SELECT id FROM "folders" WHERE "is_auto_generated" = true)))
           AND ("global_media" IS NULL OR "global_media" = false)
         )`);
       }
