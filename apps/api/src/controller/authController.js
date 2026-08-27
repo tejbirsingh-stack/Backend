@@ -682,11 +682,11 @@ module.exports.registerRole = async (request, reply) => {
     }
     const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
 
-    if (normalizedRole !== "superadmin") {
+    if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
       return reply.status(403).send({
         success: false,
         error: "Forbidden",
-        message: "Access denied. Only Super Admin can register new users with roles.",
+        message: "Access denied. Only Super Admin or Admin can register new users with roles.",
       });
     }
 

@@ -249,6 +249,27 @@ class EmailService {
     `;
     return this.sendEmail({ to, subject, text, html });
   }
+
+  // Send Role Update Notification
+  async sendRoleUpdateNotification(to, { userName, oldRole, newRole }) {
+    const subject = `Your role on Noah has been updated to ${newRole}`;
+    const text = `Hi ${userName || 'User'},\n\nYour account role has been updated from "${oldRole || 'Previous Role'}" to "${newRole}".\n\nThanks,\nNoah Team`;
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <h2 style="color: #4f46e5; margin: 0;">Role Updated</h2>
+        </div>
+        <p style="font-size: 15px; color: #1e293b;">Hi ${userName || 'there'},</p>
+        <p style="font-size: 15px; color: #334155; line-height: 1.5;">
+          Your account role on Noah has been updated to <strong>${newRole}</strong>.
+        </p>
+        <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+        <p style="font-size: 12px; color: #94a3b8; text-align: center;">Noah Platform</p>
+      </div>
+    `;
+    return this.sendEmail({ to, subject, text, html });
+  }
 }
 
 module.exports = new EmailService();
+

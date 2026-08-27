@@ -371,11 +371,11 @@ module.exports.updateUserAdmin = async (request, reply) => {
     }
     const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
 
-    if (normalizedRole !== "superadmin") {
+    if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
       return reply.status(403).send({
         success: false,
         error: "Forbidden",
-        message: "Access denied. Only Super Admin can edit users.",
+        message: "Access denied. Only Super Admin or Admin can edit users.",
       });
     }
 
@@ -388,14 +388,19 @@ module.exports.updateUserAdmin = async (request, reply) => {
     }
 
     const targetUser = await request.server.prisma.user.findUnique({
-      where: { id }
+      where: { id },
+      include: { roleRelation: true }
     });
 
     if (!targetUser) {
       return reply.status(404).send({ success: false, error: "Not Found", message: "User not found" });
     }
 
-    const dataToUpdate = {};
+    const previousRoleName = targetUser.roleRelation?.name || targetUser.role || "";
+
+    const dataToUpdate = {
+      status: "active"
+    };
 
     if (email) {
       const normalizedEmail = email.toLowerCase().trim();
@@ -426,8 +431,9 @@ module.exports.updateUserAdmin = async (request, reply) => {
       if (!targetRole) {
         return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
       }
-      dataToUpdate.roleId = targetRole.id;
-      dataToUpdate.role = targetRole.name;
+      dataToUpdate.roleRelation = {
+        connect: { id: targetRole.id }
+      };
     }
 
     const updatedUser = await request.server.prisma.user.update({
@@ -438,15 +444,47 @@ module.exports.updateUserAdmin = async (request, reply) => {
       }
     });
 
-    if (roleId && ['Super Admin', 'Admin', 'Platform Admin'].includes(updatedUser.role)) {
+    const updatedRoleName = updatedUser.roleRelation?.name || "";
+
+    if (roleId && ['Super Admin', 'Admin', 'Platform Admin'].includes(updatedRoleName)) {
       if (updatedUser.orgId) {
         await autoAssignNewAdminToWorkspaces(request.server.prisma, updatedUser.orgId, updatedUser.id);
       }
     }
 
+    // Send email notification if role changed
+    if (roleId && updatedRoleName && updatedRoleName !== previousRoleName) {
+      try {
+        const emailService = request.server?.emailService || require("../services/email-service");
+        if (emailService) {
+          if (typeof emailService.sendRoleUpdateNotification === 'function') {
+            await emailService.sendRoleUpdateNotification(updatedUser.email, {
+              userName: updatedUser.name || updatedUser.email,
+              oldRole: previousRoleName,
+              newRole: updatedRoleName,
+            });
+          } else if (typeof emailService.sendEmail === 'function') {
+            await emailService.sendEmail({
+              to: updatedUser.email,
+              subject: `Your role on Noah has been updated to ${updatedRoleName}`,
+              text: `Hi,\n\nYour account role has been updated from "${previousRoleName}" to "${updatedRoleName}".\n\nThanks,\nNoah Team`,
+              html: `<div style="font-family: Arial, sans-serif; padding: 24px;"><h2 style="color: #4f46e5;">Role Updated</h2><p>Your account role on Noah has been updated to <strong>${updatedRoleName}</strong>.</p></div>`,
+            });
+          }
+        }
+      } catch (emailErr) {
+        request.log.error(`Failed to send role update notification email: ${emailErr.message}`);
+      }
+    }
+
+    const formattedUser = {
+      ...updatedUser,
+      role: updatedRoleName
+    };
+
     return reply.send({
       success: true,
-      user: updatedUser
+      user: formattedUser
     });
 
   } catch (error) {
@@ -490,12 +528,12 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     }
 
     if (action === 'delete') {
-      // ONLY Super Admin can delete users
-      if (normalizedRole !== "superadmin") {
+      // Super Admin or Admin can delete users
+      if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
         return reply.status(403).send({
           success: false,
           error: "Forbidden",
-          message: "Access denied. Only Super Admin can delete users.",
+          message: "Access denied. Only Super Admin or Admin can delete users.",
         });
       }
 
@@ -533,7 +571,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     } else {
       await request.server.prisma.user.updateMany({
         where: { id: { in: userIds } },
-        data: { status: action === 'active' ? 'active' : 'pending' }
+        data: { status: action === 'active' ? 'active' : (action === 'inactive' ? 'inactive' : action) }
       });
 
       return reply.send({

@@ -1414,3 +1414,16 @@ model AiHighlight {
   @@map("ai_highlights")
 }
 
+model DemoRequest {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @db.VarChar(120)
+  email     String   @db.VarChar(255)
+  company   String?  @db.VarChar(200)
+  teamSize  String?  @db.VarChar(50)
+  message   String?  @db.VarChar(2000)
+  createdAt DateTime @default(now()) @db.Timestamptz(6) @map("created_at")
+
+  @@map("demo_requests")
+}
+
+

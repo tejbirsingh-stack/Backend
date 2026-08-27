@@ -111,7 +111,7 @@ async function updateLandingPage(request, reply) {
     if (baseSlug.endsWith('-draft')) baseSlug = baseSlug.replace('-draft', '');
     const body = request.body || {};
     const data = {};
-    
+
     if (body.status !== undefined) {
       if (!['draft', 'published'].includes(body.status)) {
         return reply.status(400).send({
@@ -122,7 +122,7 @@ async function updateLandingPage(request, reply) {
       }
     }
     const status = body.status || 'draft';
-    
+
     const heroTitle = body.heroTitle ?? body.heroHeadline ?? body.title;
     const heroSubtitle = body.heroSubtitle ?? body.heroSubheadline;
     const ctaLabel = body.ctaLabel ?? body.heroCtaLabel;
@@ -276,11 +276,69 @@ async function submitDemoRequest(request, reply) {
       });
     }
 
+    // 1. Store in PostgreSQL database table `demo_requests`
+    try {
+      await request.server.prisma.demoRequest.create({
+        data: {
+          name,
+          email,
+          company: company || null,
+          teamSize: teamSize || null,
+          message: message || null,
+        },
+      });
+    } catch (dbErr) {
+      console.error('Failed to save DemoRequest to database:', dbErr);
+    }
+
+    // 2. Submit lead to HubSpot Forms API
+    const portalId = process.env.HUBSPOT_PORTAL_ID || '44555337';
+    const formId = process.env.HUBSPOT_DEMO_FORM_ID || 'beb1f88a-e521-4e75-a39a-cfaafd810a6c';
+
+    if (portalId && formId) {
+      try {
+        const rawFields = [
+          { objectTypeId: '0-1', name: 'firstname', value: name },
+          { objectTypeId: '0-1', name: 'email', value: email },
+          { objectTypeId: '0-1', name: 'company', value: company || '' },
+          { objectTypeId: '0-1', name: 'company_size', value: teamSize || '' },
+          { objectTypeId: '0-1', name: 'numemployees', value: teamSize || '' },
+          { objectTypeId: '0-1', name: 'message', value: message || '' },
+        ];
+        const validFields = rawFields.filter(f => f.value && String(f.value).trim().length > 0);
+
+        const hubspotPayload = {
+          fields: validFields,
+          context: {
+            pageUri: request.headers?.referer || request.headers?.origin || 'https://noahcloud.ai/demo',
+            pageName: 'Book a demo'
+          },
+          skipValidation: true,
+        };
+
+        const publicEndpoint = `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formId}`;
+
+        console.log(`[HubSpot Demo Sync] Submitting for ${email} (PortalID: ${portalId}, FormID: ${formId})...`);
+
+        const res = await fetch(publicEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(hubspotPayload),
+        });
+
+        const resText = await res.text();
+        if (res.ok) {
+          console.log(`[HubSpot Demo Sync SUCCESS] Synced ${email} to HubSpot (FormID: ${formId})! Response:`, resText);
+        } else {
+          console.error(`[HubSpot Demo Sync ERROR] Submission failed (HTTP ${res.status}):`, resText);
+        }
+      } catch (hsErr) {
+        console.error('Failed to submit to HubSpot:', hsErr);
+      }
+    }
+
     const salesTo =
-      process.env.DEMO_REQUEST_EMAIL ||
-      process.env.SMTP_FROM_EMAIL ||
-      process.env.EMAIL_FROM ||
-      'noreply@noah-dev.local';
+      process.env.DEMO_REQUEST_EMAIL;
 
     const summary = [
       `Name: ${name}`,
