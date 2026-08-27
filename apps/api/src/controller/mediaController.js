@@ -847,6 +847,15 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       return reply.send(mediaStream.stream);
     } catch (b2ProxyErr) {
       console.warn(`B2 Proxy streaming warning for ${b2Key}:`, b2ProxyErr.message);
+      
+      if (b2ProxyErr.message && b2ProxyErr.message.includes('cap exceeded')) {
+        return reply.code(403).send({
+          success: false,
+          error: "BandwidthCapExceeded",
+          message: "Storage provider download bandwidth or transaction cap exceeded. Please check your Backblaze B2 billing settings.",
+        });
+      }
+
       return reply.code(404).send({
         success: false,
         error: "NotFound",

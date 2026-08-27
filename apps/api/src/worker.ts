@@ -128,8 +128,22 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
       const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
+      let mp4Settings: any = { url: outputUrl };
+
+      // Determine if we need to force downscaling to 1080p for large videos (e.g. 4K, 8K)
+      // We check technical specs to avoid explicitly asking for 1080p on smaller files
+      // to ensure we never accidentally upscale and increase the final file size.
+      const technicalSpecs = asset?.metadata?.technicalSpecs as any;
+      if (technicalSpecs) {
+        const w = parseInt(technicalSpecs.width, 10);
+        const h = parseInt(technicalSpecs.height, 10);
+        if ((!isNaN(w) && w > 1920) || (!isNaN(h) && h > 1080)) {
+          mp4Settings.size = '1080p';
+        }
+      }
+
       outputs = {
-        'mp4': { url: outputUrl },
+        'mp4': mp4Settings,
         'jpg:300x#10%': { url: thumbUrl1 },
         'jpg:300x#30%': { url: thumbUrl2 },
         'jpg:300x#50%': { url: thumbUrl3 },
