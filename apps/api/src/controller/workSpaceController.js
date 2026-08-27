@@ -64,6 +64,37 @@ async function getPendingOrDeletedFolderIds(prismaClient) {
     }
 }
 
+async function getPendingOrDeletedFolderIds(prismaClient) {
+    try {
+        const pendingAssets = await prismaClient.asset.findMany({
+            where: {
+                OR: [
+                    { type: 'folder' },
+                    { deletionReason: { contains: 'Deleted with folder' } }
+                ]
+            },
+            select: { ownerId: true, ownerType: true, type: true, status: true, deletionReason: true }
+        }).catch(() => []);
+
+        const pendingSet = new Set();
+        pendingAssets.forEach(a => {
+            if (a.type === 'folder' && a.ownerId && a.ownerType === 'FOLDER' && a.status !== 'active') {
+                pendingSet.add(String(a.ownerId));
+            }
+            if (a.deletionReason) {
+                const match = a.deletionReason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]/i);
+                if (match && match[1]) {
+                    pendingSet.add(match[1]);
+                }
+            }
+        });
+        return Array.from(pendingSet);
+    } catch (err) {
+        console.error('Error in getPendingOrDeletedFolderIds:', err);
+        return [];
+    }
+}
+
 module.exports.storeWorkplace = async (request, reply) => {
     try {
         const userRoleName = typeof request.user?.role === 'string' ? request.user.role : '';
