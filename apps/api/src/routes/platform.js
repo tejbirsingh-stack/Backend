@@ -9,6 +9,7 @@ const {
   listOrganizations,
   getOrganization,
   createOrganization,
+  inviteOrganization,
   patchOrganization,
   updateWorkspace,
 } = require('../controller/platform-organizations.controller');
@@ -91,6 +92,7 @@ module.exports = function platformRoutes(fastify, _opts, done) {
 
   fastify.get('/organizations', { preHandler: requirePlatformAdmin }, listOrganizations);
   fastify.post('/organizations', { preHandler: requirePlatformAdmin }, createOrganization);
+  fastify.post('/organizations/invite', { preHandler: requirePlatformAdmin }, inviteOrganization);
   fastify.get('/organizations/:orgId', { preHandler: requirePlatformAdmin }, getOrganization);
   fastify.patch('/organizations/:orgId', { preHandler: requirePlatformAdmin }, patchOrganization);
   fastify.patch(

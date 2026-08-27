@@ -73,13 +73,13 @@ function formatDomainToOrgName(email, defaultName) {
 }
 
 function formatWorkspaceNameWithSuffix(value) {
-  if (!value || typeof value !== "string") return "Workspace-ARK";
+  if (!value || typeof value !== "string") return "ARK";
   let trimmed = value.trim();
-  if (trimmed.endsWith("-Workspace-ARK")) {
+  if (trimmed.endsWith("-ARK")) {
     return trimmed;
   }
   trimmed = trimmed.replace(/-Workspace$/i, "").replace(/-ARK$/i, "").replace(/-Workspace-ARK$/i, "").trim();
-  return `${trimmed}-Workspace-ARK`;
+  return `${trimmed}-ARK`;
 }
 
 async function syncToHubspot(payload) {
@@ -469,15 +469,15 @@ module.exports.register = async (request, reply) => {
           where: { isFree: true, isActive: true }
         });
       }
-      
+
       const isFreePlan = Boolean(plan && plan.isFree);
       let planExpiresAt = null;
-      
+
       if (isFreePlan) {
-         const trialDays = plan.trialDays ?? 3;
-         const expires = new Date();
-         expires.setDate(expires.getDate() + trialDays);
-         planExpiresAt = expires;
+        const trialDays = plan.trialDays ?? 3;
+        const expires = new Date();
+        expires.setDate(expires.getDate() + trialDays);
+        planExpiresAt = expires;
       }
 
       organization = await request.server.prisma.organization.create({
@@ -2233,7 +2233,7 @@ module.exports.completeSignup = async (request, reply) => {
         where: { id: planId },
       }).catch(() => null);
     }
-    
+
     if (!dbPlan) {
       dbPlan = await request.server.prisma.plan.findFirst({
         where: { isFree: true, isActive: true },
@@ -2245,7 +2245,7 @@ module.exports.completeSignup = async (request, reply) => {
     const isMonthly = (billingCycle || "annual").toLowerCase() === "monthly";
     const now = new Date();
     const expiresAtDate = new Date(now);
-    
+
     if (isFreePlan) {
       const trialDays = dbPlan.trialDays ?? 3;
       expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);

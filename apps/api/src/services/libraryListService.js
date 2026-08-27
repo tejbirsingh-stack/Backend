@@ -51,7 +51,8 @@ async function listItems(prisma, params) {
       WHERE "ownerId" IS NOT NULL 
       AND "ownerType" = 'FOLDER' 
       AND ("status" IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted') OR "deletedAt" IS NOT NULL OR "deletionReason" ILIKE '%Deleted with folder%')
-    )`
+    )`,
+    Prisma.sql`("is_auto_generated" IS NULL OR "is_auto_generated" = false)`
   ];
   const projectConditions = [];
 
