@@ -456,9 +456,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
       }
     }
 
-<<<<<<< HEAD
     logSuccess(ACTIVITY_NAME.USER_ADMIN_UPDATED, `Admin updated user ${updatedUser.email} profile/role`, request);
-=======
     // Send email notification if role changed
     if (roleId && updatedRoleName && updatedRoleName !== previousRoleName) {
       try {
@@ -489,7 +487,6 @@ module.exports.updateUserAdmin = async (request, reply) => {
       role: updatedRoleName
     };
 
->>>>>>> aug27QaFixes
     return reply.send({
       success: true,
       user: formattedUser
