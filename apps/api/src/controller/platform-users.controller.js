@@ -204,6 +204,7 @@ async function inviteUser(request, reply) {
         request,
         user,
         roleName: roleObj.name,
+        isRegistration: true,
       });
     } catch (emailErr) {
       console.warn('[platform] Failed to send user invite email:', emailErr.message);
