@@ -2377,6 +2377,14 @@ module.exports.deleteMediaFile = async (request, reply) => {
           return reply.code(404).send({ success: false, error: "Asset or folder not found" });
         }
 
+        if (assetToUpdate.globalMedia) {
+          return reply.code(400).send({
+            success: false,
+            error: "BadRequest",
+            message: "Global media assets are protected system files and cannot be deleted."
+          });
+        }
+
         // Check if asset is linked to any project
         const projectSource = await request.server.prisma.projectSource.findFirst({
           where: { assetId: assetToUpdate.id }
@@ -2719,8 +2727,8 @@ module.exports.getPendingDeletions = async (request, reply) => {
             deletedFiles: []
           });
         }
-        const isFolderPlaceholder = asset.ownerType === 'FOLDER_REQUEST' || (asset.type === 'folder' && asset.title.trim().toLowerCase() === folderName.trim().toLowerCase());
-        const isDirectFile = String(asset.ownerId) === String(folderId) && asset.ownerType === 'FOLDER';
+        const isFolderPlaceholder = (asset.type === 'folder' && (asset.title.trim().toLowerCase() === folderName.trim().toLowerCase() || String(asset.ownerId) === String(folderId)));
+        const isDirectFile = asset.type !== 'folder' && (String(asset.ownerId) === String(folderId) || (asset.deletionReason && asset.deletionReason.includes(folderId)));
         if (isDirectFile && !isFolderPlaceholder) {
           folderRequestMap.get(folderId).deletedFiles.push({
             id: asset.id,
