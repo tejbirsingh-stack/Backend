@@ -2231,16 +2231,17 @@ module.exports.uploadMediaFile = async (request, reply) => {
               }
             });
 
-            // 5GB threshold for heavy queue
-            const fiveGB = 5 * 1024 * 1024 * 1024;
-            const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+            // 300MB threshold for heavy queue — prevents large videos competing with smaller ones
+            const heavyThreshold = 300 * 1024 * 1024;
+            const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
 
             await queueToUse.add("compress", {
               assetId: newAsset.id, // For new webhook
               key: b2Key,
               preset: "medium", // Default to balanced H.264
+              fileSizeBytes: size, // Used by worker to decide 1080p cap for large files
             });
-            console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
+            console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= heavyThreshold ? 'heavy' : 'standard'} queue (${Math.round(size / 1024 / 1024)}MB)`);
           } catch (queueErr) {
             console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
           }
@@ -2944,7 +2945,7 @@ async function performInstantDuplicateCheck(assetId, prisma) {
       include: { metadata: true, files: true }
     });
 
-    if (!asset || asset.status === 'duplicate' || asset.type === 'video' || asset.type === 'audio') return;
+    if (!asset || asset.status === 'duplicate' || asset.type === 'video') return;
 
     let duplicateOf = [];
     const originalFile = asset.files.find(f => f.fileClass === 'original');
@@ -2985,13 +2986,19 @@ async function performInstantDuplicateCheck(assetId, prisma) {
       }
     }
 
-    // Tier 2: Title Match (for Images) — catches re-uploads with same filename
-    if (duplicateOf.length === 0 && asset.type === 'image') {
+    // Tier 2: Title Match (image, audio, document) — catches re-uploads with same/similar filename
+    // Videos go through the Coconut webhook with perceptual hashing instead.
+    if (duplicateOf.length === 0 && asset.type !== 'video') {
       if (asset.title) {
+        // Strip OS-appended suffixes like " (1)", " (2)" before comparing titles
+        const baseTitle = asset.title.replace(/\s*\(\d+\)$/, '').trim();
         const titleMatches = await prisma.asset.findMany({
           where: {
             ...whereClause,
-            title: { equals: asset.title, mode: 'insensitive' }
+            OR: [
+              { title: { equals: asset.title, mode: 'insensitive' } },
+              { title: { equals: baseTitle, mode: 'insensitive' } },
+            ]
           }
         });
         titleMatches.forEach(m => { if (!duplicateOf.includes(m.id)) duplicateOf.push(m.id); });
@@ -3332,7 +3339,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       : normalizeAssetType(inferredMime, session.fileName || session.key);
     const isVideo = assetType === "video";
     const isAudio = assetType === "audio";
-    const shouldQueueTranscode = isVideo || isAudio;
+    const shouldQueueTranscode = isVideo; // Audio files play natively in browsers — no Coconut needed
     const cdnUrl = `/api/media/${session.key}/stream`;
     // Merge technical specs from request body and upload session
     const mergedTechSpecs = {
@@ -3601,14 +3608,16 @@ module.exports.completeResumableUpload = async (request, reply) => {
           }
         });
 
-        const fiveGB = BigInt(5 * 1024 * 1024 * 1024);
-        const queueToUse = (isVideo && BigInt(session.fileSize) >= fiveGB) ? heavyCompressionQueue : compressionQueue;
+        // 300MB threshold for heavy queue — prevents large videos competing with smaller ones
+        const heavyThreshold = BigInt(300 * 1024 * 1024);
+        const queueToUse = (isVideo && BigInt(session.fileSize) >= heavyThreshold) ? heavyCompressionQueue : compressionQueue;
         await queueToUse.add("compress", {
           assetId: newAsset.id,
           key: session.key,
           preset: "medium",
+          fileSizeBytes: Number(session.fileSize), // Used by worker to decide 1080p cap
         });
-        console.log(`[Queue] Added ${isAudio ? 'audio' : 'video'} compression job for asset ${newAsset.id} to ${(isVideo && BigInt(session.fileSize) >= fiveGB) ? 'heavy' : 'fast'} queue`);
+        console.log(`[Queue] Added ${isAudio ? 'audio' : 'video'} compression job for asset ${newAsset.id} to ${(isVideo && BigInt(session.fileSize) >= heavyThreshold) ? 'heavy' : 'fast'} queue (${Math.round(Number(session.fileSize) / 1024 / 1024)}MB)`);
       } catch (queueErr) {
         console.error(`[Queue] Failed to queue job for asset ${newAsset.id}:`, queueErr.message);
       }
@@ -4267,17 +4276,18 @@ module.exports.retryTranscode = async (request, reply) => {
       return reply.status(400).send({ error: "Original file not found for this asset." });
     }
 
-    const size = Number(originalFile.sizeBytes);
-    const fiveGB = 5 * 1024 * 1024 * 1024;
-    const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+    // 300MB threshold for heavy queue
+    const heavyThreshold = 300 * 1024 * 1024;
+    const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
 
     await queueToUse.add("compress", {
       assetId: id,
       key: originalFile.filePath,
-      preset: "medium"
+      preset: "medium",
+      fileSizeBytes: size,
     });
 
-    console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
+    console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= heavyThreshold ? 'heavy' : 'standard'} queue (${Math.round(size / 1024 / 1024)}MB)`);
 
     return reply.send({ success: true, message: "Transcode job queued" });
   } catch (error) {

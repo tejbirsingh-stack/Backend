@@ -130,16 +130,22 @@ if (!isAudio && maxDurationStr && assetId && asset) {
 
       let mp4Settings: any = { url: outputUrl };
 
-      // Determine if we need to force downscaling to 1080p for large videos (e.g. 4K, 8K)
-      // We check technical specs to avoid explicitly asking for 1080p on smaller files
-      // to ensure we never accidentally upscale and increase the final file size.
+      // Determine resolution cap for Coconut:
+      // - Always cap to 1080p if the video is 4K/8K (width > 1920 or height > 1080)
+      // - Also cap to 1080p if the file is large (>= 300MB) to prevent Coconut OOM at ~42%
+      //   regardless of resolution — large 1080p files still stress Coconut's transcoding.
       const technicalSpecs = asset?.metadata?.technicalSpecs as any;
+      const fileSizeBytes = job.data.fileSizeBytes || 0;
+      const isLargeFile = fileSizeBytes >= 300 * 1024 * 1024; // >= 300MB
       if (technicalSpecs) {
         const w = parseInt(technicalSpecs.width, 10);
         const h = parseInt(technicalSpecs.height, 10);
-        if ((!isNaN(w) && w > 1920) || (!isNaN(h) && h > 1080)) {
+        if (isLargeFile || (!isNaN(w) && w > 1920) || (!isNaN(h) && h > 1080)) {
           mp4Settings.size = '1080p';
         }
+      } else if (isLargeFile) {
+        // No resolution metadata — still cap to 1080p for large files
+        mp4Settings.size = '1080p';
       }
 
       outputs = {

@@ -136,7 +136,13 @@ async function listItems(prisma, params) {
     folderConditions.push(Prisma.sql`id IN (SELECT "folderId" FROM "favorites" WHERE "userId" = ${params.userId}::uuid)`);
     projectConditions.push(Prisma.sql`id IN (SELECT "projectId" FROM "favorites" WHERE "userId" = ${params.userId}::uuid)`);
   } else if (view === 'duplicates') {
-    assetConditions.push(Prisma.sql`"status" = 'duplicate'`);
+    assetConditions.push(Prisma.sql`("status" = 'duplicate' OR id IN (
+      SELECT CAST(jsonb_array_elements_text(am."customProperties"->'duplicates') AS UUID)
+      FROM "asset_metadata" am
+      JOIN "assets" a2 ON a2.id = am."assetId"
+      WHERE a2."status" = 'duplicate' 
+      AND jsonb_typeof(am."customProperties"->'duplicates') = 'array'
+    ))`);
     folderConditions.push(Prisma.sql`false`);
     projectConditions.push(Prisma.sql`false`);
   } else if (view === 'shared') {
