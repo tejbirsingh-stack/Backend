@@ -2,6 +2,7 @@
 const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
+const { logSuccess, logError, ACTIVITY_NAME } = require('../lib');
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,
@@ -93,12 +94,14 @@ module.exports.updateCompanyInfo = async (request, reply) => {
       }
     });
 
+    await logSuccess(ACTIVITY_NAME.COMPANY_INFO_UPDATED, `User updated company information for ${updatedOrg.name}`, request);
     return reply.send({
       success: true,
       organization: updatedOrg
     });
   } catch (error) {
     request.log.error(error);
+    await logError(ACTIVITY_NAME.COMPANY_INFO_UPDATED, `Failed to update company info`, request, error);
     return reply.code(500).send({ error: "Failed to update company info", message: error.message });
   }
 };
@@ -159,6 +162,7 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
       },
     }).catch(() => {});
 
+    await logSuccess(ACTIVITY_NAME.COMPANY_LOGO_UPLOADED, `User uploaded new company logo for ${org.name}`, request);
     return reply.send({
       success: true,
       logoUrl: longLivedLogoUrl,
@@ -166,6 +170,7 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
     });
   } catch (error) {
     request.log.error(error);
+    await logError(ACTIVITY_NAME.COMPANY_LOGO_UPLOADED, `Failed to upload company logo`, request, error);
     return reply.code(500).send({ error: "Failed to upload company logo", message: error.message });
   }
 };
@@ -214,9 +219,11 @@ module.exports.updateShareSettings = async (request, reply) => {
       }
     });
 
+    await logSuccess(ACTIVITY_NAME.SHARE_SETTINGS_UPDATED, `User updated organization share settings`, request);
     return reply.send({ success: true, settings });
   } catch (error) {
     request.log.error(error);
+    await logError(ACTIVITY_NAME.SHARE_SETTINGS_UPDATED, `Failed to update share settings`, request, error);
     return reply.code(500).send({ error: "Failed to update share settings", message: error.message });
   }
 };
@@ -312,6 +319,7 @@ module.exports.updateBrandingSettings = async (request, reply) => {
       }
     });
 
+    await logSuccess(ACTIVITY_NAME.BRANDING_SETTINGS_UPDATED, `User updated branding settings`, request);
     return reply.send({
       success: true,
       message: 'Branding settings updated successfully in database',
@@ -331,6 +339,7 @@ module.exports.updateBrandingSettings = async (request, reply) => {
     });
   } catch (error) {
     request.log.error(error);
+    await logError(ACTIVITY_NAME.BRANDING_SETTINGS_UPDATED, `Failed to update branding settings`, request, error);
     return reply.code(500).send({ error: "Failed to update branding settings", message: error.message });
   }
 };
@@ -383,6 +392,7 @@ module.exports.uploadBrandingHeader = async (request, reply) => {
       }
     });
 
+    await logSuccess(ACTIVITY_NAME.BRANDING_HEADER_UPLOADED, `User uploaded new branding header image for ${org.name}`, request);
     return reply.send({
       success: true,
       headerImageUrl: uploadedAsset.url,
@@ -391,6 +401,7 @@ module.exports.uploadBrandingHeader = async (request, reply) => {
     });
   } catch (error) {
     request.log.error(error);
+    await logError(ACTIVITY_NAME.BRANDING_HEADER_UPLOADED, `Failed to upload branding header image`, request, error);
     return reply.code(500).send({ error: "Failed to upload branding header image", message: error.message });
   }
 };

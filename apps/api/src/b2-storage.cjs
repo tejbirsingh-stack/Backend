@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const mime = require('mime-types');
 const { v4: uuidv4 } = require('uuid');
+const https = require('https');
 
 /**
  * Simplified B2 Storage Service for Media Server
@@ -45,6 +46,25 @@ class B2StorageService {
     // Check if B2 configuration is provided
     if (keyId && applicationKey && bucketName) {
       this.endpoint = endpoint;
+      
+      let requestHandler;
+      try {
+        const { NodeHttpHandler } = require('@smithy/node-http-handler');
+        requestHandler = new NodeHttpHandler({
+          httpsAgent: new https.Agent({ family: 4, keepAlive: true }),
+        });
+      } catch (e) {
+        try {
+          const { NodeHttpHandler } = require('@aws-sdk/node-http-handler');
+          requestHandler = new NodeHttpHandler({
+            httpsAgent: new https.Agent({ family: 4, keepAlive: true }),
+          });
+        } catch (e2) {
+          // fallback if neither is found
+          requestHandler = undefined;
+        }
+      }
+
       this.s3Client = new S3Client({
         region: region,
         endpoint: this.endpoint,
@@ -56,6 +76,7 @@ class B2StorageService {
         // B2 doesn't support AWS checksum extensions — disable them
         requestChecksumCalculation: 'WHEN_REQUIRED',
         responseChecksumValidation: 'WHEN_REQUIRED',
+        requestHandler: requestHandler,
       });
 
       this.bucket = bucketName;
@@ -1008,7 +1029,9 @@ class B2StorageService {
       throw new Error('B2 Storage is not configured');
     }
 
-    await this.ensureBucketCors().catch(() => { });
+    // NOTE: B2 does not support the PutBucketCors S3 API — this call hangs and causes upload timeouts.
+    // CORS must be configured manually via the Backblaze B2 dashboard.
+    // await this.ensureBucketCors().catch(() => { });
 
     try {
       const command = new CreateMultipartUploadCommand({

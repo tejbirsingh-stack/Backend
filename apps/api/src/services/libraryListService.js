@@ -1,5 +1,6 @@
 const { Prisma } = require('@prisma/client');
 const { encodeCursor, decodeCursor, fingerprint } = require('../utils/libraryCursor');
+const { getPendingOrDeletedFolderIds } = require('../controller/workSpaceController');
 
 async function listItems(prisma, params) {
   const {
@@ -45,13 +46,9 @@ async function listItems(prisma, params) {
     Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`,
     Prisma.sql`"deletedAt" IS NULL`
   ];
+  const pendingFolderIds = await getPendingOrDeletedFolderIds(prisma);
   const folderConditions = [
-    Prisma.sql`id::text NOT IN (
-      SELECT "ownerId"::text FROM "assets" 
-      WHERE "ownerId" IS NOT NULL 
-      AND "ownerType" = 'FOLDER' 
-      AND ("status" IN ('pending_super_admin', 'pending_admin_review', 'trash', 'deleted') OR "deletedAt" IS NOT NULL OR "deletionReason" ILIKE '%Deleted with folder%')
-    )`
+    ...(pendingFolderIds.length > 0 ? [Prisma.sql`id::text NOT IN (${Prisma.join(pendingFolderIds)})`] : [])
   ];
   const projectConditions = [];
 
@@ -86,12 +83,11 @@ async function listItems(prisma, params) {
       if (isDefaultWorkspace) {
         assetConditions.push(Prisma.sql`(
           "workspace_id" = ${workspaceId}
-          OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId}))
           OR "global_media" = true
         )`);
       } else {
         assetConditions.push(Prisma.sql`(
-          ("workspace_id" = ${workspaceId} OR ("ownerType" = 'FOLDER' AND "ownerId"::text IN (SELECT id::text FROM "folders" WHERE "workspace_id" = ${workspaceId})))
+          "workspace_id" = ${workspaceId}
           AND ("global_media" IS NULL OR "global_media" = false)
         )`);
       }
@@ -120,7 +116,9 @@ async function listItems(prisma, params) {
 
     if (!isSpecificContainer) {
       folderConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
-      folderConditions.push(Prisma.sql`("parent_folder_id" IS NULL OR "parent_folder_id" = '')`);
+      if (view === 'all' || !view) {
+        folderConditions.push(Prisma.sql`("is_auto_generated" IS NULL OR "is_auto_generated" = false)`);
+      }
       projectConditions.push(Prisma.sql`"workspace_id" = ${workspaceId}`);
     }
     projectConditions.push(Prisma.sql`("status" IS NULL OR "status" NOT IN ('inactive', 'pending_super_admin', 'pending_admin_review', 'trash', 'deleted'))`);
@@ -468,7 +466,7 @@ async function listItems(prisma, params) {
       const f = folders.find(x => x.id === raw.id);
       if (!f) return null;
 
-      const ac = folderAssetCounts.find(a => a.ownerId === f.id)?._count?._all || 0;
+      const ac = folderAssetCounts.find(a => String(a.ownerId) === String(f.id))?._count?._all || 0;
       const itemCount = (f._count?.children || 0) + (f._count?.projects || 0) + ac;
 
       return {

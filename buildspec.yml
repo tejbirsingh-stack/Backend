@@ -2,14 +2,34 @@ version: 0.2
 
 env:
   variables:
+    ENV_NAME: "uat"
     AWS_REGION: "us-east-2"
+    ECR_REPO: "noah-uat/backend"
+    ASG_TAG_NAME: "noah-uat-ec2"
     QA_TAG_NAME: "noah-qa"
 
 phases:
+  pre_build:
+    commands:
+      - echo "Logging in to ECR..."
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:-latest}"
+      - echo "Image tag will be $IMAGE_TAG"
+
   build:
     commands:
-      - echo "Deploying Backend to QA..."
-      - COMMAND_ID=$(aws ssm send-command --region "$AWS_REGION" --targets "Key=tag:Name,Values=${QA_TAG_NAME}" --document-name "AWS-RunShellScript" --parameters "{\"commands\":[\"cd /opt/noah-backend && git fetch origin && git reset --hard origin/qa\",\"cd /opt/noah && docker compose up -d --build backend\"]}" --output text --query "Command.CommandId")
+      - echo "Building backend image.."
+      - docker build -f apps/api/Dockerfile -t "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG" -t "$ECR_REGISTRY/$ECR_REPO:latest" .
+
+  post_build:
+    commands:
+      - echo "Pushing image to ECR..."
+      - docker push "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
+      - docker push "$ECR_REGISTRY/$ECR_REPO:latest"
+      - echo "Deploying to all $ASG_TAG_NAME instances via SSM..."
+      - COMMAND_ID=$(aws ssm send-command --region "$AWS_REGION" --targets "Key=tag:Name,Values=${ASG_TAG_NAME}" --document-name "AWS-RunShellScript" --parameters "{\"commands\":[\"aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}\",\"docker pull ${ECR_REGISTRY}/${ECR_REPO}:latest\",\"cd /opt/noah && docker compose up -d --force-recreate backend\"]}" --output text --query "Command.CommandId")
       - echo "SSM Command ID is $COMMAND_ID"
-      - sleep 20
+      - sleep 15
       - aws ssm list-command-invocations --command-id "$COMMAND_ID" --region "$AWS_REGION" --details --query "CommandInvocations[].{Instance:InstanceId,Status:Status}"

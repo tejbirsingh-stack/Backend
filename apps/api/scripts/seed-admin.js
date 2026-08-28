@@ -76,20 +76,10 @@ async function seedAdmin() {
       where: { slug: 'visit-detroit' },
       update: {
         name: 'Visit Detroit',
-        planType: 'enterprise',
-        storageQuotaBytes: BigInt(10 * 1024 * 1024 * 1024 * 1024), // 10TB
       },
       create: {
         name: 'Visit Detroit',
         slug: 'visit-detroit',
-        planType: 'enterprise',
-        storageQuotaBytes: BigInt(10 * 1024 * 1024 * 1024 * 1024), // 10TB
-        features: {
-          b2Storage: true,
-          autoCompress: true,
-          aiTagging: false,
-          unlimitedUsers: true
-        },
         metadata: {
           description: "Detroit's official convention and visitors bureau",
           b2BucketPrefix: "visit-detroit/"
@@ -110,7 +100,6 @@ async function seedAdmin() {
         email: adminEmail,
         name: 'Admin User',
         passwordHash: hashedPassword,
-        role: 'admin',
         status: 'active',
         emailVerified: true,
         failedLoginAttempts: 0
@@ -135,7 +124,6 @@ async function seedAdmin() {
           email: debugEmail,
           name: 'Debug User',
           passwordHash: debugHashedPassword,
-          role: 'admin',
           status: 'active',
           emailVerified: true,
           failedLoginAttempts: 0
