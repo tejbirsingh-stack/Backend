@@ -1,5 +1,5 @@
 // User and Team Management Controller
-const { roles } = require('../lib');
+const { roles, logSuccess, logError, ACTIVITY_NAME, ACTIVITY_TYPE } = require('../lib');
 const { autoAssignNewAdminToWorkspaces } = require('../services/workspace.service');
 const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
@@ -226,12 +226,14 @@ module.exports.updateProfile = async (request, reply) => {
       data: updateData
     });
 
+    logSuccess(ACTIVITY_NAME.PROFILE_UPDATED, `User updated their personal profile settings`, request);
     return reply.send({
       success: true,
       user: updatedUser
     });
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.PROFILE_UPDATED, `Failed to update personal profile`, request, error);
     return reply.code(500).send({ error: "Failed to update profile", message: error.message });
   }
 };
@@ -304,6 +306,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
       }
     });
 
+    logSuccess(ACTIVITY_NAME.PROFILE_PHOTO_UPLOADED, `User updated their profile photo`, request);
     return reply.send({
       success: true,
       avatarUrl: internalAvatarUrl,
@@ -312,6 +315,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
     });
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.PROFILE_PHOTO_UPLOADED, `Failed to upload profile photo`, request, error);
     return reply.code(500).send({ error: "Failed to upload profile photo", message: error.message });
   }
 };
@@ -371,11 +375,11 @@ module.exports.updateUserAdmin = async (request, reply) => {
     }
     const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
 
-    if (normalizedRole !== "superadmin") {
+    if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
       return reply.status(403).send({
         success: false,
         error: "Forbidden",
-        message: "Access denied. Only Super Admin can edit users.",
+        message: "Access denied. Only Super Admin or Admin can edit users.",
       });
     }
 
@@ -388,14 +392,19 @@ module.exports.updateUserAdmin = async (request, reply) => {
     }
 
     const targetUser = await request.server.prisma.user.findUnique({
-      where: { id }
+      where: { id },
+      include: { roleRelation: true }
     });
 
     if (!targetUser) {
       return reply.status(404).send({ success: false, error: "Not Found", message: "User not found" });
     }
 
-    const dataToUpdate = {};
+    const previousRoleName = targetUser.roleRelation?.name || targetUser.role || "";
+
+    const dataToUpdate = {
+      status: "active"
+    };
 
     if (email) {
       const normalizedEmail = email.toLowerCase().trim();
@@ -426,8 +435,9 @@ module.exports.updateUserAdmin = async (request, reply) => {
       if (!targetRole) {
         return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
       }
-      dataToUpdate.roleId = targetRole.id;
-      dataToUpdate.role = targetRole.name;
+      dataToUpdate.roleRelation = {
+        connect: { id: targetRole.id }
+      };
     }
 
     const updatedUser = await request.server.prisma.user.update({
@@ -438,19 +448,53 @@ module.exports.updateUserAdmin = async (request, reply) => {
       }
     });
 
-    if (roleId && ['Super Admin', 'Admin', 'Platform Admin'].includes(updatedUser.role)) {
+    const updatedRoleName = updatedUser.roleRelation?.name || "";
+
+    if (roleId && ['Super Admin', 'Admin', 'Platform Admin'].includes(updatedRoleName)) {
       if (updatedUser.orgId) {
         await autoAssignNewAdminToWorkspaces(request.server.prisma, updatedUser.orgId, updatedUser.id);
       }
     }
 
+    logSuccess(ACTIVITY_NAME.USER_ADMIN_UPDATED, `Admin updated user ${updatedUser.email} profile/role`, request);
+    // Send email notification if role changed
+    if (roleId && updatedRoleName && updatedRoleName !== previousRoleName) {
+      try {
+        const emailService = request.server?.emailService || require("../services/email-service");
+        if (emailService) {
+          if (typeof emailService.sendRoleUpdateNotification === 'function') {
+            await emailService.sendRoleUpdateNotification(updatedUser.email, {
+              userName: updatedUser.name || updatedUser.email,
+              oldRole: previousRoleName,
+              newRole: updatedRoleName,
+            });
+          } else if (typeof emailService.sendEmail === 'function') {
+            await emailService.sendEmail({
+              to: updatedUser.email,
+              subject: `Your role on Noah has been updated to ${updatedRoleName}`,
+              text: `Hi,\n\nYour account role has been updated from "${previousRoleName}" to "${updatedRoleName}".\n\nThanks,\nNoah Team`,
+              html: `<div style="font-family: Arial, sans-serif; padding: 24px;"><h2 style="color: #4f46e5;">Role Updated</h2><p>Your account role on Noah has been updated to <strong>${updatedRoleName}</strong>.</p></div>`,
+            });
+          }
+        }
+      } catch (emailErr) {
+        request.log.error(`Failed to send role update notification email: ${emailErr.message}`);
+      }
+    }
+
+    const formattedUser = {
+      ...updatedUser,
+      role: updatedRoleName
+    };
+
     return reply.send({
       success: true,
-      user: updatedUser
+      user: formattedUser
     });
 
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.USER_ADMIN_UPDATED, `Failed to update user via admin`, request, error);
     return reply.code(500).send({ error: "Failed to update user", message: error.message });
   }
 };
@@ -490,12 +534,12 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     }
 
     if (action === 'delete') {
-      // ONLY Super Admin can delete users
-      if (normalizedRole !== "superadmin") {
+      // Super Admin or Admin can delete users
+      if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
         return reply.status(403).send({
           success: false,
           error: "Forbidden",
-          message: "Access denied. Only Super Admin can delete users.",
+          message: "Access denied. Only Super Admin or Admin can delete users.",
         });
       }
 
@@ -526,6 +570,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
         where: { id: { in: safeUserIdsToDelete } }
       });
 
+      logSuccess(ACTIVITY_NAME.USERS_DELETED, `Admin deleted ${safeUserIdsToDelete.length} user(s)`, request);
       return reply.send({
         success: true,
         message: `Successfully deleted ${safeUserIdsToDelete.length} user(s)`
@@ -533,9 +578,10 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
     } else {
       await request.server.prisma.user.updateMany({
         where: { id: { in: userIds } },
-        data: { status: action === 'active' ? 'active' : 'pending' }
+        data: { status: action === 'active' ? 'active' : (action === 'inactive' ? 'inactive' : action) }
       });
 
+      logSuccess(ACTIVITY_NAME.USERS_BULK_UPDATED, `Admin updated status of ${userIds.length} user(s) to ${action}`, request);
       return reply.send({
         success: true,
         message: `Successfully updated ${userIds.length} user(s)`
@@ -544,6 +590,7 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
 
   } catch (error) {
     request.log.error(error);
+    logError(ACTIVITY_NAME.USERS_BULK_UPDATED, `Failed to perform bulk update on users`, request, error);
     return reply.status(500).send({
       success: false,
       error: "Internal Server Error",

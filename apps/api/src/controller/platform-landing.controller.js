@@ -54,23 +54,47 @@ function serializeLanding(page) {
 
 async function getLandingPage(request, reply) {
   try {
-    const slug = String(request.query?.slug || request.params?.slug || 'main');
-    let page = await prisma.landingPage.findUnique({ where: { slug } });
-    if (!page) {
-      page = await prisma.landingPage.create({
+    let baseSlug = String(request.query?.slug || request.params?.slug || 'main');
+    if (baseSlug.endsWith('-draft')) baseSlug = baseSlug.replace('-draft', '');
+    const draftSlug = `${baseSlug}-draft`;
+
+    let [livePage, draftPage] = await Promise.all([
+      prisma.landingPage.findUnique({ where: { slug: baseSlug } }),
+      prisma.landingPage.findUnique({ where: { slug: draftSlug } }),
+    ]);
+
+    if (!livePage) {
+      livePage = await prisma.landingPage.create({
         data: {
-          slug,
-          status: 'draft',
+          slug: baseSlug,
+          status: 'published',
           heroTitle: 'A library worthy of your beautiful work.',
           heroSubtitle:
             'NOAH Cloud is the media intelligence layer for modern teams — find anything, review on the timeline, and share finished work without leaving your library.',
           ctaLabel: 'Start free trial',
           ctaHref: '/signup',
           sections: DEFAULT_SECTIONS,
+          publishedAt: new Date(),
         },
       });
     }
-    return { success: true, page: serializeLanding(page) };
+
+    if (!draftPage) {
+      draftPage = await prisma.landingPage.create({
+        data: {
+          slug: draftSlug,
+          status: 'draft',
+          heroTitle: livePage.heroTitle,
+          heroSubtitle: livePage.heroSubtitle,
+          ctaLabel: livePage.ctaLabel,
+          ctaHref: livePage.ctaHref,
+          sections: livePage.sections,
+        },
+      });
+    }
+
+    const latest = livePage.updatedAt > draftPage.updatedAt ? livePage : draftPage;
+    return { success: true, page: serializeLanding(latest) };
   } catch (error) {
     console.error('getLandingPage error:', error);
     return reply.status(500).send({
@@ -83,9 +107,11 @@ async function getLandingPage(request, reply) {
 
 async function updateLandingPage(request, reply) {
   try {
-    const slug = String(request.params?.slug || 'main');
+    let baseSlug = String(request.params?.slug || 'main');
+    if (baseSlug.endsWith('-draft')) baseSlug = baseSlug.replace('-draft', '');
     const body = request.body || {};
     const data = {};
+
     if (body.status !== undefined) {
       if (!['draft', 'published'].includes(body.status)) {
         return reply.status(400).send({
@@ -94,9 +120,9 @@ async function updateLandingPage(request, reply) {
           statusCode: 400,
         });
       }
-      data.status = body.status;
-      if (body.status === 'published') data.publishedAt = new Date();
     }
+    const status = body.status || 'draft';
+
     const heroTitle = body.heroTitle ?? body.heroHeadline ?? body.title;
     const heroSubtitle = body.heroSubtitle ?? body.heroSubheadline;
     const ctaLabel = body.ctaLabel ?? body.heroCtaLabel;
@@ -110,25 +136,73 @@ async function updateLandingPage(request, reply) {
     }
     data.updatedById = request.platformAdmin?.id || null;
 
-    const page = await prisma.landingPage.upsert({
-      where: { slug },
-      create: {
-        slug,
-        heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
-        heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
-        ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
-        ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
-        sections: normalizeSections(body.sections, body.plansEnabled),
-        status: data.status || 'draft',
-        publishedAt: data.publishedAt || null,
-        updatedById: data.updatedById,
-      },
-      update: data,
-    });
+    let page;
+
+    if (status === 'draft') {
+      const draftSlug = `${baseSlug}-draft`;
+      page = await prisma.landingPage.upsert({
+        where: { slug: draftSlug },
+        create: {
+          slug: draftSlug,
+          heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
+          heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
+          ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
+          ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
+          sections: normalizeSections(body.sections, body.plansEnabled),
+          status: 'draft',
+          updatedById: data.updatedById,
+        },
+        update: {
+          ...data,
+          status: 'draft',
+        },
+      });
+    } else {
+      // status === 'published'
+      data.publishedAt = new Date();
+      data.status = 'published';
+
+      page = await prisma.landingPage.upsert({
+        where: { slug: baseSlug },
+        create: {
+          slug: baseSlug,
+          heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
+          heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
+          ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
+          ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
+          sections: normalizeSections(body.sections, body.plansEnabled),
+          status: 'published',
+          publishedAt: data.publishedAt,
+          updatedById: data.updatedById,
+        },
+        update: data,
+      });
+
+      // Keep draft in sync
+      const draftSlug = `${baseSlug}-draft`;
+      await prisma.landingPage.upsert({
+        where: { slug: draftSlug },
+        create: {
+          slug: draftSlug,
+          heroTitle: heroTitle || DEFAULT_PUBLIC_LANDING.heroTitle,
+          heroSubtitle: heroSubtitle || DEFAULT_PUBLIC_LANDING.heroSubtitle,
+          ctaLabel: ctaLabel || DEFAULT_PUBLIC_LANDING.ctaLabel,
+          ctaHref: ctaHref || DEFAULT_PUBLIC_LANDING.ctaHref,
+          sections: normalizeSections(body.sections, body.plansEnabled),
+          status: 'draft',
+          updatedById: data.updatedById,
+        },
+        update: {
+          ...data,
+          status: 'draft',
+          publishedAt: null,
+        },
+      });
+    }
 
     await writePlatformAudit({
       activityName: ACTIVITY_NAME.LANDING_PAGE_UPDATED,
-      description: `Updated landing page "${slug}" (${page.status})`,
+      description: `Updated landing page "${baseSlug}" (${page.status})`,
       activityType: ACTIVITY_TYPE.INFO,
       admin: request.platformAdmin,
     });
@@ -202,11 +276,69 @@ async function submitDemoRequest(request, reply) {
       });
     }
 
+    // 1. Store in PostgreSQL database table `demo_requests`
+    try {
+      await request.server.prisma.demoRequest.create({
+        data: {
+          name,
+          email,
+          company: company || null,
+          teamSize: teamSize || null,
+          message: message || null,
+        },
+      });
+    } catch (dbErr) {
+      console.error('Failed to save DemoRequest to database:', dbErr);
+    }
+
+    // 2. Submit lead to HubSpot Forms API
+    const portalId = process.env.HUBSPOT_PORTAL_ID || '44555337';
+    const formId = process.env.HUBSPOT_DEMO_FORM_ID || 'beb1f88a-e521-4e75-a39a-cfaafd810a6c';
+
+    if (portalId && formId) {
+      try {
+        const rawFields = [
+          { objectTypeId: '0-1', name: 'firstname', value: name },
+          { objectTypeId: '0-1', name: 'email', value: email },
+          { objectTypeId: '0-1', name: 'company', value: company || '' },
+          { objectTypeId: '0-1', name: 'company_size', value: teamSize || '' },
+          { objectTypeId: '0-1', name: 'numemployees', value: teamSize || '' },
+          { objectTypeId: '0-1', name: 'message', value: message || '' },
+        ];
+        const validFields = rawFields.filter(f => f.value && String(f.value).trim().length > 0);
+
+        const hubspotPayload = {
+          fields: validFields,
+          context: {
+            pageUri: request.headers?.referer || request.headers?.origin || 'https://noahcloud.ai/demo',
+            pageName: 'Book a demo'
+          },
+          skipValidation: true,
+        };
+
+        const publicEndpoint = `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formId}`;
+
+        console.log(`[HubSpot Demo Sync] Submitting for ${email} (PortalID: ${portalId}, FormID: ${formId})...`);
+
+        const res = await fetch(publicEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(hubspotPayload),
+        });
+
+        const resText = await res.text();
+        if (res.ok) {
+          console.log(`[HubSpot Demo Sync SUCCESS] Synced ${email} to HubSpot (FormID: ${formId})! Response:`, resText);
+        } else {
+          console.error(`[HubSpot Demo Sync ERROR] Submission failed (HTTP ${res.status}):`, resText);
+        }
+      } catch (hsErr) {
+        console.error('Failed to submit to HubSpot:', hsErr);
+      }
+    }
+
     const salesTo =
-      process.env.DEMO_REQUEST_EMAIL ||
-      process.env.SMTP_FROM_EMAIL ||
-      process.env.EMAIL_FROM ||
-      'noreply@noah-dev.local';
+      process.env.DEMO_REQUEST_EMAIL;
 
     const summary = [
       `Name: ${name}`,

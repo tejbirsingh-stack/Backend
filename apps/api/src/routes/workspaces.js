@@ -22,6 +22,7 @@ const {
   searchGuestUsers,
   findAccessLevels,
   deleteWorkspace,
+  updateWorkspace,
   findFolderTreeData,
   deleteFolder,
   restoreFolder
@@ -56,6 +57,7 @@ module.exports = function (fastify, opts, done) {
   };
 
   fastify.post('/add', canManageWorkspaces, storeWorkplace);
+  fastify.post('/update/:id', canManageWorkspaces, updateWorkspace);
   fastify.delete('/delete/:id', canManageWorkspaces, deleteWorkspace);
   fastify.delete('/:id', canManageWorkspaces, deleteWorkspace);
   fastify.get('/find-all', canRead, findAllWorkspaces);

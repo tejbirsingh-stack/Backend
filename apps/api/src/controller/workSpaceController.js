@@ -1,7 +1,7 @@
 const prisma = require('../utils/prisma');
 const { resolveUserProjectPermissions } = require("../lib/rbac-policy");
 const crypto = require('crypto');
-const { logSuccess, ACTIVITY_NAME, logError } = require('../lib/audit-log');
+const { logSuccess, ACTIVITY_NAME, logError, buildItemPath } = require('../lib/audit-log');
 const emailService = require('../services/email-service');
 const { getAncestors } = require('../services/tagHierarchy');
 const { autoAssignAdminsToWorkspace, autoAssignAdminsToProject, assertWorkspaceAccess } = require('../services/workspace.service');
@@ -12,6 +12,7 @@ const { ACCESS_LEVEL, MEMBER_TYPES, VISIBILITY } = require('../lib/rolesPermissi
 const B2StorageService = require('../b2-storage.cjs');
 const { recordStorageDelta } = require('../services/usage-meter.service');
 const { resolveOrgBranding } = require('../services/branding.service');
+const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 
 const b2Storage = new B2StorageService({
@@ -23,13 +24,75 @@ const b2Storage = new B2StorageService({
 });
 
 function formatWorkspaceNameWithSuffix(value) {
-    if (!value || typeof value !== "string") return "Workspace-ARK";
+    if (!value || typeof value !== "string") return "ARK";
     let trimmed = value.trim();
-    if (trimmed.endsWith("-Workspace-ARK")) {
+    if (trimmed.endsWith("-ARK")) {
         return trimmed;
     }
     trimmed = trimmed.replace(/-Workspace$/i, "").replace(/-ARK$/i, "").replace(/-Workspace-ARK$/i, "").trim();
-    return `${trimmed}-Workspace-ARK`;
+    return `${trimmed}-ARK`;
+}
+
+async function getPendingOrDeletedFolderIds(prismaClient) {
+    try {
+        const pendingAssets = await prismaClient.asset.findMany({
+            where: {
+                OR: [
+                    { type: 'folder' },
+                    { deletionReason: { contains: 'Deleted with folder' } }
+                ]
+            },
+            select: { ownerId: true, ownerType: true, type: true, status: true, deletionReason: true }
+        }).catch(() => []);
+
+        const pendingSet = new Set();
+        pendingAssets.forEach(a => {
+            if (a.type === 'folder' && a.ownerId && a.ownerType === 'FOLDER' && a.status !== 'active') {
+                pendingSet.add(String(a.ownerId));
+            }
+            if (a.deletionReason) {
+                const match = a.deletionReason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]/i);
+                if (match && match[1]) {
+                    pendingSet.add(match[1]);
+                }
+            }
+        });
+        return Array.from(pendingSet);
+    } catch (err) {
+        console.error('Error in getPendingOrDeletedFolderIds:', err);
+        return [];
+    }
+}
+
+async function getPendingOrDeletedFolderIds(prismaClient) {
+    try {
+        const pendingAssets = await prismaClient.asset.findMany({
+            where: {
+                OR: [
+                    { type: 'folder' },
+                    { deletionReason: { contains: 'Deleted with folder' } }
+                ]
+            },
+            select: { ownerId: true, ownerType: true, type: true, status: true, deletionReason: true }
+        }).catch(() => []);
+
+        const pendingSet = new Set();
+        pendingAssets.forEach(a => {
+            if (a.type === 'folder' && a.ownerId && a.ownerType === 'FOLDER' && a.status !== 'active') {
+                pendingSet.add(String(a.ownerId));
+            }
+            if (a.deletionReason) {
+                const match = a.deletionReason.match(/Deleted with folder:\s*\[([0-9a-fA-F-]+)\]/i);
+                if (match && match[1]) {
+                    pendingSet.add(match[1]);
+                }
+            }
+        });
+        return Array.from(pendingSet);
+    } catch (err) {
+        console.error('Error in getPendingOrDeletedFolderIds:', err);
+        return [];
+    }
 }
 
 module.exports.storeWorkplace = async (request, reply) => {
@@ -313,10 +376,50 @@ module.exports.validateGuestUser = async (request, reply) => {
     }
 };
 
+module.exports.updateWorkspace = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { name, description, color, status } = request.body;
+        const { orgId } = request.user;
+
+        const workspace = await prisma.workspace.findFirst({
+            where: { id, orgId }
+        });
+
+        if (!workspace) {
+            return reply.code(404).send({ success: false, message: 'Workspace not found.' });
+        }
+
+        const dataToUpdate = {};
+        if (name !== undefined) dataToUpdate.name = name;
+        if (description !== undefined) dataToUpdate.description = description;
+        if (color !== undefined) dataToUpdate.color = color;
+        if (status !== undefined) dataToUpdate.status = status;
+
+        const updated = await prisma.workspace.update({
+            where: { id },
+            data: dataToUpdate
+        });
+
+        logSuccess(ACTIVITY_NAME.WORKSPACE_UPDATED, `Workspace "${workspace.name}" updated.`, request);
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Workspace updated successfully.',
+            data: updated
+        });
+    } catch (error) {
+        console.error('Error updating workspace:', error);
+        logError(ACTIVITY_NAME.WORKSPACE_UPDATED, `Failed to update workspace status, Error : ${error?.message}`, request, error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
 module.exports.findAllWorkspaces = async (request, reply) => {
     try {
         const { orgId } = request.user || {};
         const userId = request.user?.id || request.user?.userId || request.user?.sub;
+        const { includeInactive } = request.query || {};
 
         if (!userId) {
             return reply.code(401).send({
@@ -357,6 +460,10 @@ module.exports.findAllWorkspaces = async (request, reply) => {
                     : [])
             ]
         };
+
+        if (includeInactive !== 'true') {
+            whereCondition.status = { notIn: ['inactive', 'Inactive'] };
+        }
 
         let workspaces = await prisma.workspace.findMany({
             where: whereCondition,
@@ -447,6 +554,10 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
             return reply.code(404).send({ success: false, message: 'Workspace not found' });
         }
 
+        if (workspace.status === 'Inactive' || workspace.status === 'inactive') {
+            return reply.code(403).send({ success: false, message: 'Workspace is inactive.' });
+        }
+
         const effectivePermissions = await resolveUserWorkspacePermissions(prisma, request.user, workspace);
         // ──────────────────────────────────────────────────────────────────────
 
@@ -465,18 +576,39 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
         const folderIds = allWorkspaceFolders.map(f => f.id);
 
         if (tagsArray.length === 0) {
+            const pendingFolderIds = await getPendingOrDeletedFolderIds(prisma);
             folders = await prisma.folder.findMany({
                 where: {
                     workspaceId: id,
                     parentId: null,
+                    ...(pendingFolderIds.length > 0 ? { id: { notIn: pendingFolderIds } } : {})
                 },
                 include: {
                     sources: true,
+                    _count: { select: { children: true, projects: true } }
                 },
                 orderBy: {
                     createdAt: 'desc',
                 },
             });
+
+            const rootFolderIds = folders.map(f => f.id);
+            const folderAssetCounts = rootFolderIds.length > 0 ? await prisma.asset.groupBy({
+                by: ['ownerId'],
+                where: {
+                    ownerType: 'FOLDER',
+                    ownerId: { in: rootFolderIds },
+                    deletedAt: null,
+                    status: { notIn: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] }
+                },
+                _count: { _all: true }
+            }) : [];
+            const countMap = new Map(folderAssetCounts.map(c => [String(c.ownerId), c._count._all]));
+
+            folders = folders.map(f => ({
+                ...f,
+                itemCount: (f._count?.children || 0) + (f._count?.projects || 0) + (countMap.get(String(f.id)) || 0)
+            }));
 
             allProjects = await prisma.project.findMany({
                 where: {
@@ -619,7 +751,8 @@ module.exports.createFolder = async (request, reply) => {
                 } : {})
             },
         });
-
+        const itemPath = await buildItemPath(prisma, 'folder', folder.id);
+        logSuccess(ACTIVITY_NAME.FOLDER_CREATED, `Folder "${itemPath}" created successfully.`, request);
         return reply.code(201).send({
             success: true,
             message: 'Folder created successfully.',
@@ -628,6 +761,7 @@ module.exports.createFolder = async (request, reply) => {
 
     } catch (error) {
         console.error(error);
+        logError(ACTIVITY_NAME.FOLDER_CREATED, `Failed to create folder`, request, error);
 
         return reply.code(500).send({
             success: false,
@@ -1193,7 +1327,8 @@ module.exports.createProject = async (request, reply) => {
                 });
             }
         }
-
+        const itemPath = await buildItemPath(prisma, 'project', project.id);
+        logSuccess(ACTIVITY_NAME.PROJECT_CREATED, `Project "${itemPath}" created successfully.`, request);
         return reply.code(201).send({
             success: true,
             message: 'Project created successfully.',
@@ -1204,6 +1339,7 @@ module.exports.createProject = async (request, reply) => {
 
     } catch (error) {
         console.error(error);
+        logError(ACTIVITY_NAME.PROJECT_CREATED, `Failed to create project`, request, error);
 
         return reply.code(500).send({
             success: false,
@@ -1315,9 +1451,11 @@ module.exports.findFolderData = async (request, reply) => {
             }
         }
 
+        const pendingFolderIds = await getPendingOrDeletedFolderIds(prisma);
         const folders = await prisma.folder.findMany({
             where: {
                 parentId: id,
+                ...(pendingFolderIds.length > 0 ? { id: { notIn: pendingFolderIds } } : {})
             },
             include: {
                 sources: true,
@@ -1404,10 +1542,12 @@ module.exports.findFolderTreeData = async (request, reply) => {
             select: { id: true, name: true, parentId: true }
         });
 
-        // Fetch all media assets inside these folders or marked deleted with this folderId
+        // Fetch all media assets inside these folders or marked deleted with this folderId (excluding globalMedia and placeholder folder assets)
         const allAssets = await prisma.asset.findMany({
             where: {
+                type: { not: 'folder' },
                 status: { notIn: ['trash', 'deleted'] },
+                globalMedia: false,
                 OR: [
                     { ownerId: { in: folderIdList } },
                     { collectionAssets: { some: { collectionId: { in: folderIdList } } } },
@@ -1457,7 +1597,9 @@ async function handleUnselectedItemsPreservation(prisma, { workspaceId, targetFo
     const deletedAssetIdSet = new Set(finalAssetIdsToDelete || []);
 
     const unselectedFolderIds = (allFolderIds || []).filter(fId => !deletedFolderIdSet.has(fId));
-    const unselectedAssetIds = (allFolderAssets || []).map(a => a.id).filter(aId => !deletedAssetIdSet.has(aId));
+    const unselectedAssetIds = (allFolderAssets || [])
+        .filter(a => a.type !== 'folder' && !deletedAssetIdSet.has(a.id))
+        .map(a => a.id);
 
     if (unselectedFolderIds.length === 0 && unselectedAssetIds.length === 0) {
         return;
@@ -1597,6 +1739,7 @@ module.exports.deleteFolder = async (request, reply) => {
         }
 
         const folderName = targetFolder?.name || 'Folder';
+        const itemPath = await buildItemPath(prisma, 'folder', id);
         const orgId = liveUser?.orgId || targetFolder?.workspace?.orgId || request.user?.orgId;
         const userName = liveUser?.name || liveUser?.email || 'User';
 
@@ -1616,9 +1759,10 @@ module.exports.deleteFolder = async (request, reply) => {
 
         const folderIdList = Array.from(allSubfolderIds);
 
-        // All assets owned by these folders or marked with deletionReason containing this folderId
+        // All assets owned by these folders or marked with deletionReason containing this folderId (excluding globalMedia)
         const allFolderAssets = await prisma.asset.findMany({
             where: {
+                globalMedia: false,
                 OR: [
                     { ownerType: 'FOLDER', ownerId: { in: folderIdList } },
                     { deletionReason: { contains: id } },
@@ -1649,13 +1793,24 @@ module.exports.deleteFolder = async (request, reply) => {
 
             const workspaceId = targetFolder?.workspaceId || liveUser?.workspaceId;
 
+            // Purge temporary placeholder folder assets for this folder request first
+            await prisma.asset.deleteMany({
+                where: {
+                    type: 'folder',
+                    OR: [
+                        { ownerId: { in: folderIdList } },
+                        { deletionReason: { contains: id } }
+                    ]
+                }
+            }).catch(() => null);
+
             // Preserve unselected items and move top-most unselected items to Restore folder if parent deleted
             await handleUnselectedItemsPreservation(prisma, {
                 workspaceId,
                 targetFolderIds,
                 finalAssetIdsToDelete,
                 allFolderIds: folderIdList,
-                allFolderAssets
+                allFolderAssets: allFolderAssets.filter(a => a.type !== 'folder')
             });
 
             for (const asset of assetsToDelete) {
@@ -1744,7 +1899,7 @@ module.exports.deleteFolder = async (request, reply) => {
                     deletionReason: null
                 }
             }).catch(() => null);
-
+            logSuccess(ACTIVITY_NAME.FOLDER_DELETED, `Folder "${itemPath}" deletion processed cleanly.`, request);
             return reply.code(200).send({
                 success: true,
                 message: 'Folder deletion processed cleanly.'
@@ -1788,10 +1943,10 @@ module.exports.deleteFolder = async (request, reply) => {
                 });
             }
 
-            // Always create/update a FOLDER_REQUEST placeholder asset for Super Admin Delete Management tracking
+            // Always create/update a FOLDER placeholder asset for Super Admin Delete Management tracking
             try {
                 const existingReq = await prisma.asset.findFirst({
-                    where: { ownerType: 'FOLDER_REQUEST', ownerId: id }
+                    where: { ownerType: 'FOLDER', ownerId: id, type: 'folder' }
                 }).catch(() => null);
 
                 if (existingReq) {
@@ -1812,7 +1967,7 @@ module.exports.deleteFolder = async (request, reply) => {
                             type: 'folder',
                             status: 'pending_super_admin',
                             visibility: 'public',
-                            ownerType: 'FOLDER_REQUEST',
+                            ownerType: 'FOLDER',
                             ownerId: id,
                             workspaceId: targetFolder.workspaceId,
                             deletedAt: new Date(),
@@ -1842,6 +1997,7 @@ module.exports.deleteFolder = async (request, reply) => {
         }
     } catch (error) {
         console.error('Error in deleteFolder controller:', error);
+        logError(ACTIVITY_NAME.FOLDER_DELETED, `Failed to delete folder`, request, error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
@@ -1869,8 +2025,8 @@ module.exports.restoreFolder = async (request, reply) => {
         await prisma.asset.deleteMany({
             where: {
                 type: 'folder',
-                ownerType: 'FOLDER',
                 OR: [
+                    { ownerType: 'FOLDER' },
                     { ownerId: { in: folderIdList } },
                     { deletionReason: { contains: id } }
                 ]
@@ -1919,6 +2075,7 @@ async function getAllProjectAssetIdsAndObjects(prismaClient, projectId) {
             where: {
                 ownerType: 'PROJECT',
                 ownerId: projectId,
+                globalMedia: false,
                 status: { notIn: ['trash', 'deleted'] }
             },
             include: { files: true, metadata: true }
@@ -1933,6 +2090,7 @@ async function getAllProjectAssetIdsAndObjects(prismaClient, projectId) {
             ? await prismaClient.asset.findMany({
                 where: {
                     id: { in: assetSourceIds },
+                    globalMedia: false,
                     status: { notIn: ['trash', 'deleted'] }
                 },
                 include: { files: true, metadata: true }
@@ -1967,6 +2125,7 @@ async function getAllProjectAssetIdsAndObjects(prismaClient, projectId) {
                 where: {
                     ownerType: 'FOLDER',
                     ownerId: { in: folderIdList },
+                    globalMedia: false,
                     status: { notIn: ['trash', 'deleted'] }
                 },
                 include: { files: true, metadata: true }
@@ -2236,6 +2395,12 @@ module.exports.linkProjectSource = async (request, reply) => {
             }
         }
 
+        const typeStr = sourceableType === 'ASSET' ? 'asset' : 'folder';
+        const sourceId = sourceableType === 'ASSET' ? assetId : folderId;
+        const itemPath = await buildItemPath(prisma, typeStr, sourceId);
+        const projectPath = await buildItemPath(prisma, 'project', projectId);
+        logSuccess(ACTIVITY_NAME.PROJECT_LINKED, `Linked ${typeStr} "${itemPath}" to project "${projectPath}".`, request);
+
         return reply.code(201).send({
             success: true,
             message: 'Source linked to project successfully.',
@@ -2253,6 +2418,7 @@ module.exports.linkProjectSource = async (request, reply) => {
             });
         }
 
+        logError(ACTIVITY_NAME.PROJECT_LINKED, "Failed to link source to project", error, request);
         return reply.code(500).send({
             success: false,
             message: 'Internal Server Error'
@@ -2318,7 +2484,8 @@ module.exports.updateFolder = async (request, reply) => {
             where: { id },
             data: dataToUpdate
         });
-
+        const itemPath = await buildItemPath(prisma, 'folder', id);
+        logSuccess(ACTIVITY_NAME.FOLDER_UPDATED, `Folder "${itemPath}" updated successfully.`, request);
         return reply.send({
             success: true,
             message: 'Folder updated successfully.',
@@ -2326,6 +2493,7 @@ module.exports.updateFolder = async (request, reply) => {
         });
     } catch (error) {
         console.error(error);
+        logError(ACTIVITY_NAME.FOLDER_UPDATED, `Failed to update folder`, request, error);
         if (error.code === 'P2025') {
             return reply.code(404).send({ success: false, message: 'Folder not found.' });
         }
@@ -2559,7 +2727,8 @@ module.exports.moveFolder = async (request, reply) => {
                 });
             }
         }
-
+        const itemPath = await buildItemPath(prisma, 'folder', id);
+        logSuccess(ACTIVITY_NAME.FOLDER_MOVED, `Folder "${itemPath}" moved successfully.`, request);
         return reply.code(200).send({
             success: true,
             message: 'Folder moved successfully.',
@@ -2567,6 +2736,7 @@ module.exports.moveFolder = async (request, reply) => {
         });
     } catch (error) {
         console.error('Failed to move folder:', error);
+        logError(ACTIVITY_NAME.FOLDER_MOVED, `Failed to move folder`, request, error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
@@ -2642,7 +2812,8 @@ module.exports.updateProject = async (request, reply) => {
             where: { id },
             data: dataToUpdate
         });
-
+        const itemPath = await buildItemPath(prisma, 'project', id);
+        logSuccess(ACTIVITY_NAME.PROJECT_UPDATED, `Project "${itemPath}" updated successfully.`, request);
         return reply.send({
             success: true,
             message: 'Project updated successfully.',
@@ -2650,6 +2821,7 @@ module.exports.updateProject = async (request, reply) => {
         });
     } catch (error) {
         console.error("Error in updateProject:", error);
+        logError(ACTIVITY_NAME.PROJECT_UPDATED, `Failed to update project`, request, error);
         if (error.statusCode) {
             return reply.code(error.statusCode).send({ success: false, message: error.message });
         }
@@ -2706,6 +2878,7 @@ module.exports.deleteProject = async (request, reply) => {
         }
 
         const projectName = targetProject?.name || 'Project';
+        const itemPath = await buildItemPath(prisma, 'project', id);
         const orgId = liveUser?.orgId || targetProject?.workspace?.orgId || request.user?.orgId;
         const userName = liveUser?.name || liveUser?.email || 'User';
 
@@ -2817,7 +2990,7 @@ module.exports.deleteProject = async (request, reply) => {
                 await prisma.project.delete({ where: { id } }).catch(() => null);
 
                 await notifyRole(request.server, orgId, 'Admin', 'deletion_alert', 'Project Permanently Deleted', `${userName} (Super Admin) permanently deleted project '${projectName}'.`, id);
-
+                logSuccess(ACTIVITY_NAME.PROJECT_DELETED, `Project "${itemPath}" and all files permanently deleted from database and Backblaze B2.`, request);
                 return reply.code(200).send({
                     success: true,
                     message: 'Project, folders, and all files permanently deleted from database and Backblaze B2.'
@@ -3163,6 +3336,7 @@ module.exports.deleteProject = async (request, reply) => {
         }
     } catch (error) {
         console.error('Failed to delete project / selected files:', error);
+        logError(ACTIVITY_NAME.PROJECT_DELETED, `Failed to delete project`, request, error);
         if (error.code === 'P2025' || error.statusCode === 404) {
             return reply.code(404).send({ success: false, message: error.message || 'Project not found.' });
         }
@@ -3468,3 +3642,5 @@ module.exports.deleteWorkspace = async (request, reply) => {
         });
     }
 };
+
+module.exports.getPendingOrDeletedFolderIds = getPendingOrDeletedFolderIds;

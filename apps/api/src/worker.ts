@@ -128,8 +128,28 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
       const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
+      let mp4Settings: any = { url: outputUrl };
+
+      // Determine resolution cap for Coconut:
+      // - Always cap to 1080p if the video is 4K/8K (width > 1920 or height > 1080)
+      // - Also cap to 1080p if the file is large (>= 300MB) to prevent Coconut OOM at ~42%
+      //   regardless of resolution — large 1080p files still stress Coconut's transcoding.
+      const technicalSpecs = asset?.metadata?.technicalSpecs as any;
+      const fileSizeBytes = job.data.fileSizeBytes || 0;
+      const isLargeFile = fileSizeBytes >= 300 * 1024 * 1024; // >= 300MB
+      if (technicalSpecs) {
+        const w = parseInt(technicalSpecs.width, 10);
+        const h = parseInt(technicalSpecs.height, 10);
+        if (isLargeFile || (!isNaN(w) && w > 1920) || (!isNaN(h) && h > 1080)) {
+          mp4Settings.size = '1080p';
+        }
+      } else if (isLargeFile) {
+        // No resolution metadata — still cap to 1080p for large files
+        mp4Settings.size = '1080p';
+      }
+
       outputs = {
-        'mp4': { url: outputUrl },
+        'mp4': mp4Settings,
         'jpg:300x#10%': { url: thumbUrl1 },
         'jpg:300x#30%': { url: thumbUrl2 },
         'jpg:300x#50%': { url: thumbUrl3 },

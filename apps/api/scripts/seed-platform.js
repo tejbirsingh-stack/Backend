@@ -303,17 +303,21 @@ async function main() {
     }
   }
 
+  const landingBase = {
+    heroTitle: 'A library worthy of your beautiful work.',
+    heroSubtitle:
+      'NOAH Cloud is the media intelligence layer for modern teams — find anything, review on the timeline, and share finished work without leaving your library.',
+    ctaLabel: 'Start free trial',
+    ctaHref: '/signup',
+    sections: { plansEnabled: true },
+  };
+
   await prisma.landingPage.upsert({
     where: { slug: 'main' },
     create: {
       slug: 'main',
       status: 'published',
-      heroTitle: 'A library worthy of your beautiful work.',
-      heroSubtitle:
-        'NOAH Cloud is the media intelligence layer for modern teams — find anything, review on the timeline, and share finished work without leaving your library.',
-      ctaLabel: 'Start free trial',
-      ctaHref: '/signup',
-      sections: { plansEnabled: true },
+      ...landingBase,
       publishedAt: new Date(),
     },
     update: {
@@ -321,7 +325,18 @@ async function main() {
       publishedAt: new Date(),
     },
   });
-  console.log('Landing page ready: main');
+  
+  await prisma.landingPage.upsert({
+    where: { slug: 'main-draft' },
+    create: {
+      slug: 'main-draft',
+      status: 'draft',
+      ...landingBase,
+    },
+    update: {},
+  });
+
+  console.log('Landing pages ready: main, main-draft');
 
   const DEFAULT_CONTENT = [
     {

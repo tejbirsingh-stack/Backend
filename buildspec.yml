@@ -6,6 +6,7 @@ env:
     AWS_REGION: "us-east-2"
     ECR_REPO: "noah-uat/backend"
     ASG_TAG_NAME: "noah-uat-ec2"
+    QA_TAG_NAME: "noah-qa"
 
 phases:
   pre_build:

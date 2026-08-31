@@ -4,6 +4,7 @@ const fs = require("fs");
 const { createNotification, notifyRole } = require("./notificationController");
 const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
+const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/audit-log');
 const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
@@ -847,6 +848,15 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       return reply.send(mediaStream.stream);
     } catch (b2ProxyErr) {
       console.warn(`B2 Proxy streaming warning for ${b2Key}:`, b2ProxyErr.message);
+      
+      if (b2ProxyErr.message && b2ProxyErr.message.includes('cap exceeded')) {
+        return reply.code(403).send({
+          success: false,
+          error: "BandwidthCapExceeded",
+          message: "Storage provider download bandwidth or transaction cap exceeded. Please check your Backblaze B2 billing settings.",
+        });
+      }
+
       return reply.code(404).send({
         success: false,
         error: "NotFound",
@@ -1577,13 +1587,16 @@ module.exports.restoreSoftDelete = async (request, reply) => {
         console.warn("Could not restore file from B2:", b2Error.message);
       }
     }
-
+    
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
+    logSuccess(ACTIVITY_NAME.MEDIA_RESTORED, `File "${itemPath}" restored from trash.`, request);
     return reply.send({
       success: true,
       message: restoredFromDb ? "File restored successfully" : "File restore attempted"
     });
   } catch (error) {
     console.error("Error restoring file:", error);
+    logError(ACTIVITY_NAME.MEDIA_RESTORED, `Failed to restore file`, request, error);
     return reply.code(500).send({
       success: false,
       error: error.message
@@ -1593,6 +1606,7 @@ module.exports.restoreSoftDelete = async (request, reply) => {
 
 //8. Permanently delete a file from B2
 module.exports.deletePermanently = async (request, reply) => {
+  let itemPath = 'Unknown Item';
   try {
     const { filename } = request.params;
 
@@ -1649,6 +1663,7 @@ module.exports.deletePermanently = async (request, reply) => {
             }
           }
 
+          itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
           const totalSize = assetToDelete.files.reduce((acc, f) => acc + Number(f.sizeBytes || 0), 0);
           await request.server.prisma.asset.delete({
             where: { id: filename }
@@ -1695,7 +1710,7 @@ module.exports.deletePermanently = async (request, reply) => {
       });
     }
 
-
+    logSuccess(ACTIVITY_NAME.MEDIA_PERMANENTLY_DELETED, `File "${itemPath}" permanently deleted from database and B2.`, request);
     return reply.send({
       success: true,
       message: "File permanently deleted",
@@ -1705,6 +1720,7 @@ module.exports.deletePermanently = async (request, reply) => {
       }
     });
   } catch (error) {
+    logError(ACTIVITY_NAME.MEDIA_PERMANENTLY_DELETED, `Failed to permanently delete file`, request, error);
     return reply.code(500).send({
       success: false,
       error: error.message,
@@ -1927,7 +1943,6 @@ module.exports.getMediaFile = async (request, reply) => {
         metadata: {},
         compressionStatus: "completed",
       });
-
       return reply.send({ success: true, asset });
     }
 
@@ -2216,16 +2231,17 @@ module.exports.uploadMediaFile = async (request, reply) => {
               }
             });
 
-            // 5GB threshold for heavy queue
-            const fiveGB = 5 * 1024 * 1024 * 1024;
-            const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+            // 300MB threshold for heavy queue — prevents large videos competing with smaller ones
+            const heavyThreshold = 300 * 1024 * 1024;
+            const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
 
             await queueToUse.add("compress", {
               assetId: newAsset.id, // For new webhook
               key: b2Key,
               preset: "medium", // Default to balanced H.264
+              fileSizeBytes: size, // Used by worker to decide 1080p cap for large files
             });
-            console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
+            console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= heavyThreshold ? 'heavy' : 'standard'} queue (${Math.round(size / 1024 / 1024)}MB)`);
           } catch (queueErr) {
             console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
           }
@@ -2286,6 +2302,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
     }
 
     if (!reply.raw.writableEnded) {
+      const itemPath = await buildItemPath(request.server.prisma, 'asset', uploadedFiles[0].id);
+      logSuccess(ACTIVITY_NAME.MEDIA_UPLOADED, `Uploaded ${uploadedFiles.length} file(s) successfully to ${itemPath}.`, request);
       reply.raw.write(JSON.stringify({
         type: "complete",
         asset: uploadedFiles[0],
@@ -2301,6 +2319,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
   } catch (error) {
     console.error("Upload error:", error);
+    logError(ACTIVITY_NAME.MEDIA_UPLOADED, `Failed to upload media file`, request, error);
     if (!reply.raw.writableEnded) {
       reply.raw.write(JSON.stringify({
         type: "error",
@@ -2375,6 +2394,14 @@ module.exports.deleteMediaFile = async (request, reply) => {
 
         if (!assetToUpdate) {
           return reply.code(404).send({ success: false, error: "Asset or folder not found" });
+        }
+
+        if (assetToUpdate.globalMedia) {
+          return reply.code(400).send({
+            success: false,
+            error: "BadRequest",
+            message: "Global media assets are protected system files and cannot be deleted."
+          });
         }
 
         // Check if asset is linked to any project
@@ -2719,8 +2746,8 @@ module.exports.getPendingDeletions = async (request, reply) => {
             deletedFiles: []
           });
         }
-        const isFolderPlaceholder = asset.ownerType === 'FOLDER_REQUEST' || (asset.type === 'folder' && asset.title.trim().toLowerCase() === folderName.trim().toLowerCase());
-        const isDirectFile = String(asset.ownerId) === String(folderId) && asset.ownerType === 'FOLDER';
+        const isFolderPlaceholder = (asset.type === 'folder' && (asset.title.trim().toLowerCase() === folderName.trim().toLowerCase() || String(asset.ownerId) === String(folderId)));
+        const isDirectFile = asset.type !== 'folder' && (String(asset.ownerId) === String(folderId) || (asset.deletionReason && asset.deletionReason.includes(folderId)));
         if (isDirectFile && !isFolderPlaceholder) {
           folderRequestMap.get(folderId).deletedFiles.push({
             id: asset.id,
@@ -2918,7 +2945,7 @@ async function performInstantDuplicateCheck(assetId, prisma) {
       include: { metadata: true, files: true }
     });
 
-    if (!asset || asset.status === 'duplicate' || asset.type === 'video' || asset.type === 'audio') return;
+    if (!asset || asset.status === 'duplicate' || asset.type === 'video') return;
 
     let duplicateOf = [];
     const originalFile = asset.files.find(f => f.fileClass === 'original');
@@ -2959,13 +2986,19 @@ async function performInstantDuplicateCheck(assetId, prisma) {
       }
     }
 
-    // Tier 2: Title Match (for Images) — catches re-uploads with same filename
-    if (duplicateOf.length === 0 && asset.type === 'image') {
+    // Tier 2: Title Match (image, audio, document) — catches re-uploads with same/similar filename
+    // Videos go through the Coconut webhook with perceptual hashing instead.
+    if (duplicateOf.length === 0 && asset.type !== 'video') {
       if (asset.title) {
+        // Strip OS-appended suffixes like " (1)", " (2)" before comparing titles
+        const baseTitle = asset.title.replace(/\s*\(\d+\)$/, '').trim();
         const titleMatches = await prisma.asset.findMany({
           where: {
             ...whereClause,
-            title: { equals: asset.title, mode: 'insensitive' }
+            OR: [
+              { title: { equals: asset.title, mode: 'insensitive' } },
+              { title: { equals: baseTitle, mode: 'insensitive' } },
+            ]
           }
         });
         titleMatches.forEach(m => { if (!duplicateOf.includes(m.id)) duplicateOf.push(m.id); });
@@ -3306,7 +3339,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
       : normalizeAssetType(inferredMime, session.fileName || session.key);
     const isVideo = assetType === "video";
     const isAudio = assetType === "audio";
-    const shouldQueueTranscode = isVideo || isAudio;
+    const shouldQueueTranscode = isVideo; // Audio files play natively in browsers — no Coconut needed
     const cdnUrl = `/api/media/${session.key}/stream`;
     // Merge technical specs from request body and upload session
     const mergedTechSpecs = {
@@ -3575,14 +3608,16 @@ module.exports.completeResumableUpload = async (request, reply) => {
           }
         });
 
-        const fiveGB = BigInt(5 * 1024 * 1024 * 1024);
-        const queueToUse = (isVideo && BigInt(session.fileSize) >= fiveGB) ? heavyCompressionQueue : compressionQueue;
+        // 300MB threshold for heavy queue — prevents large videos competing with smaller ones
+        const heavyThreshold = BigInt(300 * 1024 * 1024);
+        const queueToUse = (isVideo && BigInt(session.fileSize) >= heavyThreshold) ? heavyCompressionQueue : compressionQueue;
         await queueToUse.add("compress", {
           assetId: newAsset.id,
           key: session.key,
           preset: "medium",
+          fileSizeBytes: Number(session.fileSize), // Used by worker to decide 1080p cap
         });
-        console.log(`[Queue] Added ${isAudio ? 'audio' : 'video'} compression job for asset ${newAsset.id} to ${(isVideo && BigInt(session.fileSize) >= fiveGB) ? 'heavy' : 'fast'} queue`);
+        console.log(`[Queue] Added ${isAudio ? 'audio' : 'video'} compression job for asset ${newAsset.id} to ${(isVideo && BigInt(session.fileSize) >= heavyThreshold) ? 'heavy' : 'fast'} queue (${Math.round(Number(session.fileSize) / 1024 / 1024)}MB)`);
       } catch (queueErr) {
         console.error(`[Queue] Failed to queue job for asset ${newAsset.id}:`, queueErr.message);
       }
@@ -4241,17 +4276,18 @@ module.exports.retryTranscode = async (request, reply) => {
       return reply.status(400).send({ error: "Original file not found for this asset." });
     }
 
-    const size = Number(originalFile.sizeBytes);
-    const fiveGB = 5 * 1024 * 1024 * 1024;
-    const queueToUse = size >= fiveGB ? heavyCompressionQueue : compressionQueue;
+    // 300MB threshold for heavy queue
+    const heavyThreshold = 300 * 1024 * 1024;
+    const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
 
     await queueToUse.add("compress", {
       assetId: id,
       key: originalFile.filePath,
-      preset: "medium"
+      preset: "medium",
+      fileSizeBytes: size,
     });
 
-    console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= fiveGB ? 'heavy' : 'standard'} queue`);
+    console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= heavyThreshold ? 'heavy' : 'standard'} queue (${Math.round(size / 1024 / 1024)}MB)`);
 
     return reply.send({ success: true, message: "Transcode job queued" });
   } catch (error) {
@@ -4749,7 +4785,9 @@ module.exports.moveMediaFile = async (request, reply) => {
         workspaceId: newWorkspaceId
       }
     });
-
+    
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', mediaIds[0]);
+    logSuccess(ACTIVITY_NAME.MEDIA_MOVED, `Moved ${mediaIds?.length || 1} media file(s) (e.g. ${itemPath}).`, request);
     return reply.code(200).send({
       success: true,
       message: 'Media moved successfully.',
@@ -4757,6 +4795,7 @@ module.exports.moveMediaFile = async (request, reply) => {
     });
   } catch (error) {
     console.error('Failed to move media:', error);
+    logError(ACTIVITY_NAME.MEDIA_MOVED, `Failed to move media`, request, error);
     return reply.code(500).send({ success: false, message: 'Internal Server Error' });
   }
 };
@@ -4803,10 +4842,12 @@ module.exports.renameMediaAsset = async (request, reply) => {
       where: { id: assetId },
       data: { title: title.trim() }
     });
-
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', assetId);
+    logSuccess(ACTIVITY_NAME.MEDIA_RENAMED, `Media file renamed to "${itemPath}" successfully.`, request);
     return reply.send({ success: true, asset: updatedAsset });
   } catch (error) {
     console.error("Failed to rename media asset:", error);
+    logError(ACTIVITY_NAME.MEDIA_RENAMED, `Failed to rename media`, request, error);
     return reply.code(500).send({ success: false, error: error.message });
   }
 };

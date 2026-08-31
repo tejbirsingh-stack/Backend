@@ -9,6 +9,7 @@ const {
   listOrganizations,
   getOrganization,
   createOrganization,
+  inviteOrganization,
   patchOrganization,
   updateWorkspace,
 } = require('../controller/platform-organizations.controller');
@@ -69,6 +70,12 @@ const {
   getGlobalSecuritySettings,
   updateGlobalSecuritySettings,
 } = require('../controller/platform-security.controller');
+const {
+  getDashboardNotification,
+  updateDashboardNotification,
+  uploadNotificationImage,
+  deleteNotificationImage,
+} = require('../controller/platform-dashboard-notification.controller');
 
 /**
  * Platform Admin API — NOAH operator console.
@@ -91,6 +98,7 @@ module.exports = function platformRoutes(fastify, _opts, done) {
 
   fastify.get('/organizations', { preHandler: requirePlatformAdmin }, listOrganizations);
   fastify.post('/organizations', { preHandler: requirePlatformAdmin }, createOrganization);
+  fastify.post('/organizations/invite', { preHandler: requirePlatformAdmin }, inviteOrganization);
   fastify.get('/organizations/:orgId', { preHandler: requirePlatformAdmin }, getOrganization);
   fastify.patch('/organizations/:orgId', { preHandler: requirePlatformAdmin }, patchOrganization);
   fastify.patch(
@@ -158,6 +166,12 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   // Global Security Settings
   fastify.get('/security', getGlobalSecuritySettings);
   fastify.put('/security', { preHandler: requirePlatformAdmin }, updateGlobalSecuritySettings);
+
+  // Dashboard Notification
+  fastify.get('/dashboard-notification', getDashboardNotification);
+  fastify.patch('/dashboard-notification', { preHandler: requirePlatformAdmin }, updateDashboardNotification);
+  fastify.post('/dashboard-notification/images', { preHandler: requirePlatformAdmin }, uploadNotificationImage);
+  fastify.delete('/dashboard-notification/images/:imageId', { preHandler: requirePlatformAdmin }, deleteNotificationImage);
 
   done();
 };
