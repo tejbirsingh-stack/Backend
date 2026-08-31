@@ -86,7 +86,7 @@ async function seedAdmin() {
         }
       }
     });
-    console.log('✅ Organization created:', org.name);
+    console.log('✅ Organization created:', org.name);  
 
     // Hash the password
     console.log('🔐 Hashing password...');
