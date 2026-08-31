@@ -376,10 +376,50 @@ module.exports.validateGuestUser = async (request, reply) => {
     }
 };
 
+module.exports.updateWorkspace = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const { name, description, color, status } = request.body;
+        const { orgId } = request.user;
+
+        const workspace = await prisma.workspace.findFirst({
+            where: { id, orgId }
+        });
+
+        if (!workspace) {
+            return reply.code(404).send({ success: false, message: 'Workspace not found.' });
+        }
+
+        const dataToUpdate = {};
+        if (name !== undefined) dataToUpdate.name = name;
+        if (description !== undefined) dataToUpdate.description = description;
+        if (color !== undefined) dataToUpdate.color = color;
+        if (status !== undefined) dataToUpdate.status = status;
+
+        const updated = await prisma.workspace.update({
+            where: { id },
+            data: dataToUpdate
+        });
+
+        logSuccess(ACTIVITY_NAME.WORKSPACE_UPDATED, `Workspace "${workspace.name}" updated.`, request);
+
+        return reply.code(200).send({
+            success: true,
+            message: 'Workspace updated successfully.',
+            data: updated
+        });
+    } catch (error) {
+        console.error('Error updating workspace:', error);
+        logError(ACTIVITY_NAME.WORKSPACE_UPDATED, `Failed to update workspace status, Error : ${error?.message}`, request, error);
+        return reply.code(500).send({ success: false, message: 'Internal Server Error' });
+    }
+};
+
 module.exports.findAllWorkspaces = async (request, reply) => {
     try {
         const { orgId } = request.user || {};
         const userId = request.user?.id || request.user?.userId || request.user?.sub;
+        const { includeInactive } = request.query || {};
 
         if (!userId) {
             return reply.code(401).send({
@@ -420,6 +460,10 @@ module.exports.findAllWorkspaces = async (request, reply) => {
                     : [])
             ]
         };
+
+        if (includeInactive !== 'true') {
+            whereCondition.status = { notIn: ['inactive', 'Inactive'] };
+        }
 
         let workspaces = await prisma.workspace.findMany({
             where: whereCondition,
@@ -508,6 +552,10 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
         const workspace = await prisma.workspace.findUnique({ where: { id } });
         if (!workspace) {
             return reply.code(404).send({ success: false, message: 'Workspace not found' });
+        }
+
+        if (workspace.status === 'Inactive' || workspace.status === 'inactive') {
+            return reply.code(403).send({ success: false, message: 'Workspace is inactive.' });
         }
 
         const effectivePermissions = await resolveUserWorkspacePermissions(prisma, request.user, workspace);
