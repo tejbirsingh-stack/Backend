@@ -1990,6 +1990,8 @@ module.exports.deleteFolder = async (request, reply) => {
 
             await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Folder Deletion Request', `${userName} (${rawRoleName}) requested folder deletion for '${folderName}'.`, id);
 
+            logSuccess(ACTIVITY_NAME.FOLDER_DELETED, `Admin requested folder deletion for "${itemPath}". Submitted for Super Admin review.`, request);
+
             return reply.code(200).send({
                 success: true,
                 message: 'Folder deletion request submitted for Super Admin review.'
@@ -3161,6 +3163,8 @@ module.exports.deleteProject = async (request, reply) => {
 
                 await notifyRole(request.server, orgId, 'Admin', 'deletion_alert', 'Project Files Permanently Deleted', `${userName} (Super Admin) permanently deleted ${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) from project '${projectName}'.`, id);
 
+                logSuccess(ACTIVITY_NAME.PROJECT_DELETED, `Super Admin permanently deleted ${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) from project "${projectName}".`, request);
+
                 return reply.code(200).send({
                     success: true,
                     message: `${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) permanently deleted from database and Backblaze B2.`
@@ -3192,6 +3196,8 @@ module.exports.deleteProject = async (request, reply) => {
                 }
 
                 await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Project Deletion Request', `${userName} (${rawRoleName}) requested whole project deletion for '${projectName}'.`, id);
+
+                logSuccess(ACTIVITY_NAME.PROJECT_DELETED, `Admin requested whole project deletion for "${itemPath}". Submitted for Super Admin review.`, request);
 
                 return reply.code(200).send({
                     success: true,
@@ -3328,6 +3334,8 @@ module.exports.deleteProject = async (request, reply) => {
 
                 await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Project Deletion Request', `${userName} (${rawRoleName}) requested deletion of project '${projectName}' with selected files/folders.`, id);
 
+                logSuccess(ACTIVITY_NAME.PROJECT_DELETED, `Admin requested deletion of project "${itemPath}" with selected files/folders. Submitted for Super Admin review.`, request);
+
                 return reply.code(200).send({
                     success: true,
                     message: `Project deletion request for '${projectName}' submitted for Super Admin review.`
@@ -3410,12 +3418,16 @@ module.exports.restoreProject = async (request, reply) => {
             ).catch(() => null);
         }
 
+        const itemPath = await buildItemPath(prisma, 'project', id);
+        logSuccess(ACTIVITY_NAME.PROJECT_UPDATED, `Project "${itemPath}" restored from deletion queue.`, request);
+
         return reply.code(200).send({
             success: true,
             message: `Project '${projectName}' and all its associated files/folders restored to Active successfully.`
         });
     } catch (error) {
         console.error('Failed to restore project:', error);
+        logError(ACTIVITY_NAME.PROJECT_UPDATED, `Failed to restore project`, request, error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
