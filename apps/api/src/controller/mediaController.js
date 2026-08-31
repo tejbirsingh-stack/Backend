@@ -2447,6 +2447,9 @@ module.exports.deleteMediaFile = async (request, reply) => {
           const userName = liveUser?.name || liveUser?.email || request.user?.name || 'Admin';
           await notifyRole(request.server, asset.orgId || request.user?.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) requested deletion for file: '${asset.title}'. Approval needed.`, asset.id);
 
+          const itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
+          logSuccess(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `Admin requested file deletion for "${itemPath}". Submitted for Super Admin review.`, request);
+
           return reply.send({
             success: true,
             status: "pending_super_admin",
@@ -2478,12 +2481,16 @@ module.exports.deleteMediaFile = async (request, reply) => {
           );
         }
 
+        const itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
+        logSuccess(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `File "${itemPath}" moved to trash.`, request);
+
         return reply.send({
           success: true,
           message: "File deleted successfully",
         });
       } catch (dbErr) {
         console.warn("Could not soft delete asset in database:", dbErr.message);
+        logError(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `Failed to soft delete asset in database`, request, dbErr);
         return reply.code(500).send({
           success: false,
           error: "Failed to soft delete asset in database",
@@ -2496,6 +2503,7 @@ module.exports.deleteMediaFile = async (request, reply) => {
       });
     }
   } catch (error) {
+    logError(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `Failed to soft delete file`, request, error);
     return reply.code(500).send({
       success: false,
       error: error.message,

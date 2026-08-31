@@ -4,11 +4,11 @@ const { recordStorageDelta } = require("../services/usage-meter.service");
 const B2StorageService = require("../b2-storage.cjs");
 
 const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID || process.env.B2_APPLICATION_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
+    keyId: process.env.B2_KEY_ID || process.env.B2_APPLICATION_KEY_ID,
+    applicationKey: process.env.B2_APPLICATION_KEY,
+    bucketName: process.env.B2_BUCKET_NAME,
+    endpoint: process.env.B2_ENDPOINT,
+    region: process.env.B2_REGION,
 });
 
 const cleanupAuditLogs = async (request, reply) => {
@@ -138,13 +138,13 @@ const processTrashRetention = async (request, reply) => {
                         where: { id: asset.id },
                         data: { status: 'pending_super_admin' }
                     });
-                    
+
                     await notifyRole(
-                        request.server, 
-                        asset.orgId, 
-                        'Super Admin', 
-                        'approval_request', 
-                        'Super Admin Deletion Review', 
+                        request.server,
+                        asset.orgId,
+                        'Super Admin',
+                        'approval_request',
+                        'Super Admin Deletion Review',
                         `${userName} (Admin) deleted file: '${asset.title}' 30 days ago. Final approval needed.`,
                         asset.id
                     );
@@ -155,13 +155,13 @@ const processTrashRetention = async (request, reply) => {
                         where: { id: asset.id },
                         data: { status: 'pending_admin_review' }
                     });
-                    
+
                     await notifyRole(
-                        request.server, 
-                        asset.orgId, 
-                        'Admin', 
-                        'approval_request', 
-                        'Pending Deletion', 
+                        request.server,
+                        asset.orgId,
+                        'Admin',
+                        'approval_request',
+                        'Pending Deletion',
                         `${userName} (${asset.deletedBy?.roleRelation?.name || 'Editor'}) deleted file: '${asset.title}' 30 days ago. Please review.`,
                         asset.id
                     );
