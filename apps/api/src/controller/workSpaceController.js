@@ -3644,3 +3644,282 @@ module.exports.deleteWorkspace = async (request, reply) => {
 };
 
 module.exports.getPendingOrDeletedFolderIds = getPendingOrDeletedFolderIds;
+module.exports.removeWorkspaceMember = async (request, reply) => {
+    try {
+        const { id: workspaceId, memberId } = request.params;
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden' });
+        }
+
+        // Prevent removing Owner
+        const member = await prisma.workspaceUser.findFirst({
+            where: {
+                workspaceId,
+                OR: [{ id: memberId }, { userId: memberId }]
+            }
+        });
+
+        if (member && member.memberType === 'OWNER') {
+            return reply.code(403).send({ success: false, message: 'Cannot remove the owner of the workspace.' });
+        }
+
+        await prisma.workspaceUser.deleteMany({
+            where: {
+                workspaceId,
+                OR: [
+                    { id: memberId },
+                    { userId: memberId }
+                ]
+            }
+        });
+
+        await prisma.workspaceGroup.deleteMany({
+            where: {
+                workspaceId,
+                OR: [
+                    { id: memberId },
+                    { groupId: memberId }
+                ]
+            }
+        });
+
+        return reply.send({
+            success: true,
+            message: 'Workspace access removed successfully.'
+        });
+    } catch (error) {
+        console.error('Error removing workspace member:', error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Failed to remove workspace member.'
+        });
+    }
+};
+
+module.exports.searchWorkspaceMembers = async (request, reply) => {
+    try {
+        const { id: workspaceId } = request.params;
+        const { q = '' } = request.query;
+
+        const normalizedQuery = q.trim().toLowerCase();
+        if (!normalizedQuery) {
+            return reply.send({ success: true, users: [], groups: [] });
+        }
+
+        const orgId = request.user?.orgId;
+        if (!orgId) {
+            return reply.code(403).send({ success: false, message: 'No org associated with user.' });
+        }
+
+        // Fetch already-added workspace members so we can exclude them
+        const existingUsers = await prisma.workspaceUser.findMany({
+            where: { workspaceId },
+            select: { userId: true }
+        });
+        const existingGroups = await prisma.workspaceGroup.findMany({
+            where: { workspaceId },
+            select: { groupId: true }
+        });
+        const existingUserIds = new Set(existingUsers.map(u => u.userId));
+        const existingGroupIds = new Set(existingGroups.map(g => g.groupId));
+
+        // Search org users by name or email
+        const users = await prisma.user.findMany({
+            where: {
+                orgId,
+                OR: [
+                    { name: { contains: normalizedQuery, mode: 'insensitive' } },
+                    { email: { contains: normalizedQuery, mode: 'insensitive' } }
+                ]
+            },
+            select: { id: true, name: true, email: true, avatarUrl: true },
+            take: 5
+        });
+
+        // Search org groups by name
+        const groups = await prisma.userGroup.findMany({
+            where: {
+                orgId,
+                name: { contains: normalizedQuery, mode: 'insensitive' }
+            },
+            select: { id: true, name: true, description: true },
+            take: 5
+        });
+
+        return reply.send({
+            success: true,
+            users: users
+                .filter(u => !existingUserIds.has(u.id))
+                .map(u => ({
+                    id: u.id,
+                    name: u.name || u.email.split('@')[0],
+                    email: u.email,
+                    avatarUrl: u.avatarUrl || null,
+                    isOrganizationMember: true
+                })),
+            groups: groups
+                .filter(g => !existingGroupIds.has(g.id))
+                .map(g => ({
+                    id: g.id,
+                    name: g.name,
+                    description: g.description || ''
+                }))
+        });
+    } catch (error) {
+        console.error('Error searching workspace members:', error);
+        return reply.code(500).send({ success: false, message: 'Failed to search members.' });
+    }
+};
+
+module.exports.addWorkspaceMember = async (request, reply) => {
+    try {
+        const { id: workspaceId } = request.params;
+        const { email, memberType, accessLevel = 'Full Access', groupId, sendInviteEmail = false } = request.body;
+
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden' });
+        }
+
+        const workspace = await prisma.workspace.findUnique({
+            where: { id: workspaceId },
+            include: { organization: true }
+        });
+
+        if (!workspace) {
+            return reply.code(404).send({ success: false, message: 'Workspace not found.' });
+        }
+
+        const inviterName = request.user?.name || request.user?.email || 'A team member';
+        const orgId = request.user?.orgId;
+        const appUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
+
+        if (groupId) {
+            const group = await prisma.userGroup.findUnique({
+                where: { id: groupId },
+                include: {
+                    members: {
+                        include: {
+                            user: { select: { id: true, email: true, orgId: true } }
+                        }
+                    }
+                }
+            });
+            if (!group) {
+                return reply.code(404).send({ success: false, message: 'Group not found.' });
+            }
+            let resolvedAccessLevelId = null;
+            if (accessLevel) {
+                const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(accessLevel);
+                const lvl = await prisma.accessLevel.findFirst({ where: isUuid ? { id: accessLevel } : { OR: [{ title: accessLevel }, { name: accessLevel }] } });
+                if (lvl) resolvedAccessLevelId = lvl.id;
+            }
+            await prisma.workspaceGroup.upsert({
+                where: { workspaceId_groupId: { workspaceId, groupId: group.id } },
+                update: { accessLevelId: resolvedAccessLevelId || accessLevel },
+                create: {
+                    workspaceId,
+                    groupId: group.id,
+                    accessLevelId: resolvedAccessLevelId || accessLevel,
+                }
+            }).catch(() => { });
+
+            return reply.send({ success: true, message: 'Group added to workspace.' });
+        }
+
+        if (!email) {
+            return reply.code(400).send({ success: false, message: 'Email or group is required.' });
+        }
+
+        const cleanEmail = email.toLowerCase().trim();
+        const user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+
+        if (!user) {
+            return reply.code(404).send({ success: false, message: 'User not found.' });
+        }
+
+        const effectiveMemberType = memberType || 'MEMBER';
+
+        let resolvedAccessLevelId = null;
+        if (accessLevel) {
+            const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(accessLevel);
+            const lvl = await prisma.accessLevel.findFirst({ where: isUuid ? { id: accessLevel } : { OR: [{ title: accessLevel }, { name: accessLevel }] } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        } else {
+            const lvl = await prisma.accessLevel.findFirst({ where: { name: 'FULL_ACCESS' } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        }
+
+        await prisma.workspaceUser.upsert({
+            where: { workspaceId_userId: { workspaceId, userId: user.id } },
+            update: {
+                accessLevelId: resolvedAccessLevelId || accessLevel,
+                memberType: effectiveMemberType
+            },
+            create: {
+                workspaceId,
+                userId: user.id,
+                accessLevelId: resolvedAccessLevelId || accessLevel,
+                memberType: effectiveMemberType,
+            }
+        }).catch((err) => { console.error("Failed to add workspace member:", err) });
+
+        return reply.send({
+            success: true,
+            message: `${effectiveMemberType} added to workspace successfully.`
+        });
+    } catch (error) {
+        console.error('Error adding workspace member:', error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Failed to add workspace member.'
+        });
+    }
+};
+
+module.exports.updateWorkspaceMemberAccess = async (request, reply) => {
+    try {
+        const { id: workspaceId, memberId } = request.params;
+        const { accessLevel } = request.body;
+
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden' });
+        }
+
+        let resolvedAccessLevelId = null;
+        if (accessLevel) {
+            const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(accessLevel);
+            const lvl = await prisma.accessLevel.findFirst({ where: isUuid ? { id: accessLevel } : { OR: [{ title: accessLevel }, { name: accessLevel }] } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        }
+
+        await prisma.workspaceUser.updateMany({
+            where: {
+                workspaceId,
+                OR: [{ id: memberId }, { userId: memberId }]
+            },
+            data: { accessLevelId: resolvedAccessLevelId || accessLevel }
+        });
+
+        await prisma.workspaceGroup.updateMany({
+            where: {
+                workspaceId,
+                OR: [{ id: memberId }, { groupId: memberId }]
+            },
+            data: { accessLevelId: resolvedAccessLevelId || accessLevel }
+        });
+
+        return reply.send({
+            success: true,
+            message: 'Workspace access updated successfully.'
+        });
+    } catch (error) {
+        console.error('Error updating workspace member access:', error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Failed to update workspace member access.'
+        });
+    }
+};
