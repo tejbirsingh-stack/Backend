@@ -25,7 +25,11 @@ const {
   updateWorkspace,
   findFolderTreeData,
   deleteFolder,
-  restoreFolder
+  restoreFolder,
+  addWorkspaceMember,
+  updateWorkspaceMemberAccess,
+  removeWorkspaceMember,
+  searchWorkspaceMembers
 } = require('../controller');
 const { authenticate, requirePermission, requireSuperAdminOrAdmin } = require('../middleware/auth-middleware');
 
@@ -57,6 +61,12 @@ module.exports = function (fastify, opts, done) {
   };
 
   fastify.post('/add', canManageWorkspaces, storeWorkplace);
+
+  fastify.get('/:id/member/search', canManageWorkspaces, searchWorkspaceMembers);
+  fastify.post('/:id/member', canManageWorkspaces, addWorkspaceMember);
+  fastify.put('/:id/member/:memberId', canManageWorkspaces, updateWorkspaceMemberAccess);
+  fastify.delete('/:id/member/:memberId', canManageWorkspaces, removeWorkspaceMember);
+
   fastify.post('/update/:id', canManageWorkspaces, updateWorkspace);
   fastify.delete('/delete/:id', canManageWorkspaces, deleteWorkspace);
   fastify.delete('/:id', canManageWorkspaces, deleteWorkspace);
