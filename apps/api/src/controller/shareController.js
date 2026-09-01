@@ -668,7 +668,7 @@ async function validateShareToken(req, reply) {
         resolutionTier: resTier,
         fps: fpsVal,
         duration: durationVal,
-        logoUrl: logoUrl,
+        logoUrl: branding?.logoUrl || logoUrl,
         organizationName: shareLink.organization?.name || null,
       },
     });
