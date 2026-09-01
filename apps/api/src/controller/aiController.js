@@ -1,4 +1,9 @@
-const { enqueueAiAnalyze, isAiEnabledForOrg } = require('../services/ai/enqueueAiAnalyze');
+const {
+  enqueueAiAnalyze,
+  isAiEnabledForOrg,
+  normalizeAiFeatures,
+  stepsFromFeatures,
+} = require('../services/ai/enqueueAiAnalyze');
 
 function orgIdFromUser(request) {
   return request.user?.orgId;
@@ -61,6 +66,9 @@ module.exports.retryAiAnalyze = async function retryAiAnalyze(request, reply) {
     return reply.status(403).send({ success: false, error: 'AI is not enabled for this organization.' });
   }
 
+  const features = normalizeAiFeatures(request.body?.features, { assetType: asset.type });
+  const steps = stepsFromFeatures(features);
+
   await request.server.prisma.aiAnalysisJob.upsert({
     where: { assetId },
     create: {
@@ -68,19 +76,19 @@ module.exports.retryAiAnalyze = async function retryAiAnalyze(request, reply) {
       orgId,
       status: 'queued',
       force,
-      steps: { asr: 'queued', people_scenes: 'queued', highlights: 'queued', embeddings: 'queued' },
+      steps,
     },
     update: {
       status: 'queued',
       force,
       error: null,
-      steps: { asr: 'queued', people_scenes: 'queued', highlights: 'queued', embeddings: 'queued' },
+      steps,
     },
   });
 
-  await enqueueAiAnalyze({ assetId, orgId, force });
+  await enqueueAiAnalyze({ assetId, orgId, force, features });
 
-  return reply.send({ success: true, assetId, status: 'queued' });
+  return reply.send({ success: true, assetId, status: 'queued', features });
 };
 
 module.exports.getTranscript = async function getTranscript(request, reply) {

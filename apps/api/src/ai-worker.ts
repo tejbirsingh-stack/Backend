@@ -32,11 +32,47 @@ const b2Storage = new B2StorageService({
   region: process.env.B2_REGION,
 });
 
+type AiFeature = 'asr' | 'highlights' | 'embeddings' | 'people_scenes';
+
+const ALL_AI_FEATURES: AiFeature[] = ['asr', 'highlights', 'embeddings', 'people_scenes'];
+
 type AnalyzeJobData = {
   assetId: string;
   orgId?: string;
   force?: boolean;
+  features?: AiFeature[];
 };
+
+function resolveFeatures(raw: unknown, assetType: string): AiFeature[] {
+  const allowed = new Set<string>(ALL_AI_FEATURES);
+  let list = Array.isArray(raw)
+    ? (raw.filter((f): f is AiFeature => typeof f === 'string' && allowed.has(f)) as AiFeature[])
+    : [...ALL_AI_FEATURES];
+
+  if (list.length === 0) {
+    list = [...ALL_AI_FEATURES];
+  }
+
+  if ((list.includes('highlights') || list.includes('embeddings')) && !list.includes('asr')) {
+    list = ['asr', ...list];
+  }
+
+  if (assetType === 'audio') {
+    list = list.filter((f) => f !== 'people_scenes');
+  }
+
+  return [...new Set(list)];
+}
+
+function stepsTemplate(features: AiFeature[], value: 'queued' | 'skipped'): Record<string, string> {
+  const selected = new Set(features);
+  return {
+    asr: selected.has('asr') ? value : 'skipped',
+    people_scenes: selected.has('people_scenes') ? value : 'skipped',
+    highlights: selected.has('highlights') ? value : 'skipped',
+    embeddings: selected.has('embeddings') ? value : 'skipped',
+  };
+}
 
 async function getProxyUrl(assetId: string): Promise<{ proxyUrl: string; title: string; type: string }> {
   const asset = await prisma.asset.findUnique({
@@ -153,12 +189,13 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
     throw new Error(`Asset ${assetId} has no orgId and none provided in job`);
   }
 
-  const queuedSteps = {
-    asr: 'queued',
-    people_scenes: 'queued',
-    highlights: 'queued',
-    embeddings: 'queued',
-  };
+  const features = resolveFeatures(job.data.features, asset.type);
+  const wantAsr = features.includes('asr');
+  const wantPeople = features.includes('people_scenes');
+  const wantHighlights = features.includes('highlights');
+  const wantEmbeddings = features.includes('embeddings');
+
+  const queuedSteps = stepsTemplate(features, 'queued');
 
   const analysisJob = await prisma.aiAnalysisJob.upsert({
     where: { assetId },
@@ -177,12 +214,7 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
     },
   });
 
-  const steps: Record<string, string> = {
-    asr: 'skipped',
-    people_scenes: 'skipped',
-    highlights: 'skipped',
-    embeddings: 'skipped',
-  };
+  const steps: Record<string, string> = stepsTemplate(features, 'skipped');
   const stepErrors: string[] = [];
 
   try {
@@ -195,74 +227,90 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
     }
 
     const [asrSettled, peopleSettled] = await Promise.allSettled([
-      processAsrStep(assetId, orgId, force),
-      processPeopleScenesStep(assetId, orgId, force),
+      wantAsr ? processAsrStep(assetId, orgId, force) : Promise.resolve('skipped' as const),
+      wantPeople ? processPeopleScenesStep(assetId, orgId, force) : Promise.resolve('skipped' as const),
     ]);
 
-    if (asrSettled.status === 'fulfilled') {
-      steps.asr = asrSettled.value;
-    } else {
-      steps.asr = 'failed';
-      const msg = asrSettled.reason?.message || String(asrSettled.reason);
-      stepErrors.push(`asr: ${msg}`);
-      console.error('[AI] asr step failed:', msg);
+    if (wantAsr) {
+      if (asrSettled.status === 'fulfilled') {
+        steps.asr = asrSettled.value;
+      } else {
+        steps.asr = 'failed';
+        const msg = asrSettled.reason?.message || String(asrSettled.reason);
+        stepErrors.push(`asr: ${msg}`);
+        console.error('[AI] asr step failed:', msg);
+      }
     }
 
-    if (peopleSettled.status === 'fulfilled') {
-      steps.people_scenes = peopleSettled.value;
-      if (peopleSettled.value === 'completed' || peopleSettled.value === 'skipped') {
+    if (wantPeople) {
+      if (peopleSettled.status === 'fulfilled') {
+        steps.people_scenes = peopleSettled.value;
+        if (peopleSettled.value === 'completed' || peopleSettled.value === 'skipped') {
+          try {
+            await embedSceneInsightsForAsset(prisma, assetId, orgId, force);
+          } catch (sceneEmbedErr: any) {
+            const msg = sceneEmbedErr?.message || String(sceneEmbedErr);
+            stepErrors.push(`scene_embeddings: ${msg}`);
+            console.error('[AI] scene embeddings failed:', msg);
+          }
+        }
+      } else {
+        steps.people_scenes = 'failed';
+        const msg = peopleSettled.reason?.message || String(peopleSettled.reason);
+        stepErrors.push(`people_scenes: ${msg}`);
+        console.error('[AI] people_scenes step failed:', msg);
+      }
+    }
+
+    if (wantAsr && (steps.asr === 'completed' || steps.asr === 'skipped')) {
+      if (wantHighlights) {
         try {
-          await embedSceneInsightsForAsset(prisma, assetId, orgId, force);
-        } catch (sceneEmbedErr: any) {
-          const msg = sceneEmbedErr?.message || String(sceneEmbedErr);
-          stepErrors.push(`scene_embeddings: ${msg}`);
-          console.error('[AI] scene embeddings failed:', msg);
+          steps.highlights = await highlightTranscriptForAsset(prisma, assetId, orgId, force);
+        } catch (highlightErr: any) {
+          steps.highlights = 'failed';
+          const msg = highlightErr?.message || String(highlightErr);
+          stepErrors.push(`highlights: ${msg}`);
+          console.error('[AI] highlights step failed:', msg);
         }
       }
+      if (wantEmbeddings) {
+        try {
+          steps.embeddings = await embedTranscriptForAsset(prisma, assetId, orgId, force);
+        } catch (embedErr: any) {
+          steps.embeddings = 'failed';
+          const msg = embedErr?.message || String(embedErr);
+          const meta =
+            embedErr?.meta !== undefined ? ` meta=${JSON.stringify(embedErr.meta)}` : '';
+          stepErrors.push(`embeddings: ${msg}`);
+          console.error('[AI] embeddings step failed:', msg + meta);
+        }
+      }
+    } else if (!wantAsr) {
+      // Highlights/embeddings already marked skipped when not selected.
     } else {
-      steps.people_scenes = 'failed';
-      const msg = peopleSettled.reason?.message || String(peopleSettled.reason);
-      stepErrors.push(`people_scenes: ${msg}`);
-      console.error('[AI] people_scenes step failed:', msg);
+      if (wantHighlights) steps.highlights = 'skipped';
+      if (wantEmbeddings) steps.embeddings = 'skipped';
     }
 
-    if (steps.asr === 'completed' || steps.asr === 'skipped') {
-      try {
-        steps.highlights = await highlightTranscriptForAsset(prisma, assetId, orgId, force);
-      } catch (highlightErr: any) {
-        steps.highlights = 'failed';
-        const msg = highlightErr?.message || String(highlightErr);
-        stepErrors.push(`highlights: ${msg}`);
-        console.error('[AI] highlights step failed:', msg);
-      }
-      try {
-        steps.embeddings = await embedTranscriptForAsset(prisma, assetId, orgId, force);
-      } catch (embedErr: any) {
-        steps.embeddings = 'failed';
-        const msg = embedErr?.message || String(embedErr);
-        const meta =
-          embedErr?.meta !== undefined ? ` meta=${JSON.stringify(embedErr.meta)}` : '';
-        stepErrors.push(`embeddings: ${msg}`);
-        console.error('[AI] embeddings step failed:', msg + meta);
-      }
-    }
-
-    const hardFailed = steps.asr === 'failed' && steps.people_scenes === 'failed';
+    const primaryFailed =
+      (wantAsr ? steps.asr === 'failed' : true) &&
+      (wantPeople ? steps.people_scenes === 'failed' : true) &&
+      (wantAsr || wantPeople);
     await prisma.aiAnalysisJob.update({
       where: { id: analysisJob.id },
       data: {
-        status: hardFailed ? 'failed' : 'completed',
+        status: primaryFailed ? 'failed' : 'completed',
         steps,
         error: stepErrors.length > 0 ? stepErrors.join('; ') : null,
       },
     });
 
-    if (hardFailed) {
+    if (primaryFailed) {
       throw new Error(stepErrors.join('; ') || 'AI analysis failed');
     }
   } catch (err: any) {
-    if (steps.asr !== 'failed' && steps.people_scenes !== 'failed') {
-      steps.asr = steps.asr === 'skipped' ? 'failed' : steps.asr;
+    if (wantAsr && steps.asr !== 'failed' && (!wantPeople || steps.people_scenes !== 'failed')) {
+      steps.asr = steps.asr === 'skipped' && wantAsr ? 'failed' : steps.asr;
     }
     await prisma.aiAnalysisJob.update({
       where: { id: analysisJob.id },
