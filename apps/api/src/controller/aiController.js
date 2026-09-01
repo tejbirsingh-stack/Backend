@@ -1,4 +1,9 @@
-const { enqueueAiAnalyze, isAiEnabledForOrg } = require('../services/ai/enqueueAiAnalyze');
+const {
+  enqueueAiAnalyze,
+  isAiEnabledForOrg,
+  normalizeAiFeatures,
+  stepsFromFeatures,
+} = require('../services/ai/enqueueAiAnalyze');
 
 function orgIdFromUser(request) {
   return request.user?.orgId;
@@ -61,15 +66,29 @@ module.exports.retryAiAnalyze = async function retryAiAnalyze(request, reply) {
     return reply.status(403).send({ success: false, error: 'AI is not enabled for this organization.' });
   }
 
+  const features = normalizeAiFeatures(request.body?.features, { assetType: asset.type });
+  const steps = stepsFromFeatures(features);
+
   await request.server.prisma.aiAnalysisJob.upsert({
     where: { assetId },
-    create: { assetId, orgId, status: 'queued', force, steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' } },
-    update: { status: 'queued', force, error: null, steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' } },
+    create: {
+      assetId,
+      orgId,
+      status: 'queued',
+      force,
+      steps,
+    },
+    update: {
+      status: 'queued',
+      force,
+      error: null,
+      steps,
+    },
   });
 
-  await enqueueAiAnalyze({ assetId, orgId, force });
+  await enqueueAiAnalyze({ assetId, orgId, force, features });
 
-  return reply.send({ success: true, assetId, status: 'queued' });
+  return reply.send({ success: true, assetId, status: 'queued', features });
 };
 
 module.exports.getTranscript = async function getTranscript(request, reply) {
@@ -227,4 +246,70 @@ module.exports.listAiTags = async function listAiTags(request, reply) {
     .filter(Boolean);
 
   return reply.send({ success: true, tags });
+};
+
+module.exports.getAssetPeople = async function getAssetPeople(request, reply) {
+  const orgId = orgIdFromUser(request);
+  if (!orgId) {
+    return reply.status(403).send({ success: false, error: 'No organization attached to user.' });
+  }
+
+  const assetId = request.params.id;
+  const asset = await loadAssetForOrg(request.server.prisma, assetId, orgId);
+  if (!asset) {
+    return reply.status(404).send({ success: false, error: 'Media asset not found' });
+  }
+
+  if (!(await isAiEnabledForOrg(orgId, request.server.prisma))) {
+    return reply.send({ success: true, assetId, people: [] });
+  }
+
+  const people = await request.server.prisma.aiAssetPersonAppearance.findMany({
+    where: { assetId, orgId },
+    orderBy: { ordinal: 'asc' },
+    select: {
+      id: true,
+      viFaceId: true,
+      displayLabel: true,
+      startMs: true,
+      endMs: true,
+      thumbnailUrl: true,
+      ordinal: true,
+    },
+  });
+
+  return reply.send({ success: true, assetId, people });
+};
+
+module.exports.getAssetScenes = async function getAssetScenes(request, reply) {
+  const orgId = orgIdFromUser(request);
+  if (!orgId) {
+    return reply.status(403).send({ success: false, error: 'No organization attached to user.' });
+  }
+
+  const assetId = request.params.id;
+  const asset = await loadAssetForOrg(request.server.prisma, assetId, orgId);
+  if (!asset) {
+    return reply.status(404).send({ success: false, error: 'Media asset not found' });
+  }
+
+  if (!(await isAiEnabledForOrg(orgId, request.server.prisma))) {
+    return reply.send({ success: true, assetId, scenes: [] });
+  }
+
+  const scenes = await request.server.prisma.aiSceneInsight.findMany({
+    where: { assetId, orgId },
+    orderBy: { ordinal: 'asc' },
+    select: {
+      id: true,
+      label: true,
+      description: true,
+      startMs: true,
+      endMs: true,
+      confidence: true,
+      ordinal: true,
+    },
+  });
+
+  return reply.send({ success: true, assetId, scenes });
 };

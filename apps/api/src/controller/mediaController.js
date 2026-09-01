@@ -13,7 +13,6 @@ const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 
-const { enqueueAiAnalyze, isAiEnabledForOrg } = require("../services/ai/enqueueAiAnalyze");
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
 
@@ -3765,13 +3764,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
           }
         });
 
-        if ((asset.type === 'video' || asset.type === 'audio') && await isAiEnabledForOrg(asset.orgId, request.server.prisma)) {
-          try {
-            await enqueueAiAnalyze({ assetId: newAssetId, orgId: asset.orgId, force: false });
-          } catch (aiErr) {
-            console.warn('[AI] Failed to enqueue analyze job:', aiErr && aiErr.message ? aiErr.message : aiErr);
-          }
-        }
+        // AI analysis is started manually from AI Insights (feature picker), not on proxy ready.
 
         if (asset.orgId && proxySize > 0) {
           try {
