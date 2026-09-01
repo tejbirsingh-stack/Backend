@@ -53,9 +53,7 @@ function resolveFeatures(raw: unknown, assetType: string): AiFeature[] {
     list = [...ALL_AI_FEATURES];
   }
 
-  if ((list.includes('highlights') || list.includes('embeddings')) && !list.includes('asr')) {
-    list = ['asr', ...list];
-  }
+  // Highlights/embeddings can use an existing transcript without selecting asr again.
 
   if (assetType === 'audio') {
     list = list.filter((f) => f !== 'people_scenes');
@@ -195,7 +193,30 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
   const wantHighlights = features.includes('highlights');
   const wantEmbeddings = features.includes('embeddings');
 
-  const queuedSteps = stepsTemplate(features, 'queued');
+  const existingJob = await prisma.aiAnalysisJob.findUnique({ where: { assetId } });
+  const prevSteps =
+    existingJob?.steps && typeof existingJob.steps === 'object' && !Array.isArray(existingJob.steps)
+      ? (existingJob.steps as Record<string, string>)
+      : {};
+
+  const queuedSteps = {
+    asr: wantAsr ? 'queued' : prevSteps.asr === 'completed' ? 'completed' : prevSteps.asr || 'skipped',
+    people_scenes: wantPeople
+      ? 'queued'
+      : prevSteps.people_scenes === 'completed'
+        ? 'completed'
+        : prevSteps.people_scenes || 'skipped',
+    highlights: wantHighlights
+      ? 'queued'
+      : prevSteps.highlights === 'completed'
+        ? 'completed'
+        : prevSteps.highlights || 'skipped',
+    embeddings: wantEmbeddings
+      ? 'queued'
+      : prevSteps.embeddings === 'completed'
+        ? 'completed'
+        : prevSteps.embeddings || 'skipped',
+  };
 
   const analysisJob = await prisma.aiAnalysisJob.upsert({
     where: { assetId },
@@ -214,7 +235,12 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
     },
   });
 
-  const steps: Record<string, string> = stepsTemplate(features, 'skipped');
+  const steps: Record<string, string> = { ...queuedSteps };
+  // Reset only the features this job will run.
+  if (wantAsr) steps.asr = 'skipped';
+  if (wantPeople) steps.people_scenes = 'skipped';
+  if (wantHighlights) steps.highlights = 'skipped';
+  if (wantEmbeddings) steps.embeddings = 'skipped';
   const stepErrors: string[] = [];
 
   try {
@@ -262,7 +288,34 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
       }
     }
 
-    if (wantAsr && (steps.asr === 'completed' || steps.asr === 'skipped')) {
+    if (wantPeople) {
+      if (peopleSettled.status === 'fulfilled') {
+        steps.people_scenes = peopleSettled.value;
+        if (peopleSettled.value === 'completed' || peopleSettled.value === 'skipped') {
+          try {
+            await embedSceneInsightsForAsset(prisma, assetId, orgId, force);
+          } catch (sceneEmbedErr: any) {
+            const msg = sceneEmbedErr?.message || String(sceneEmbedErr);
+            stepErrors.push(`scene_embeddings: ${msg}`);
+            console.error('[AI] scene embeddings failed:', msg);
+          }
+        }
+      } else {
+        steps.people_scenes = 'failed';
+        const msg = peopleSettled.reason?.message || String(peopleSettled.reason);
+        stepErrors.push(`people_scenes: ${msg}`);
+        console.error('[AI] people_scenes step failed:', msg);
+      }
+    }
+
+    let transcriptReady =
+      wantAsr && (steps.asr === 'completed' || steps.asr === 'skipped');
+    if (!transcriptReady && (wantHighlights || wantEmbeddings) && !wantAsr) {
+      const segmentCount = await prisma.aiTranscriptSegment.count({ where: { assetId } });
+      transcriptReady = segmentCount > 0;
+    }
+
+    if (transcriptReady) {
       if (wantHighlights) {
         try {
           steps.highlights = await highlightTranscriptForAsset(prisma, assetId, orgId, force);

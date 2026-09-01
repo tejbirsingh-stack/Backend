@@ -31,10 +31,8 @@ function normalizeAiFeatures(features, { assetType } = {}) {
     list = [...ALL_AI_FEATURES];
   }
 
-  // Highlights / embeddings need ASR when selected for the first time.
-  if ((list.includes('highlights') || list.includes('embeddings')) && !list.includes('asr')) {
-    list = ['asr', ...list];
-  }
+  // Do not auto-inject asr here: the worker will use an existing transcript when
+  // highlights/embeddings are requested without asr (additive "Add AI features" runs).
 
   if (assetType === 'audio') {
     list = list.filter((f) => f !== 'people_scenes');
