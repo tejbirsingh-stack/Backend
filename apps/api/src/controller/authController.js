@@ -848,6 +848,8 @@ module.exports.registerRole = async (request, reply) => {
       html: emailHtml,
     });
 
+    logSuccess(ACTIVITY_NAME.USER_INVITED, `Invited new user "${user.email}" with role "${user.role}".`, request);
+
     // 9. Return success response (No HubSpot sync performed)
     return reply.status(201).send({
       success: true,
@@ -863,6 +865,7 @@ module.exports.registerRole = async (request, reply) => {
     });
   } catch (error) {
     console.error("Register Role Error:", error);
+    logError(ACTIVITY_NAME.USER_INVITED, `Failed to invite user "${email || ''}".`, request, error);
     return reply.status(500).send({
       success: false,
       error: "Internal Server Error",
