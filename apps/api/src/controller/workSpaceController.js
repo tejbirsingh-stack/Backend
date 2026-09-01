@@ -488,24 +488,6 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             }
         });
 
-        // Fallback: if no workspaces found, check if workspace exists in their org and add user to it
-        if (workspaces.length === 0 && orgId) {
-            const orgWorkspaces = await prisma.workspace.findMany({
-                where: { orgId },
-                orderBy: { createdAt: 'asc' }
-            });
-            if (orgWorkspaces.length > 0) {
-                for (const ws of orgWorkspaces) {
-                    await prisma.workspaceUser.upsert({
-                        where: { workspaceId_userId: { workspaceId: ws.id, userId: userId } },
-                        create: { workspaceId: ws.id, userId: userId },
-                        update: {}
-                    }).catch(() => { });
-                }
-                workspaces = orgWorkspaces;
-            }
-        }
-
         if (workspaces.length > 0) {
             const hasAnyDefault = workspaces.some(w => w.isDefault);
             if (!hasAnyDefault) {
@@ -542,6 +524,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
 
         // ── Access gate ───────────────────────────────────────────────────────
         const hasAccess = await assertWorkspaceAccess(prisma, request.user, id);
+        console.log('hasAccess', hasAccess)
         if (!hasAccess) {
             return reply.code(403).send({
                 success: false,
@@ -891,10 +874,10 @@ module.exports.addProjectMember = async (request, reply) => {
         const user = await prisma.user.findUnique({ where: { email: cleanEmail } });
 
         if (!user) {
-            return reply.code(404).send({ success: false, message: 'User not found.' });
+            return reply.code(404).send({ success: false, message: 'User not found.', notFound: true });
         }
 
-        const effectiveMemberType = memberType || MEMBER_TYPES.MEMBER;
+        const effectiveMemberType = user.orgId === orgId ? MEMBER_TYPES.MEMBER : MEMBER_TYPES.GUEST;
 
         let resolvedAccessLevelId = null;
         if (accessLevel) {
@@ -958,7 +941,14 @@ module.exports.addProjectMember = async (request, reply) => {
 
         return reply.send({
             success: true,
-            message: `${effectiveMemberType} added to project successfully.`
+            message: `${effectiveMemberType} added to project successfully.`,
+            memberType: effectiveMemberType,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                avatarUrl: user.avatarUrl
+            }
         });
     } catch (error) {
         console.error('Error adding project member:', error);
@@ -3848,10 +3838,18 @@ module.exports.addWorkspaceMember = async (request, reply) => {
         const user = await prisma.user.findUnique({ where: { email: cleanEmail } });
 
         if (!user) {
-            return reply.code(404).send({ success: false, message: 'User not found.' });
+            return reply.code(404).send({ success: false, message: 'User not found.', notFound: true });
         }
 
-        const effectiveMemberType = memberType || 'MEMBER';
+        const effectiveMemberType = user.orgId === orgId ? 'MEMBER' : 'GUEST';
+
+        if ((workspace.visibility === 'public' || workspace.visibility === 'PUBLIC') && effectiveMemberType === 'MEMBER') {
+            return reply.code(400).send({
+                success: false,
+                message: 'Organization members already have access to this public workspace.',
+                orgMemberInPublic: true
+            });
+        }
 
         let resolvedAccessLevelId = null;
         if (accessLevel) {
@@ -3879,7 +3877,14 @@ module.exports.addWorkspaceMember = async (request, reply) => {
 
         return reply.send({
             success: true,
-            message: `${effectiveMemberType} added to workspace successfully.`
+            message: `${effectiveMemberType} added to workspace successfully.`,
+            memberType: effectiveMemberType,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                avatarUrl: user.avatarUrl
+            }
         });
     } catch (error) {
         console.error('Error adding workspace member:', error);
