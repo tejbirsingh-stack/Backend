@@ -1,5 +1,5 @@
 const { isOrgWideRole } = require('../lib/rbac-policy');
-const { ACCESS_LEVEL, MEMBER_TYPES } = require('../lib/rolesPermissions');
+const { ACCESS_LEVEL, MEMBER_TYPES, VISIBILITY } = require('../lib/rolesPermissions');
 
 /**
  * Automatically assigns all Super Admins and Admins in the organization to a given workspace.
@@ -12,7 +12,7 @@ async function autoAssignAdminsToWorkspace(prisma, orgId, workspaceId) {
       where: {
         orgId,
         roleRelation: {
-          name: { in: ['Super Admin', 'Admin', 'Platform Admin'] }
+          name: { in: ['Super Admin', 'Admin'] }
         }
       },
       select: { id: true }
@@ -191,19 +191,31 @@ async function autoAssignAdminsToProject(prisma, orgId, workspaceId, projectId) 
 async function assertWorkspaceAccess(prisma, user, workspaceId) {
   if (!workspaceId || !user?.id) return false;
 
-  // Org-wide admin roles always have access
-  if (isOrgWideRole(user.role || user.roleId)) return true;
-
   const userId = user.id;
 
-  // 1. Direct membership
+  // 1. Public workspace + same org → any org member has access
+  //    (mirrors the visibility logic in findAllWorkspaces and resolveUserWorkspacePermissions)
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { visibility: true, orgId: true }
+  });
+  if (
+    workspace &&
+    workspace.visibility?.toLowerCase() === VISIBILITY.PUBLIC &&
+    user.orgId &&
+    workspace.orgId === user.orgId
+  ) {
+    return true;
+  }
+
+  // 2. Direct membership (covers private workspace explicit invite)
   const directMember = await prisma.workspaceUser.findFirst({
     where: { workspaceId, userId },
     select: { userId: true }
   });
   if (directMember) return true;
 
-  // 2. Group membership
+  // 3. Group membership
   const groupMember = await prisma.workspaceGroup.findFirst({
     where: {
       workspaceId,

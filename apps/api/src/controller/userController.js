@@ -450,7 +450,7 @@ module.exports.updateUserAdmin = async (request, reply) => {
 
     const updatedRoleName = updatedUser.roleRelation?.name || "";
 
-    if (roleId && ['Super Admin', 'Admin', 'Platform Admin'].includes(updatedRoleName)) {
+    if (roleId && ['Super Admin', 'Admin'].includes(updatedRoleName)) {
       if (updatedUser.orgId) {
         await autoAssignNewAdminToWorkspaces(request.server.prisma, updatedUser.orgId, updatedUser.id);
       }
