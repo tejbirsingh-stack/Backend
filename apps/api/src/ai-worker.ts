@@ -5,7 +5,9 @@ import { PrismaClient } from '@prisma/client';
 // @ts-ignore
 import B2StorageService from './b2-storage.cjs';
 import { transcribeProxy } from './services/ai/assemblyai.js';
+import { indexProxyWithVideoIndexer } from './services/ai/azureVideoIndexer.js';
 import { embedTranscriptForAsset } from './services/ai/embedTranscript.js';
+import { embedSceneInsightsForAsset } from './services/ai/embedSceneInsights.js';
 import { highlightTranscriptForAsset } from './services/ai/highlightTranscript.js';
 // CJS entitlement helper
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -36,12 +38,7 @@ type AnalyzeJobData = {
   force?: boolean;
 };
 
-async function processAsrStep(assetId: string, orgId: string, force: boolean) {
-  const existingCount = await prisma.aiTranscriptSegment.count({ where: { assetId } });
-  if (existingCount > 0 && !force) {
-    return 'skipped';
-  }
-
+async function getProxyUrl(assetId: string): Promise<{ proxyUrl: string; title: string; type: string }> {
   const asset = await prisma.asset.findUnique({
     where: { id: assetId },
     include: { files: true },
@@ -49,19 +46,26 @@ async function processAsrStep(assetId: string, orgId: string, force: boolean) {
   if (!asset) {
     throw new Error('Asset not found');
   }
-
-  if (asset.type !== 'video' && asset.type !== 'audio') {
-    return 'skipped';
-  }
-
   const proxy = asset.files.find((f) => f.fileClass === 'proxy');
   if (!proxy?.filePath) {
-    throw new Error('Proxy AssetFile missing; cannot transcribe original');
+    throw new Error('Proxy AssetFile missing; cannot run AI on original');
   }
-
   const proxyUrl = await b2Storage.getPresignedUrl(proxy.filePath, 86400);
   if (!proxyUrl) {
     throw new Error('Failed to generate proxy presigned URL');
+  }
+  return { proxyUrl, title: asset.title || assetId, type: asset.type };
+}
+
+async function processAsrStep(assetId: string, orgId: string, force: boolean) {
+  const existingCount = await prisma.aiTranscriptSegment.count({ where: { assetId } });
+  if (existingCount > 0 && !force) {
+    return 'skipped';
+  }
+
+  const { proxyUrl, type } = await getProxyUrl(assetId);
+  if (type !== 'video' && type !== 'audio') {
+    return 'skipped';
   }
 
   const segments = await transcribeProxy(proxyUrl);
@@ -86,6 +90,58 @@ async function processAsrStep(assetId: string, orgId: string, force: boolean) {
   return 'completed';
 }
 
+async function processPeopleScenesStep(assetId: string, orgId: string, force: boolean) {
+  const existingPeople = await prisma.aiAssetPersonAppearance.count({ where: { assetId } });
+  const existingScenes = await prisma.aiSceneInsight.count({ where: { assetId } });
+  if ((existingPeople > 0 || existingScenes > 0) && !force) {
+    return 'skipped';
+  }
+
+  const { proxyUrl, title, type } = await getProxyUrl(assetId);
+  if (type !== 'video') {
+    return 'skipped';
+  }
+
+  const indexed = await indexProxyWithVideoIndexer(proxyUrl, title);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.aiAssetPersonAppearance.deleteMany({ where: { assetId } });
+    await tx.aiSceneInsight.deleteMany({ where: { assetId } });
+
+    if (indexed.people.length > 0) {
+      await tx.aiAssetPersonAppearance.createMany({
+        data: indexed.people.map((p) => ({
+          assetId,
+          orgId,
+          viFaceId: p.viFaceId,
+          displayLabel: p.displayLabel,
+          startMs: p.startMs,
+          endMs: p.endMs,
+          thumbnailUrl: p.thumbnailUrl,
+          ordinal: p.ordinal,
+        })),
+      });
+    }
+
+    if (indexed.scenes.length > 0) {
+      await tx.aiSceneInsight.createMany({
+        data: indexed.scenes.map((s) => ({
+          assetId,
+          orgId,
+          label: s.label,
+          description: s.description,
+          startMs: s.startMs,
+          endMs: s.endMs,
+          confidence: s.confidence,
+          ordinal: s.ordinal,
+        })),
+      });
+    }
+  });
+
+  return 'completed';
+}
+
 export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
   const { assetId, force = false } = job.data;
   const asset = await prisma.asset.findUnique({ where: { id: assetId } });
@@ -97,6 +153,13 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
     throw new Error(`Asset ${assetId} has no orgId and none provided in job`);
   }
 
+  const queuedSteps = {
+    asr: 'queued',
+    people_scenes: 'queued',
+    highlights: 'queued',
+    embeddings: 'queued',
+  };
+
   const analysisJob = await prisma.aiAnalysisJob.upsert({
     where: { assetId },
     create: {
@@ -104,13 +167,13 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
       orgId,
       status: 'processing',
       force,
-      steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' },
+      steps: queuedSteps,
     },
     update: {
       status: 'processing',
       force,
       error: null,
-      steps: { asr: 'queued', highlights: 'queued', embeddings: 'queued' },
+      steps: queuedSteps,
     },
   });
 
@@ -131,7 +194,38 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
       return;
     }
 
-    steps.asr = await processAsrStep(assetId, orgId, force);
+    const [asrSettled, peopleSettled] = await Promise.allSettled([
+      processAsrStep(assetId, orgId, force),
+      processPeopleScenesStep(assetId, orgId, force),
+    ]);
+
+    if (asrSettled.status === 'fulfilled') {
+      steps.asr = asrSettled.value;
+    } else {
+      steps.asr = 'failed';
+      const msg = asrSettled.reason?.message || String(asrSettled.reason);
+      stepErrors.push(`asr: ${msg}`);
+      console.error('[AI] asr step failed:', msg);
+    }
+
+    if (peopleSettled.status === 'fulfilled') {
+      steps.people_scenes = peopleSettled.value;
+      if (peopleSettled.value === 'completed' || peopleSettled.value === 'skipped') {
+        try {
+          await embedSceneInsightsForAsset(prisma, assetId, orgId, force);
+        } catch (sceneEmbedErr: any) {
+          const msg = sceneEmbedErr?.message || String(sceneEmbedErr);
+          stepErrors.push(`scene_embeddings: ${msg}`);
+          console.error('[AI] scene embeddings failed:', msg);
+        }
+      }
+    } else {
+      steps.people_scenes = 'failed';
+      const msg = peopleSettled.reason?.message || String(peopleSettled.reason);
+      stepErrors.push(`people_scenes: ${msg}`);
+      console.error('[AI] people_scenes step failed:', msg);
+    }
+
     if (steps.asr === 'completed' || steps.asr === 'skipped') {
       try {
         steps.highlights = await highlightTranscriptForAsset(prisma, assetId, orgId, force);
@@ -152,16 +246,24 @@ export async function processAiAnalyzeJob(job: Job<AnalyzeJobData>) {
         console.error('[AI] embeddings step failed:', msg + meta);
       }
     }
+
+    const hardFailed = steps.asr === 'failed' && steps.people_scenes === 'failed';
     await prisma.aiAnalysisJob.update({
       where: { id: analysisJob.id },
       data: {
-        status: 'completed',
+        status: hardFailed ? 'failed' : 'completed',
         steps,
         error: stepErrors.length > 0 ? stepErrors.join('; ') : null,
       },
     });
+
+    if (hardFailed) {
+      throw new Error(stepErrors.join('; ') || 'AI analysis failed');
+    }
   } catch (err: any) {
-    steps.asr = 'failed';
+    if (steps.asr !== 'failed' && steps.people_scenes !== 'failed') {
+      steps.asr = steps.asr === 'skipped' ? 'failed' : steps.asr;
+    }
     await prisma.aiAnalysisJob.update({
       where: { id: analysisJob.id },
       data: {

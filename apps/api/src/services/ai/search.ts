@@ -4,7 +4,7 @@ import { embedTexts, toPgVectorLiteral } from './openai.js';
 export type AiSearchHit = {
   assetId: string;
   score: number;
-  matchType: 'semantic' | 'transcript' | 'title' | 'highlight';
+  matchType: 'semantic' | 'transcript' | 'title' | 'highlight' | 'scene';
   startMs?: number;
   endMs?: number;
   snippet?: string;
@@ -102,6 +102,29 @@ async function searchByHighlight(prisma: PrismaClient, orgId: string, q: string)
   });
 }
 
+async function searchByScene(prisma: PrismaClient, orgId: string, q: string): Promise<AiSearchHit[]> {
+  const scenes = await prisma.aiSceneInsight.findMany({
+    where: {
+      orgId,
+      OR: [
+        { label: { contains: q, mode: 'insensitive' } },
+        { description: { contains: q, mode: 'insensitive' } },
+      ],
+    },
+    orderBy: { startMs: 'asc' },
+    take: 50,
+    select: { assetId: true, label: true, description: true, startMs: true, endMs: true },
+  });
+  return scenes.map((s) => ({
+    assetId: s.assetId,
+    score: 1,
+    matchType: 'scene' as const,
+    startMs: s.startMs,
+    endMs: s.endMs,
+    snippet: s.description || s.label,
+  }));
+}
+
 async function searchByEmbedding(prisma: PrismaClient, orgId: string, q: string): Promise<AiSearchHit[]> {
   try {
     const [vector] = await embedTexts([q]);
@@ -179,6 +202,14 @@ function mergeAndRank(hits: AiSearchHit[], page: number, pageSize: number): {
       ) {
         current.matchType = 'highlight';
         current.snippet = hit.snippet || current.snippet;
+      } else if (
+        hit.matchType === 'scene' &&
+        (current.matchType === 'title' || current.matchType === 'scene' || !current.snippet)
+      ) {
+        current.matchType = 'scene';
+        current.snippet = hit.snippet || current.snippet;
+        current.startMs = hit.startMs;
+        current.endMs = hit.endMs;
       }
     }
     if (hit.createdAt && (!current.createdAt || hit.createdAt > current.createdAt)) {
@@ -218,14 +249,15 @@ export async function hybridSearch(params: HybridSearchParams): Promise<{
   pageSize: number;
 }> {
   const { prisma, orgId, q, page, pageSize } = params;
-  const [titleHits, transcriptHits, highlightHits, semanticHits] = await Promise.all([
+  const [titleHits, transcriptHits, highlightHits, sceneHits, semanticHits] = await Promise.all([
     searchByTitle(prisma, orgId, q).catch(() => [] as AiSearchHit[]),
     searchByTranscript(prisma, orgId, q).catch(() => [] as AiSearchHit[]),
     searchByHighlight(prisma, orgId, q).catch(() => [] as AiSearchHit[]),
+    searchByScene(prisma, orgId, q).catch(() => [] as AiSearchHit[]),
     searchByEmbedding(prisma, orgId, q),
   ]);
   const merged = mergeAndRank(
-    [...titleHits, ...transcriptHits, ...highlightHits, ...semanticHits],
+    [...titleHits, ...transcriptHits, ...highlightHits, ...sceneHits, ...semanticHits],
     page,
     pageSize,
   );

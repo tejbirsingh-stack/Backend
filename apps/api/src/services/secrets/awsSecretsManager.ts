@@ -47,7 +47,7 @@ async function loadBundle(): Promise<Record<string, string>> {
   }
 }
 
-/** Logical keys: ASSEMBLY_API_KEY, OPENAI_API_KEY. Env wins when set (local keys already in .env). */
+/** Logical keys: ASSEMBLY_API_KEY, OPENAI_API_KEY, AZURE_VI_*. Env wins when set (local keys already in .env). */
 export async function getSecret(logicalKey: string): Promise<string> {
   const hit = cache.get(logicalKey);
   if (hit && hit.expiresAt > Date.now()) {
