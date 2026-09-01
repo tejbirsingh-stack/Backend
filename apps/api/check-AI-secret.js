@@ -1,4 +1,5 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 const { SecretsManagerClient, GetSecretValueCommand } = require("@aws-sdk/client-secrets-manager");
 
 // 1. Configure the AWS Client using environment variables
@@ -17,7 +18,7 @@ async function run() {
     // 2. Request the specific secret by its ID
     const response = await client.send(
       new GetSecretValueCommand({
-        SecretId: process.env.AWS_AI_SECRET_ID || "noah/dev/ai/credentials",
+        SecretId: process.env.AWS_AI_SECRET_ID || "noah/qa/ai/credentials",
       })
     );
     

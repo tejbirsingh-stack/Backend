@@ -1461,18 +1461,14 @@ module.exports.softDelete = async (request, reply) => {
 
     let whereClause = {
       status: { in: ['trash'] },
-      deletedAt: { not: null }
+      deletedAt: { not: null },
+      OR: [
+        { deletedByUserId: userId },
+        { deletedByUserId: null, uploadedByUserId: userId }
+      ]
     };
 
-    const isSuperAdminOrAdmin =
-      userRole === 'super admin' ||
-      userRole === 'superadmin' ||
-      userRole === 'super_admin' ||
-      userRole === 'admin' ||
-      liveUser?.roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
-      liveUser?.roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
-
-    if (request.user?.orgId && isSuperAdminOrAdmin) {
+    if (request.user?.orgId) {
       whereClause.AND = [
         {
           OR: [
@@ -1480,11 +1476,6 @@ module.exports.softDelete = async (request, reply) => {
             { orgId: null }
           ]
         }
-      ];
-    } else if (!isSuperAdminOrAdmin) {
-      whereClause.OR = [
-        { uploadedByUserId: userId },
-        { deletedByUserId: userId }
       ];
     }
 

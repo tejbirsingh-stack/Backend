@@ -145,6 +145,13 @@ const ACTIVITY_NAME = {
     DEFAULT_CONTENT_DELETED: 'Default Content Deleted',
     USER_INVITED: 'User Invited',
     USER_UPDATED: 'User Updated',
+
+    // User Groups
+    USER_GROUP_CREATED: 'User Group Created',
+    USER_GROUP_UPDATED: 'User Group Updated',
+    USER_GROUP_DELETED: 'User Group Deleted',
+    USER_GROUP_MEMBERS_ADDED: 'User Group Members Added',
+    USER_GROUP_MEMBER_REMOVED: 'User Group Member Removed',
 };
 
 async function errorToString(error) {
@@ -162,18 +169,55 @@ async function errorToString(error) {
     return typeof error === 'object' ? JSON.stringify(error) : String(error);
 }
 
+async function resolveRoleName(userDetail) {
+    if (!userDetail) return null;
+    let rawRole = userDetail.role || userDetail.userRole || userDetail.roleRelation?.name || null;
+    
+    if (!rawRole && userDetail.id && prisma) {
+        try {
+            const dbUser = await prisma.user.findUnique({
+                where: { id: userDetail.id },
+                include: { roleRelation: true }
+            });
+            rawRole = dbUser?.roleRelation?.name || dbUser?.role || null;
+        } catch (e) {
+            // ignore
+        }
+    }
+
+    if (!rawRole || typeof rawRole !== 'string') return null;
+    const trimmed = rawRole.trim();
+    const normalized = trimmed.toLowerCase().replace(/[_ -]+/g, "");
+    if (normalized === 'superadmin') return 'Super Admin';
+    if (normalized === 'admin') return 'Admin';
+    if (normalized === 'editor') return 'Editor';
+    if (normalized === 'collaborator') return 'Collaborator';
+    if (normalized === 'viewer') return 'Viewer';
+    if (normalized === 'platformadmin') return 'Platform Admin';
+
+    return trimmed;
+}
+
 async function recordActivity(input) {
     try {
+        const resolvedRole = (await resolveRoleName(input.userDetail)) || input.userRole || null;
+        let finalDescription = input.description || null;
+
+        // Ensure description explicitly includes actor role
+        if (finalDescription && resolvedRole && !finalDescription.toLowerCase().includes(resolvedRole.toLowerCase())) {
+            finalDescription = `[${resolvedRole}] ${finalDescription}`;
+        }
+
         await prisma.auditLog.create({
             data: {
                 activityName: input.activityName,
-                description: input.description || null,
+                description: finalDescription,
                 activityType: input.activityType || ACTIVITY_TYPE.INFO,
                 actorType: input.actorType ?? ACTOR_TYPE.USER,
                 userId: input.userDetail?.id || input.userId || null,
                 userName: input.userDetail?.name || input.userName || null,
                 userEmail: input.userDetail?.email || input.userEmail || null,
-                userRole: input.userDetail?.role || input.userRole || null,
+                userRole: resolvedRole,
                 orgId: input.userDetail?.orgId || input.orgId || null,
                 error: await errorToString(input.error),
             },
