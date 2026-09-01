@@ -2050,6 +2050,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
         data: {
           emailOTP: otpCode,
           emailOtpExpiresAt: expiresAt,
+          failedLoginAttempts: 0,
         },
       });
       targetOrgId = existingUser.orgId;
@@ -2073,6 +2074,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
           email: normalizedEmail,
           emailOTP: otpCode,
           emailOtpExpiresAt: expiresAt,
+          failedLoginAttempts: 0,
           status: "pending_signup",
           orgId: pendingOrg.id,
         },
@@ -2136,30 +2138,77 @@ module.exports.verifySignupOtp = async (request, reply) => {
       });
     }
 
-    // Verify OTP code (fallback to 123456 in dev environment for testing ease)
-    const isDevFallback = process.env.NODE_ENV !== "production" && trimmedCode === "123456";
-    const isValidOtp =
-      isDevFallback ||
-      (user.emailOTP &&
-        user.emailOTP === trimmedCode &&
-        user.emailOtpExpiresAt &&
-        new Date() <= new Date(user.emailOtpExpiresAt));
-
-    if (!isValidOtp) {
-      return reply.status(401).send({
+    // Check if OTP exists
+    if (!user.emailOTP || !user.emailOtpExpiresAt) {
+      return reply.status(400).send({
         success: false,
-        error: "Unauthorized",
-        message: "Invalid or expired verification code",
+        error: "Bad Request",
+        message: "No active verification code found. Please request a new code.",
       });
     }
 
-    // Mark email as verified
+    // Check OTP expiration
+    if (new Date() > new Date(user.emailOtpExpiresAt)) {
+      await request.server.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          emailOTP: null,
+          emailOtpExpiresAt: null,
+          failedLoginAttempts: 0,
+        },
+      });
+
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Verification code has expired. Please request a new code.",
+      });
+    }
+
+    // Strictly validate submitted code against generated OTP stored in database
+    if (trimmedCode !== user.emailOTP) {
+      const attempts = (user.failedLoginAttempts || 0) + 1;
+      const MAX_OTP_ATTEMPTS = 5;
+
+      if (attempts >= MAX_OTP_ATTEMPTS) {
+        // Invalidate OTP after 5 failed attempts to prevent brute-forcing
+        await request.server.prisma.user.update({
+          where: { id: user.id },
+          data: {
+            emailOTP: null,
+            emailOtpExpiresAt: null,
+            failedLoginAttempts: 0,
+          },
+        });
+
+        return reply.status(429).send({
+          success: false,
+          error: "Too Many Requests",
+          message: "Too many failed attempts. Your verification code has been invalidated. Please request a new code.",
+        });
+      }
+
+      await request.server.prisma.user.update({
+        where: { id: user.id },
+        data: { failedLoginAttempts: attempts },
+      });
+
+      const remaining = MAX_OTP_ATTEMPTS - attempts;
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: `Invalid verification code. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`,
+      });
+    }
+
+    // Mark email as verified and clear OTP credentials
     await request.server.prisma.user.update({
       where: { id: user.id },
       data: {
         emailVerified: true,
         emailOTP: null,
         emailOtpExpiresAt: null,
+        failedLoginAttempts: 0,
       },
     });
 
