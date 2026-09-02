@@ -219,72 +219,55 @@ module.exports.storeWorkplace = async (request, reply) => {
             for (const email of inviteEmails) {
                 if (!email || typeof email !== 'string') continue;
 
-                if (mType === MEMBER_TYPES.GUEST) {
-                    // Guest: must exist in DB, belong to a different org, and be active
-                    const guestUser = await prisma.user.findFirst({
-                        where: { email: email.toLowerCase().trim() }
-                    });
-                    if (
-                        !guestUser ||
-                        guestUser.status !== 'active' ||
-                        !guestUser.orgId ||
-                        guestUser.orgId === orgId
-                    ) {
-                        // Skip invalid guest: not found, inactive, no org, or same org
-                        continue;
-                    }
-                    await prisma.workspaceUser.create({
-                        data: {
-                            workspaceId: workspace.id,
-                            userId: guestUser.id,
-                            memberType: MEMBER_TYPES.GUEST,
-                            accessLevelId: aLevelId
-                        }
-                    }).catch(() => { });
+                const cleanEmail = email.toLowerCase().trim();
 
-                    // ALWAYS send in-app notification
-                    createNotification(
-                        request.server,
-                        guestUser.id,
-                        guestUser.orgId || orgId,
-                        'workspace_invite',
-                        'Invited to workspace',
-                        `${request.user.name || request.user.email} added you to workspace "${name}"`,
-                        workspace.id
-                    ).catch(err => console.error('Failed to create in-app notification:', err));
-                } else {
-                    // Member: must belong to the same org
-                    const invitedUser = await prisma.user.findFirst({
-                        where: { email: email.toLowerCase().trim(), orgId }
-                    });
-                    if (invitedUser && invitedUser.id !== userId) {
-                        await prisma.workspaceUser.create({
-                            data: {
-                                workspaceId: workspace.id,
-                                userId: invitedUser.id,
-                                memberType: mType,
-                                accessLevelId: aLevelId
-                            }
-                        }).catch(() => { });
+                const invitedUser = await prisma.user.findFirst({
+                    where: { email: cleanEmail }
+                });
 
-                        // ALWAYS send in-app notification
-                        createNotification(
-                            request.server,
-                            invitedUser.id,
-                            orgId,
-                            'workspace_invite',
-                            'Invited to workspace',
-                            `${request.user.name || request.user.email} added you to workspace "${name}"`,
-                            workspace.id
-                        ).catch(err => console.error('Failed to create in-app notification:', err));
-                    }
+                if (!invitedUser || invitedUser.status !== 'active') {
+                    // Skip invalid/inactive user
+                    continue;
                 }
+
+                if (invitedUser.id === userId) {
+                    // Skip if they invite themselves
+                    continue;
+                }
+
+                const isGuest = invitedUser.orgId !== orgId;
+                
+                // If the workspace is public (not restricted), we strictly forbid inviting members
+                if (!isRestricted && !isGuest) {
+                    continue;
+                }
+
+                const actualMemberType = isGuest ? MEMBER_TYPES.GUEST : MEMBER_TYPES.MEMBER;
+
+                await prisma.workspaceUser.create({
+                    data: {
+                        workspaceId: workspace.id,
+                        userId: invitedUser.id,
+                        memberType: actualMemberType,
+                        accessLevelId: aLevelId
+                    }
+                }).catch(() => {});
+
+                // ALWAYS send in-app notification
+                createNotification(
+                    request.server,
+                    invitedUser.id,
+                    invitedUser.orgId || orgId,
+                    'workspace_invite',
+                    'Invited to workspace',
+                    `${request.user.name || request.user.email} added you to workspace "${name}"`,
+                    workspace.id
+                ).catch(err => console.error('Failed to create in-app notification:', err));
 
                 if (sendInviteEmail) {
                     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-                    const appUrl = `${frontendUrl}`; // Base dashboard URL
-                    const cleanEmail = email.toLowerCase().trim();
-                    if (mType === MEMBER_TYPES.GUEST) {
+                    const appUrl = `${frontendUrl}`;
+                    if (isGuest) {
                         const orgNameObj = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });
                         emailService.sendWorkspaceGuestInvite(cleanEmail, {
                             workspaceName: name,
