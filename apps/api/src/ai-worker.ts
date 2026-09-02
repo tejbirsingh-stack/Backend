@@ -81,10 +81,14 @@ async function getProxyUrl(assetId: string): Promise<{ proxyUrl: string; title: 
     throw new Error('Asset not found');
   }
   const proxy = asset.files.find((f) => f.fileClass === 'proxy');
-  if (!proxy?.filePath) {
+  const original = asset.files.find((f) => f.fileClass === 'original');
+  const mediaFile =
+    proxy ||
+    (asset.type === 'audio' ? original : null);
+  if (!mediaFile?.filePath) {
     throw new Error('Proxy AssetFile missing; cannot run AI on original');
   }
-  const proxyUrl = await b2Storage.getPresignedUrl(proxy.filePath, 86400);
+  const proxyUrl = await b2Storage.getPresignedUrl(mediaFile.filePath, 86400);
   if (!proxyUrl) {
     throw new Error('Failed to generate proxy presigned URL');
   }

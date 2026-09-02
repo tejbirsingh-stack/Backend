@@ -47,6 +47,7 @@ const redisClient = new Redis({
 
 const B2StorageService = require("../b2-storage.cjs");
 const { assertQuotaAvailable, recordStorageDelta } = require("../services/usage-meter.service");
+const { persistUploadAiRequest, tryStartPendingUploadAi } = require("../services/ai/enqueueAiAnalyze");
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,
@@ -55,6 +56,25 @@ const b2Storage = new B2StorageService({
   endpoint: process.env.B2_ENDPOINT,
   region: process.env.B2_REGION,
 });
+
+async function applyUploadAiFeatureRequest(prisma, { assetId, orgId, assetType, aiFeatures }) {
+  if (!orgId || !Array.isArray(aiFeatures) || aiFeatures.length === 0) {
+    return;
+  }
+  try {
+    const persisted = await persistUploadAiRequest(prisma, {
+      assetId,
+      orgId,
+      assetType,
+      aiFeatures,
+    });
+    if (persisted && assetType === 'audio') {
+      await tryStartPendingUploadAi(prisma, assetId);
+    }
+  } catch (err) {
+    console.warn(`[Upload AI] Failed for asset ${assetId}:`, err.message);
+  }
+}
 
 async function enforceWorkspaceFolderStructure(prisma, ownerType, ownerId) {
   if (ownerType === 'WORKSPACE' && ownerId) {
@@ -2239,6 +2259,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
           setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
         }
 
+        const legacyAiFeatures = request.body?.aiFeatures;
+        if (request.user?.orgId) {
+          await applyUploadAiFeatureRequest(request.server.prisma, {
+            assetId: newAsset.id,
+            orgId: request.user.orgId,
+            assetType,
+            aiFeatures: legacyAiFeatures,
+          });
+        }
+
         if (assetType === 'image') {
           const ext = path.extname(part.filename || "").toLowerCase().replace(".", "");
           if (NON_WEB_IMAGE_EXTS.has(ext)) {
@@ -3306,7 +3336,7 @@ module.exports.getUploadStatus = async (request, reply) => {
 
 //15. Complete Multipart Upload Session and Create Database Record
 module.exports.completeResumableUpload = async (request, reply) => {
-  const { sessionId, parts, title, summary, tagIds, folderId, technicalSpecs } = request.body || {};
+  const { sessionId, parts, title, summary, tagIds, folderId, technicalSpecs, aiFeatures } = request.body || {};
   if (!sessionId) {
     return reply.status(400).send({ message: "sessionId is required" })
   }
@@ -3623,6 +3653,15 @@ module.exports.completeResumableUpload = async (request, reply) => {
       setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
     }
 
+    if (request.user?.orgId) {
+      await applyUploadAiFeatureRequest(request.server.prisma, {
+        assetId: newAsset.id,
+        orgId: request.user.orgId,
+        assetType,
+        aiFeatures,
+      });
+    }
+
     // Clean up Redis Sessions
     await redisClient.del(`upload:session:${sessionId}`);
 
@@ -3755,7 +3794,13 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
           }
         });
 
-        // AI analysis is started manually from AI Insights (feature picker), not on proxy ready.
+        if (request.server?.prisma) {
+          try {
+            await tryStartPendingUploadAi(request.server.prisma, newAssetId);
+          } catch (aiStartErr) {
+            console.warn(`[Upload AI] Failed to start pending AI for ${newAssetId}:`, aiStartErr.message);
+          }
+        }
 
         if (asset.orgId && proxySize > 0) {
           try {
