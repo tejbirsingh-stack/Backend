@@ -2050,6 +2050,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
         data: {
           emailOTP: otpCode,
           emailOtpExpiresAt: expiresAt,
+          emailVerified: false,
           failedLoginAttempts: 0,
         },
       });
@@ -2259,6 +2260,24 @@ module.exports.completeSignup = async (request, reply) => {
       where: { email: normalizedEmail },
       include: { organization: true },
     });
+
+    // Prevent Account Takeover: Reject registration if account exists & active or password set
+    if (user && (user.passwordHash || user.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    // Require genuine server-side email OTP verification before completing registration
+    if (!user || !user.emailVerified) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Email verification is required before completing registration.",
+      });
+    }
 
     let passwordHash = null;
     if (password && typeof password === "string" && password.trim().length > 0) {
