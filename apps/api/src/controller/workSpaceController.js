@@ -2740,7 +2740,9 @@ module.exports.updateProject = async (request, reply) => {
         const { id } = request.params;
         const { name, workspaceId, visibility, status, color } = request.body;
 
-        await verifyProjectAccess(id, request.user.id, 'Full Access');
+        const requiresFullAccess = (workspaceId !== undefined || visibility !== undefined || status !== undefined);
+        const requiredAccessLevel = requiresFullAccess ? 'Full Access' : 'Can edit';
+        await verifyProjectAccess(id, request.user.id, requiredAccessLevel);
 
         if (name === undefined && workspaceId === undefined && visibility === undefined && status === undefined && color === undefined) {
             return reply.code(400).send({
