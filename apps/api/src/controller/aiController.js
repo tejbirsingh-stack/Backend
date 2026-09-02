@@ -86,7 +86,7 @@ module.exports.retryAiAnalyze = async function retryAiAnalyze(request, reply) {
     },
   });
 
-  await enqueueAiAnalyze({ assetId, orgId, force, features });
+  await enqueueAiAnalyze({ assetId, orgId, force, features, assetType: asset.type });
 
   return reply.send({ success: true, assetId, status: 'queued', features });
 };
