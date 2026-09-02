@@ -4263,33 +4263,7 @@ module.exports.retryTranscode = async (request, reply) => {
       where: { assetId: id, provider: "coconut" }
     });
 
-    // Duration Check
-    const maxDurationStr = process.env.COCONUT_MAX_DURATION_SECONDS;
-    if (asset.type !== 'audio' && maxDurationStr) {
-      const maxDuration = parseInt(maxDurationStr, 10);
-      if (!isNaN(maxDuration)) {
-        let metadata = asset.metadata;
-        if (typeof metadata?.customProperties === 'string') {
-          // Prisma stringified it, so try to parse if needed, but technicalSpecs should be an object
-        }
-        const technicalSpecs = metadata?.technicalSpecs;
-        const durationSeconds = technicalSpecs?.durationSeconds;
-        if (durationSeconds && durationSeconds > maxDuration) {
-          // Immediately set asset and job to failed, and return error
-          if (job) {
-            await request.server.prisma.transcodeJob.update({
-              where: { id: job.id },
-              data: { status: 'failed', providerMetadata: { error: 'Duration limit exceeded' } }
-            });
-          }
-          await request.server.prisma.asset.update({
-            where: { id },
-            data: { status: 'failed', compressedKey: null }
-          });
-          return reply.status(400).send({ error: `Asset duration exceeds maximum allowed limit of ${maxDuration} seconds for free tier.` });
-        }
-      }
-    }
+    // Duration check removed to support long videos on paid Coconut accounts.
 
     if (job) {
       await request.server.prisma.transcodeJob.update({
