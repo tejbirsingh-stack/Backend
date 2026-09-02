@@ -4313,6 +4313,8 @@ module.exports.retryTranscode = async (request, reply) => {
       return reply.status(400).send({ error: "Original file not found for this asset." });
     }
 
+    const size = Number(originalFile.sizeBytes || 0);
+
     // 300MB threshold for heavy queue
     const heavyThreshold = 300 * 1024 * 1024;
     const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
