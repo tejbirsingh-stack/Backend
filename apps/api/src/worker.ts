@@ -57,38 +57,7 @@ const processCompressionJob = async (job: Job) => {
 
     const isAudio = asset?.type === 'audio';
 
-// Apply duration limit only for video assets (audio is exempt)
-const maxDurationStr = process.env.COCONUT_MAX_DURATION_SECONDS;
-if (!isAudio && maxDurationStr && assetId && asset) {
-      const maxDuration = parseInt(maxDurationStr, 10);
-      if (!isNaN(maxDuration)) {
-        try {
-          const technicalSpecs = asset.metadata?.technicalSpecs as any;
-          const durationSeconds = technicalSpecs?.durationSeconds;
-          if (durationSeconds && durationSeconds > maxDuration) {
-            // console.log(`[Job ${job.id}] Asset duration ${durationSeconds}s exceeds limits of ${maxDuration}s. Skipping transcoding and marking as failed.`);
-            // Compute the would‑be compressed key to clean up any stale file
-            const partsTmp = key.split('/');
-            const filenameTmp = partsTmp.pop() || '';
-            const compressedFilenameTmp = filenameTmp.startsWith('raw-') ? filenameTmp.replace('raw-', 'compressed-') : `compressed-${filenameTmp}`;
-            const compressedKeyTmp = partsTmp.length > 0 ? `${partsTmp.join('/')}/${compressedFilenameTmp}` : compressedFilenameTmp;
-            // Delete possible stale object
-            try { await b2Storage.deleteFile(compressedKeyTmp); } catch (e) { console.error(`[Job ${job.id}] Failed to delete stale compressed file:`, (e as any).message); }
-            await prisma.transcodeJob.updateMany({
-              where: { assetId: assetId, provider: "coconut" },
-              data: { status: 'failed' }
-            });
-            await prisma.asset.update({
-              where: { id: assetId },
-              data: { status: 'failed', compressedKey: null }
-            });
-            return;
-          }
-        } catch (dbErr: any) {
-          console.error(`[Job ${job.id}] Failed to check asset duration:`, dbErr.message);
-        }
-      }
-    }
+// Duration limit check removed to support long videos on paid Coconut accounts.
 
     // Generate a Presigned GET URL so Coconut can read the raw file
     const sourceUrl = await b2Storage.getPresignedUrl(key, 86400); // URL valid for 24 hours
@@ -135,7 +104,7 @@ if (!isAudio && maxDurationStr && assetId && asset) {
       // - Also cap to 1080p if the file is large (>= 300MB) to prevent Coconut OOM at ~42%
       // - For massive files (>= 800MB), aggressively cap to 720p and limit bitrate to ensure processing completes without OOM on standard tiers.
       const technicalSpecs = asset?.metadata?.technicalSpecs as any;
-      const fileSizeBytes = job.data.fileSizeBytes || 0;
+      const fileSizeBytes = job.data.fileSizeBytes || Number(technicalSpecs?.sizeBytes || technicalSpecs?.fileSize || 0);
       const isMassiveFile = fileSizeBytes >= 800 * 1024 * 1024; // >= 800MB
       const isLargeFile = fileSizeBytes >= 300 * 1024 * 1024; // >= 300MB
       
