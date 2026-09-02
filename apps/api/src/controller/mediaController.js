@@ -4825,8 +4825,8 @@ module.exports.moveMediaFile = async (request, reply) => {
       }
     });
     
-    const itemPath = await buildItemPath(request.server.prisma, 'asset', mediaIds[0]);
-    logSuccess(ACTIVITY_NAME.MEDIA_MOVED, `Moved ${mediaIds?.length || 1} media file(s) (e.g. ${itemPath}).`, request);
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', id);
+    logSuccess(ACTIVITY_NAME.MEDIA_MOVED, `Moved 1 media file(s) (e.g. ${itemPath}).`, request);
     return reply.code(200).send({
       success: true,
       message: 'Media moved successfully.',

@@ -1442,18 +1442,37 @@ module.exports.findFolderData = async (request, reply) => {
         }
 
         const pendingFolderIds = await getPendingOrDeletedFolderIds(prisma);
-        const folders = await prisma.folder.findMany({
+        let folders = await prisma.folder.findMany({
             where: {
                 parentId: id,
                 ...(pendingFolderIds.length > 0 ? { id: { notIn: pendingFolderIds } } : {})
             },
             include: {
                 sources: true,
+                _count: { select: { children: true, projects: true } }
             },
             orderBy: {
                 createdAt: 'desc',
             },
         });
+
+        const rootFolderIds = folders.map(f => f.id);
+        const folderAssetCounts = rootFolderIds.length > 0 ? await prisma.asset.groupBy({
+            by: ['ownerId'],
+            where: {
+                ownerType: 'FOLDER',
+                ownerId: { in: rootFolderIds },
+                deletedAt: null,
+                status: { notIn: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] }
+            },
+            _count: { _all: true }
+        }) : [];
+        const countMap = new Map(folderAssetCounts.map(c => [String(c.ownerId), c._count._all]));
+
+        folders = folders.map(f => ({
+            ...f,
+            itemCount: (f._count?.children || 0) + (f._count?.projects || 0) + (countMap.get(String(f.id)) || 0)
+        }));
 
         const projects = await prisma.project.findMany({
             where: {
