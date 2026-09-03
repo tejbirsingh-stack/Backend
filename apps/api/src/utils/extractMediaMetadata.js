@@ -101,7 +101,7 @@ async function extractServerSideMetadata(filePathOrUrl) {
     }
 
     const rawDur = tags.Duration ? (typeof tags.Duration === 'number' ? tags.Duration : parseFloat(tags.Duration)) : null;
-    const durationSec = rawDur && !isNaN(rawDur) ? Math.floor(rawDur) : null;
+    const durationSec = rawDur && !isNaN(rawDur) ? Math.round(rawDur) : null;
     let formattedDuration = null;
     if (durationSec !== null && !isNaN(durationSec)) {
       const min = Math.floor(durationSec / 60);

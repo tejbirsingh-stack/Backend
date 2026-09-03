@@ -1,6 +1,73 @@
 // User Groups Controller
 const { logSuccess, logError, ACTIVITY_NAME } = require('../lib/audit-log');
 
+/**
+ * Helper to verify organization isolation and ownership/role permission for a user group.
+ */
+async function verifyGroupAccess(id, request) {
+  const callerOrgId = request.user?.orgId;
+  const userId = request.user?.id;
+
+  const group = await request.server.prisma.userGroup.findUnique({
+    where: { id },
+    select: { id: true, name: true, orgId: true, createdById: true }
+  });
+
+  if (!group) {
+    return { allowed: false, statusCode: 404, message: "User group not found" };
+  }
+
+  // Fetch live role
+  let currentUserRole = request.user?.role || "";
+  let roleId = request.user?.roleId;
+
+  if (userId) {
+    const liveUser = await request.server.prisma.user.findUnique({
+      where: { id: userId },
+      include: { roleRelation: true }
+    }).catch(() => null);
+
+    if (liveUser) {
+      currentUserRole = liveUser.roleRelation?.name || liveUser.role || currentUserRole;
+      roleId = liveUser.roleId || roleId;
+    }
+  }
+
+  const normalizedRole = currentUserRole.trim().toLowerCase().replace(/[_ -]+/g, "");
+  const isPlatformAdmin = Boolean(
+    request.platformAdmin ||
+    request.user?.isPlatformAdmin ||
+    normalizedRole === 'platformadmin'
+  );
+
+  const isSuperAdmin =
+    isPlatformAdmin ||
+    normalizedRole === 'superadmin' ||
+    normalizedRole === 'super_admin' ||
+    roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
+
+  // 1. SECURITY: Cross-Tenant Organization Isolation Guard
+  if (!isPlatformAdmin && group.orgId && callerOrgId && group.orgId !== callerOrgId) {
+    return {
+      allowed: false,
+      statusCode: 403,
+      message: "Access Denied: You do not have permission to access user groups from another organization."
+    };
+  }
+
+  // 2. SECURITY: IDOR Deletion & Modification Guard (Super Admin or Group Creator only)
+  const isGroupCreator = Boolean(userId && group.createdById === userId);
+  if (!isSuperAdmin && !isGroupCreator) {
+    return {
+      allowed: false,
+      statusCode: 403,
+      message: "Access Denied: You do not have permission to modify or delete this user group."
+    };
+  }
+
+  return { allowed: true, group, isSuperAdmin, isPlatformAdmin, isGroupCreator };
+}
+
 module.exports.getUserGroups = async (request, reply) => {
   try {
     const orgId = request.user?.orgId;
@@ -95,10 +162,13 @@ module.exports.updateUserGroup = async (request, reply) => {
   const { id } = request.params;
   const { name, description, memberIds } = request.body || {};
   try {
-    const orgId = request.user?.orgId;
-
-    if (!orgId) {
-      return reply.code(400).send({ error: 'Organization ID is required' });
+    const access = await verifyGroupAccess(id, request);
+    if (!access.allowed) {
+      return reply.code(access.statusCode).send({
+        success: false,
+        error: access.statusCode === 404 ? "NotFound" : "Forbidden",
+        message: access.message
+      });
     }
 
     // Update the group and its members
@@ -151,7 +221,6 @@ module.exports.updateUserGroup = async (request, reply) => {
   } catch (error) {
     request.log.error(error);
     logError(ACTIVITY_NAME.USER_GROUP_UPDATED, `Failed to update user group "${name || id}"`, request, error);
-    // Handle unique constraint violation on update
     if (error.code === 'P2002') {
       return reply.code(400).send({ error: "A group with this name already exists" });
     }
@@ -162,40 +231,25 @@ module.exports.updateUserGroup = async (request, reply) => {
 module.exports.deleteUserGroup = async (request, reply) => {
   const { id } = request.params;
   try {
-    // Verify Super Admin role
-    let currentUserRole = request.user?.role || "";
-    if (request.user?.id) {
-      const liveUser = await request.server.prisma.user.findUnique({
-        where: { id: request.user.id },
-        include: { roleRelation: true },
-      });
-      if (liveUser && liveUser.roleRelation && liveUser.roleRelation.name) {
-        currentUserRole = liveUser.roleRelation.name;
-      } else if (liveUser && liveUser.role) {
-        currentUserRole = liveUser.role;
-      }
-    }
-    const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
-
-    if (normalizedRole !== "superadmin") {
-      return reply.status(403).send({
+    const access = await verifyGroupAccess(id, request);
+    if (!access.allowed) {
+      return reply.code(access.statusCode).send({
         success: false,
-        error: "Forbidden",
-        message: "Access denied. Only Super Admin can delete user groups.",
+        error: access.statusCode === 404 ? "NotFound" : "Forbidden",
+        message: access.message
       });
     }
-
-    const groupToDelete = await request.server.prisma.userGroup.findUnique({
-      where: { id },
-      select: { name: true }
-    });
 
     // Group members will be cascade deleted due to Prisma schema
+    await request.server.prisma.userGroupMember.deleteMany({
+      where: { groupId: id }
+    }).catch(() => null);
+
     await request.server.prisma.userGroup.delete({
       where: { id }
     });
 
-    const groupName = groupToDelete?.name || id;
+    const groupName = access.group.name || id;
     logSuccess(ACTIVITY_NAME.USER_GROUP_DELETED, `Deleted user group "${groupName}".`, request);
     
     return reply.send({ success: true, message: "Group deleted successfully" });
@@ -209,6 +263,15 @@ module.exports.deleteUserGroup = async (request, reply) => {
 module.exports.getUserGroup = async (request, reply) => {
   try {
     const { id } = request.params;
+    const access = await verifyGroupAccess(id, request);
+    if (!access.allowed) {
+      return reply.code(access.statusCode).send({
+        success: false,
+        error: access.statusCode === 404 ? "NotFound" : "Forbidden",
+        message: access.message
+      });
+    }
+
     const group = await request.server.prisma.userGroup.findUnique({
       where: { id },
       include: {
@@ -220,9 +283,7 @@ module.exports.getUserGroup = async (request, reply) => {
         createdBy: { select: { name: true } }
       }
     });
-    if (!group) {
-      return reply.code(404).send({ error: "Group not found" });
-    }
+
     return reply.send(group);
   } catch (error) {
     request.log.error(error);
@@ -234,22 +295,25 @@ module.exports.addUserGroupMembers = async (request, reply) => {
   const { id } = request.params;
   const { memberIds } = request.body || {};
   try {
+    const access = await verifyGroupAccess(id, request);
+    if (!access.allowed) {
+      return reply.code(access.statusCode).send({
+        success: false,
+        error: access.statusCode === 404 ? "NotFound" : "Forbidden",
+        message: access.message
+      });
+    }
+
     if (!Array.isArray(memberIds) || memberIds.length === 0) {
       return reply.code(400).send({ error: "memberIds array is required" });
     }
-
-    const group = await request.server.prisma.userGroup.findUnique({
-      where: { id },
-      select: { name: true }
-    });
 
     await request.server.prisma.userGroupMember.createMany({
       data: memberIds.map((userId) => ({ groupId: id, userId })),
       skipDuplicates: true,
     });
 
-    const groupName = group?.name || id;
-    logSuccess(ACTIVITY_NAME.USER_GROUP_MEMBERS_ADDED, `Added ${memberIds.length} member(s) to group "${groupName}".`, request);
+    logSuccess(ACTIVITY_NAME.USER_GROUP_MEMBERS_ADDED, `Added ${memberIds.length} member(s) to group "${access.group.name}".`, request);
 
     return reply.send({ success: true, message: "Members added successfully" });
   } catch (error) {
@@ -262,10 +326,14 @@ module.exports.addUserGroupMembers = async (request, reply) => {
 module.exports.removeUserGroupMember = async (request, reply) => {
   const { id, userId } = request.params;
   try {
-    const group = await request.server.prisma.userGroup.findUnique({
-      where: { id },
-      select: { name: true }
-    });
+    const access = await verifyGroupAccess(id, request);
+    if (!access.allowed) {
+      return reply.code(access.statusCode).send({
+        success: false,
+        error: access.statusCode === 404 ? "NotFound" : "Forbidden",
+        message: access.message
+      });
+    }
 
     const targetUser = await request.server.prisma.user.findUnique({
       where: { id: userId },
@@ -277,8 +345,7 @@ module.exports.removeUserGroupMember = async (request, reply) => {
     });
 
     const userNameOrEmail = targetUser?.name || targetUser?.email || userId;
-    const groupName = group?.name || id;
-    logSuccess(ACTIVITY_NAME.USER_GROUP_MEMBER_REMOVED, `Removed member "${userNameOrEmail}" from group "${groupName}".`, request);
+    logSuccess(ACTIVITY_NAME.USER_GROUP_MEMBER_REMOVED, `Removed member "${userNameOrEmail}" from group "${access.group.name}".`, request);
 
     return reply.send({ success: true, message: "Member removed successfully" });
   } catch (error) {
