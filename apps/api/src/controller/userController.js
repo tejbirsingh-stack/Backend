@@ -400,6 +400,18 @@ module.exports.updateUserAdmin = async (request, reply) => {
       return reply.status(404).send({ success: false, error: "Not Found", message: "User not found" });
     }
 
+    // SECURITY: Cross-Organization Access Guard
+    const callerOrgId = request.user?.orgId;
+    if (normalizedRole !== "platformadmin") {
+      if (targetUser.orgId && callerOrgId && targetUser.orgId !== callerOrgId) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. You are not authorized to modify users outside of your organization.",
+        });
+      }
+    }
+
     const previousRoleName = targetUser.roleRelation?.name || targetUser.role || "";
 
     const dataToUpdate = {
@@ -435,6 +447,19 @@ module.exports.updateUserAdmin = async (request, reply) => {
       if (!targetRole) {
         return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
       }
+
+      // SECURITY: Privilege Escalation Guard (Prevent non-Super Admin from assigning Super Admin role)
+      const normalizedTargetRole = (targetRole.name || "").toLowerCase().replace(/[_ -]+/g, "");
+      if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
+        if (normalizedRole !== "superadmin" && normalizedRole !== "platformadmin") {
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Access denied. Only Super Admins can assign the Super Admin role.",
+          });
+        }
+      }
+
       dataToUpdate.roleRelation = {
         connect: { id: targetRole.id }
       };

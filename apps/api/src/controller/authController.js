@@ -793,8 +793,20 @@ module.exports.registerRole = async (request, reply) => {
       });
     }
 
-    // 4. Determine Organization ID (Use provided orgId or fall back to Super Admin's orgId)
-    const finalOrgId = orgId || request.user?.orgId;
+    // SECURITY: Organization Isolation Guard (Prevent Cross-Tenant orgId Injection)
+    const callerOrgId = request.user?.orgId;
+    if (normalizedRole !== "platformadmin") {
+      if (orgId && callerOrgId && orgId !== callerOrgId) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. You are not authorized to invite users into a different organization.",
+        });
+      }
+    }
+
+    // Determine Organization ID (Must be the caller's organization for non-Platform Admins)
+    const finalOrgId = (normalizedRole === "platformadmin" ? (orgId || callerOrgId) : callerOrgId) || orgId;
     if (!finalOrgId) {
       return reply.status(400).send({
         success: false,
@@ -830,8 +842,6 @@ module.exports.registerRole = async (request, reply) => {
       });
     }
 
-
-
     // 5. Fetch role from Roles table where id = roleId or name = roleId
     if (!roleId) {
       return reply.status(400).send({
@@ -865,6 +875,18 @@ module.exports.registerRole = async (request, reply) => {
         error: "Bad Request",
         message: "Role is not found",
       });
+    }
+
+    // SECURITY: Privilege Escalation Guard (Prevent non-Super Admin from assigning Super Admin role)
+    const normalizedTargetRole = (roleObj.name || "").toLowerCase().replace(/[_ -]+/g, "");
+    if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
+      if (normalizedRole !== "superadmin" && normalizedRole !== "platformadmin") {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Only Super Admins can assign the Super Admin role.",
+        });
+      }
     }
 
     // 6. Save ONLY email, roleId, role name, and orgId to the database
