@@ -808,9 +808,14 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       include: { files: true }
     });
     if (asset && asset.files.length > 0) {
-      const proxy = asset.files.find(f => f.fileClass === 'proxy');
+      const wantOriginal = request.query?.original === 'true' || request.query?.type === 'original';
+      const proxy = asset.files.find(f => f.fileClass === 'proxy' && Number(f.sizeBytes || 0) > 0);
       const original = asset.files.find(f => f.fileClass === 'original');
-      b2Key = proxy ? proxy.filePath : original?.filePath;
+      if (wantOriginal && original) {
+        b2Key = original.filePath;
+      } else {
+        b2Key = proxy ? proxy.filePath : original?.filePath;
+      }
     }
   } else {
     const file = await request.server.prisma.assetFile.findFirst({
@@ -3782,17 +3787,33 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         // Retrieve actual proxy file size via HEAD request (microscopic bandwidth)
         const proxySize = await b2Storage.getFileSize(compressedKey);
 
-        await request.server.prisma.assetFile.create({
-          data: {
-            assetId: newAssetId,
-            fileClass: "proxy",
-            fileName: compressedKey.split('/').pop() || (isAudio ? 'compressed.mp3' : 'compressed.mp4'),
-            filePath: compressedKey,
-            sizeBytes: BigInt(proxySize || 0),
-            mimeType: isAudio ? 'audio/mpeg' : 'video/mp4',
-            cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
-          }
+        const existingProxy = await request.server.prisma.assetFile.findFirst({
+          where: { assetId: newAssetId, fileClass: 'proxy' }
         });
+
+        if (existingProxy) {
+          await request.server.prisma.assetFile.update({
+            where: { id: existingProxy.id },
+            data: {
+              filePath: compressedKey,
+              fileName: compressedKey.split('/').pop() || (isAudio ? 'compressed.mp3' : 'compressed.mp4'),
+              sizeBytes: BigInt(proxySize || 0),
+              cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
+            }
+          });
+        } else {
+          await request.server.prisma.assetFile.create({
+            data: {
+              assetId: newAssetId,
+              fileClass: "proxy",
+              fileName: compressedKey.split('/').pop() || (isAudio ? 'compressed.mp3' : 'compressed.mp4'),
+              filePath: compressedKey,
+              sizeBytes: BigInt(proxySize || 0),
+              mimeType: isAudio ? 'audio/mpeg' : 'video/mp4',
+              cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
+            }
+          });
+        }
 
         if (request.server?.prisma) {
           try {
