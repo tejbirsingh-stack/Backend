@@ -4259,50 +4259,143 @@ module.exports.retryTranscode = async (request, reply) => {
       return reply.status(400).send({ error: "Only video and audio assets can be transcoded." });
     }
 
-    const job = await request.server.prisma.transcodeJob.findFirst({
+    const coconutApiKey = process.env.COCONUT_API_KEY || '';
+    if (!coconutApiKey) {
+      return reply.status(500).send({ error: "COCONUT_API_KEY is not configured on this server." });
+    }
+
+    const originalFile = asset.files.find(f => f.fileClass === "original");
+    if (!originalFile || !originalFile.filePath) {
+      return reply.status(400).send({
+        error: `Original file not found for this asset. Files in DB: ${JSON.stringify(asset.files.map(f => ({ class: f.fileClass, path: f.filePath })))}`
+      });
+    }
+
+    // Reset DB state
+    const existingJob = await request.server.prisma.transcodeJob.findFirst({
       where: { assetId: id, provider: "coconut" }
     });
-
-    // Duration check removed to support long videos on paid Coconut accounts.
-
-    if (job) {
+    if (existingJob) {
       await request.server.prisma.transcodeJob.update({
-        where: { id: job.id },
-        data: { status: "queued", jobId: null, providerMetadata: {} }
+        where: { id: existingJob.id },
+        data: { status: "processing", jobId: null, providerMetadata: {} }
       });
     } else {
       await request.server.prisma.transcodeJob.create({
-        data: { assetId: id, provider: "coconut", status: "queued" }
+        data: { assetId: id, provider: "coconut", status: "processing" }
+      });
+    }
+    await request.server.prisma.asset.update({ where: { id }, data: { status: "active" } });
+
+    // Build file keys
+    const key = originalFile.filePath;
+    const isAudio = asset.type === 'audio';
+    const parts = key.split('/');
+    const filename = parts.pop() || '';
+    const compressedFilename = filename.startsWith('raw-')
+      ? filename.replace('raw-', 'compressed-')
+      : `compressed-${filename}`;
+    const proxyFilename = isAudio ? compressedFilename.replace(/\.[^/.]+$/, '') + '.mp3' : compressedFilename;
+    const compressedKey = parts.length > 0 ? `${parts.join('/')}/${proxyFilename}` : proxyFilename;
+
+    // Generate B2 presigned URLs
+    let sourceUrl, outputUrl;
+    try {
+      sourceUrl = await b2Storage.getPresignedUrl(key, 86400);
+    } catch (b2Err) {
+      await request.server.prisma.transcodeJob.updateMany({ where: { assetId: id, provider: "coconut" }, data: { status: 'failed' } });
+      await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
+      return reply.status(500).send({ error: `B2 source URL generation failed: ${b2Err.message}` });
+    }
+    try {
+      outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400);
+    } catch (b2Err) {
+      await request.server.prisma.transcodeJob.updateMany({ where: { assetId: id, provider: "coconut" }, data: { status: 'failed' } });
+      await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
+      return reply.status(500).send({ error: `B2 output URL generation failed: ${b2Err.message}` });
+    }
+
+    await request.server.prisma.asset.update({ where: { id }, data: { compressedKey } });
+
+    // Determine output settings based on resolution and file size
+    const fileSizeBytes = Number(originalFile.sizeBytes || 0);
+    const technicalSpecs = asset.metadata?.technicalSpecs || {};
+    const srcW = parseInt(technicalSpecs.width, 10);
+    const srcH = parseInt(technicalSpecs.height, 10);
+    const isMassiveFile = fileSizeBytes >= 800 * 1024 * 1024;
+    const isLargeFile   = fileSizeBytes >= 300 * 1024 * 1024;
+    const is4KOrAbove   = (!isNaN(srcW) && srcW > 3840) || (!isNaN(srcH) && srcH > 2160);
+    const is2KOrAbove   = (!isNaN(srcW) && srcW > 1920) || (!isNaN(srcH) && srcH > 1080);
+
+    let outputs = {};
+    if (isAudio) {
+      outputs = { 'mp3': { url: outputUrl } };
+    } else {
+      let formatKey = 'mp4';
+      if (isMassiveFile || is4KOrAbove) {
+        formatKey = 'mp4:720p';
+      } else if (isLargeFile || is2KOrAbove) {
+        formatKey = 'mp4:1080p';
+      }
+
+      const [t1, t2, t3, t4, t5] = await Promise.all([
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400),
+      ]);
+      outputs = {
+        [formatKey]: { url: outputUrl },
+        'jpg:300x#10%': { url: t1 },
+        'jpg:300x#30%': { url: t2 },
+        'jpg:300x#50%': { url: t3 },
+        'jpg:300x#70%': { url: t4 },
+        'jpg:300x#90%': { url: t5 },
+      };
+    }
+
+    const webhookHost = process.env.WEBHOOK_HOST || 'https://qa.noahcloud.ai';
+    const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?newAssetId=${id}&compressedKey=${encodeURIComponent(compressedKey)}`;
+
+    // Call Coconut synchronously — errors surface immediately in the browser
+    const coconutResponse = await fetch('https://api.coconut.co/v2/jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${Buffer.from(coconutApiKey + ':').toString('base64')}`
+      },
+      body: JSON.stringify({
+        input: { url: sourceUrl },
+        outputs,
+        notification: { type: 'http', url: webhookUrl, events: true }
+      })
+    });
+
+    const responseText = await coconutResponse.text();
+    if (!coconutResponse.ok) {
+      console.error(`[retryTranscode] Coconut rejected asset ${id}: HTTP ${coconutResponse.status} — ${responseText}`);
+      await request.server.prisma.transcodeJob.updateMany({
+        where: { assetId: id, provider: "coconut" },
+        data: { status: 'failed', providerMetadata: { coconutStatus: coconutResponse.status, coconutError: responseText } }
+      });
+      await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
+      return reply.status(502).send({
+        error: `Coconut rejected the job (HTTP ${coconutResponse.status}): ${responseText}`
       });
     }
 
-    // Reset asset status to active so it can be retried
-    await request.server.prisma.asset.update({
-      where: { id },
-      data: { status: "active" }
-    });
+    const jobData = JSON.parse(responseText);
+    console.log(`[retryTranscode] Coconut job ${jobData.id} submitted for asset ${id} (${Math.round(fileSizeBytes/1024/1024)}MB, ${srcW}x${srcH})`);
 
-    const originalFile = asset.files.find(f => f.fileClass === "original");
-    if (!originalFile) {
-      return reply.status(400).send({ error: "Original file not found for this asset." });
+    if (jobData.id) {
+      await request.server.prisma.transcodeJob.updateMany({
+        where: { assetId: id, provider: "coconut" },
+        data: { jobId: jobData.id.toString() }
+      });
     }
 
-    const size = Number(originalFile.sizeBytes || 0);
-
-    // 300MB threshold for heavy queue
-    const heavyThreshold = 300 * 1024 * 1024;
-    const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
-
-    await queueToUse.add("compress", {
-      assetId: id,
-      key: originalFile.filePath,
-      preset: "medium",
-      fileSizeBytes: size,
-    });
-
-    console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= heavyThreshold ? 'heavy' : 'standard'} queue (${Math.round(size / 1024 / 1024)}MB)`);
-
-    return reply.send({ success: true, message: "Transcode job queued" });
+    return reply.send({ success: true, message: "Transcode job submitted to Coconut", coconutJobId: jobData.id });
   } catch (error) {
     console.error("Failed to retry transcode:", error);
     return reply.status(500).send({ success: false, error: error.message });

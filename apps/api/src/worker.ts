@@ -97,33 +97,25 @@ const processCompressionJob = async (job: Job) => {
       const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
       const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
-      let mp4Settings: any = { url: outputUrl };
-
-      // Determine resolution cap for Coconut:
-      // - Always cap to 1080p if the video is 4K/8K (width > 1920 or height > 1080)
-      // - Also cap to 1080p if the file is large (>= 300MB) to prevent Coconut OOM at ~42%
-      // - For massive files (>= 800MB), aggressively cap to 720p and limit bitrate to ensure processing completes without OOM on standard tiers.
       const technicalSpecs = asset?.metadata?.technicalSpecs as any;
       const fileSizeBytes = job.data.fileSizeBytes || Number(technicalSpecs?.sizeBytes || technicalSpecs?.fileSize || 0);
       const isMassiveFile = fileSizeBytes >= 800 * 1024 * 1024; // >= 800MB
       const isLargeFile = fileSizeBytes >= 300 * 1024 * 1024; // >= 300MB
       
-      if (isMassiveFile) {
-        mp4Settings.size = '720p';
-        mp4Settings.video_bitrate = '2500k';
-      } else if (technicalSpecs) {
-        const w = parseInt(technicalSpecs.width, 10);
-        const h = parseInt(technicalSpecs.height, 10);
-        if (isLargeFile || (!isNaN(w) && w > 1920) || (!isNaN(h) && h > 1080)) {
-          mp4Settings.size = '1080p';
-        }
-      } else if (isLargeFile) {
-        // No resolution metadata — still cap to 1080p for large files
-        mp4Settings.size = '1080p';
+      const w = parseInt(technicalSpecs?.width, 10);
+      const h = parseInt(technicalSpecs?.height, 10);
+      const is4KOrAbove = !isNaN(w) && (w > 3840 || h > 2160);
+      const is2KOrAbove = !isNaN(w) && (w > 1920 || h > 1080);
+
+      let formatKey = 'mp4';
+      if (isMassiveFile || is4KOrAbove) {
+        formatKey = 'mp4:720p';
+      } else if (isLargeFile || is2KOrAbove) {
+        formatKey = 'mp4:1080p';
       }
 
       outputs = {
-        'mp4': mp4Settings,
+        [formatKey]: { url: outputUrl },
         'jpg:300x#10%': { url: thumbUrl1 },
         'jpg:300x#30%': { url: thumbUrl2 },
         'jpg:300x#50%': { url: thumbUrl3 },
