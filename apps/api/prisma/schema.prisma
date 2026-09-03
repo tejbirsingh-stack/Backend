@@ -44,6 +44,8 @@ model Organization {
   aiAnalysisJobs    AiAnalysisJob[]
   aiEmbeddings      AiEmbedding[]
   aiHighlights      AiHighlight[]
+  aiAssetPersonAppearances AiAssetPersonAppearance[]
+  aiSceneInsights   AiSceneInsight[]
 
   workspaces Workspace[]
   settings   OrganizationSettings?
@@ -385,6 +387,8 @@ model Asset {
   aiTranscriptSegments AiTranscriptSegment[]
   aiEmbeddings         AiEmbedding[]
   aiHighlight          AiHighlight?
+  aiAssetPersonAppearances AiAssetPersonAppearance[]
+  aiSceneInsights      AiSceneInsight[]
 
   @@index([orgId])
   @@index([status])
@@ -1433,6 +1437,46 @@ model AiEmbedding {
   @@index([assetId])
   @@index([orgId])
   @@map("ai_embeddings")
+}
+
+/// Per-asset detected face appearance (Phase 2a). No face vectors / org library.
+model AiAssetPersonAppearance {
+  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId       String  @db.Uuid
+  orgId         String  @db.Uuid
+  viFaceId      String? @map("vi_face_id") @db.VarChar(100)
+  displayLabel  String  @map("display_label") @db.VarChar(255)
+  startMs       Int     @map("start_ms")
+  endMs         Int     @map("end_ms")
+  thumbnailUrl  String? @map("thumbnail_url") @db.Text
+  ordinal       Int     @default(0)
+
+  asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@index([orgId])
+  @@map("ai_asset_person_appearances")
+}
+
+/// Per-asset scene / label insight from Azure Video Indexer (Phase 2a).
+model AiSceneInsight {
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  assetId     String  @db.Uuid
+  orgId       String  @db.Uuid
+  label       String  @db.VarChar(255)
+  description String? @db.Text
+  startMs     Int     @map("start_ms")
+  endMs       Int     @map("end_ms")
+  confidence  Float?  @db.Real
+  ordinal     Int     @default(0)
+
+  asset        Asset        @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([assetId])
+  @@index([orgId])
+  @@map("ai_scene_insights")
 }
 
 model AiHighlight {

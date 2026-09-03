@@ -100,9 +100,10 @@ async function extractServerSideMetadata(filePathOrUrl) {
       else resolutionTier = 'SD';
     }
 
-    const durationSec = tags.Duration ? (typeof tags.Duration === 'number' ? Math.round(tags.Duration) : Math.round(parseFloat(tags.Duration))) : null;
+    const rawDur = tags.Duration ? (typeof tags.Duration === 'number' ? tags.Duration : parseFloat(tags.Duration)) : null;
+    const durationSec = rawDur && !isNaN(rawDur) ? Math.floor(rawDur) : null;
     let formattedDuration = null;
-    if (durationSec && !isNaN(durationSec)) {
+    if (durationSec !== null && !isNaN(durationSec)) {
       const min = Math.floor(durationSec / 60);
       const sec = String(durationSec % 60).padStart(2, '0');
       formattedDuration = `${min}:${sec}`;

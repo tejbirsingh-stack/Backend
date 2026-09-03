@@ -5,6 +5,8 @@ const {
   searchTranscript,
   getHighlights,
   listAiTags,
+  getAssetPeople,
+  getAssetScenes,
 } = require('../controller/aiController');
 const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
@@ -18,6 +20,8 @@ module.exports = function (fastify, opts, done) {
   fastify.post('/assets/:id/retry', canRetry, retryAiAnalyze);
   fastify.get('/assets/:id/transcript', canRead, getTranscript);
   fastify.get('/assets/:id/highlights', canRead, getHighlights);
+  fastify.get('/assets/:id/people', canRead, getAssetPeople);
+  fastify.get('/assets/:id/scenes', canRead, getAssetScenes);
 
   done();
 };

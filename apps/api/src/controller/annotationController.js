@@ -191,17 +191,30 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
 
                     // Find who is mentioned in commentText (e.g. "@Anil Jangra")
                     const mentionedUsers = orgUsers.filter(u => {
-                        if (!u.name || !u.email || u.id === userId) return false;
-                        const nameEscaped = escapeRegExp(u.name);
-                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
-                        return mentionPattern.test(commentText);
+                        if (!u.email || u.id === userId) return false;
+                        
+                        let matched = false;
+                        if (u.name) {
+                            const nameEscaped = escapeRegExp(u.name);
+                            const mentionPattern = new RegExp(`@${nameEscaped}(?=\\s|$|[.,!?:])`, 'i');
+                            if (mentionPattern.test(commentText)) matched = true;
+                        }
+                        
+                        if (!matched) {
+                            const emailPrefix = u.email.split('@')[0];
+                            const prefixEscaped = escapeRegExp(emailPrefix);
+                            const mentionPattern = new RegExp(`@${prefixEscaped}(?=\\s|$|[.,!?:])`, 'i');
+                            if (mentionPattern.test(commentText)) matched = true;
+                        }
+                        
+                        return matched;
                     });
 
                     // Find if any groups are mentioned (e.g. "@Artist Team")
                     const mentionedGroups = orgGroups.filter(g => {
                         if (!g.name) return false;
                         const nameEscaped = escapeRegExp(g.name);
-                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
+                        const mentionPattern = new RegExp(`@${nameEscaped}(?=\\s|$|[.,!?:])`, 'i');
                         return mentionPattern.test(commentText);
                     });
 
@@ -360,17 +373,30 @@ module.exports.updateMediaAnnotations = async (request, reply) => {
 
                     // Find who is mentioned in commentText (e.g. "@Anil Jangra")
                     const mentionedUsers = orgUsers.filter(u => {
-                        if (!u.name || !u.email || u.id === userId) return false;
-                        const nameEscaped = escapeRegExp(u.name);
-                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
-                        return mentionPattern.test(commentText);
+                        if (!u.email || u.id === userId) return false;
+                        
+                        let matched = false;
+                        if (u.name) {
+                            const nameEscaped = escapeRegExp(u.name);
+                            const mentionPattern = new RegExp(`@${nameEscaped}(?=\\s|$|[.,!?:])`, 'i');
+                            if (mentionPattern.test(commentText)) matched = true;
+                        }
+                        
+                        if (!matched) {
+                            const emailPrefix = u.email.split('@')[0];
+                            const prefixEscaped = escapeRegExp(emailPrefix);
+                            const mentionPattern = new RegExp(`@${prefixEscaped}(?=\\s|$|[.,!?:])`, 'i');
+                            if (mentionPattern.test(commentText)) matched = true;
+                        }
+                        
+                        return matched;
                     });
 
                     // Find if any groups are mentioned (e.g. "@Artist Team")
                     const mentionedGroups = orgGroups.filter(g => {
                         if (!g.name) return false;
                         const nameEscaped = escapeRegExp(g.name);
-                        const mentionPattern = new RegExp(`@${nameEscaped}\\b`, 'i');
+                        const mentionPattern = new RegExp(`@${nameEscaped}(?=\\s|$|[.,!?:])`, 'i');
                         return mentionPattern.test(commentText);
                     });
 

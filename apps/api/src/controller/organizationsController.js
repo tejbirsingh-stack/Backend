@@ -219,7 +219,16 @@ module.exports.updateShareSettings = async (request, reply) => {
       }
     });
 
-    await logSuccess(ACTIVITY_NAME.SHARE_SETTINGS_UPDATED, `User updated organization share settings`, request);
+    const descParts = [];
+    if (requirePasswordDefault !== undefined) descParts.push(`Require Password: ${requirePasswordDefault}`);
+    if (allowCommentsDefault !== undefined) descParts.push(`Allow Comments: ${allowCommentsDefault}`);
+    if (allowDownloadOriginalDefault !== undefined) descParts.push(`Download Original: ${allowDownloadOriginalDefault}`);
+    if (allowDownloadProxyDefault !== undefined) descParts.push(`Download Proxy: ${allowDownloadProxyDefault}`);
+    if (showCompanyWatermarkDefault !== undefined) descParts.push(`Watermark: ${showCompanyWatermarkDefault}`);
+    if (defaultExpiryDays !== undefined) descParts.push(`Default Expiry: ${defaultExpiryDays} day(s)`);
+
+    const detailText = descParts.length > 0 ? ` (${descParts.join(', ')})` : '';
+    await logSuccess(ACTIVITY_NAME.SHARE_SETTINGS_UPDATED, `Updated default organization share settings${detailText}.`, request);
     return reply.send({ success: true, settings });
   } catch (error) {
     request.log.error(error);
@@ -319,7 +328,14 @@ module.exports.updateBrandingSettings = async (request, reply) => {
       }
     });
 
-    await logSuccess(ACTIVITY_NAME.BRANDING_SETTINGS_UPDATED, `User updated branding settings`, request);
+    const logDescParts = [];
+    if (updateData.accountName) logDescParts.push(`Account Name: "${updateData.accountName}"`);
+    if (updateData.accentColor) logDescParts.push(`Accent Color: ${updateData.accentColor}`);
+    if (updateData.reelBackgroundColor) logDescParts.push(`Reel Background: ${updateData.reelBackgroundColor}`);
+    if (updateData.reelTitleColor) logDescParts.push(`Reel Title Color: ${updateData.reelTitleColor}`);
+
+    const detailText = logDescParts.length > 0 ? ` (${logDescParts.join(', ')})` : '';
+    await logSuccess(ACTIVITY_NAME.BRANDING_SETTINGS_UPDATED, `Updated branding settings${detailText}.`, request);
     return reply.send({
       success: true,
       message: 'Branding settings updated successfully in database',

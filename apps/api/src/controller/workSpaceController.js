@@ -219,72 +219,55 @@ module.exports.storeWorkplace = async (request, reply) => {
             for (const email of inviteEmails) {
                 if (!email || typeof email !== 'string') continue;
 
-                if (mType === MEMBER_TYPES.GUEST) {
-                    // Guest: must exist in DB, belong to a different org, and be active
-                    const guestUser = await prisma.user.findFirst({
-                        where: { email: email.toLowerCase().trim() }
-                    });
-                    if (
-                        !guestUser ||
-                        guestUser.status !== 'active' ||
-                        !guestUser.orgId ||
-                        guestUser.orgId === orgId
-                    ) {
-                        // Skip invalid guest: not found, inactive, no org, or same org
-                        continue;
-                    }
-                    await prisma.workspaceUser.create({
-                        data: {
-                            workspaceId: workspace.id,
-                            userId: guestUser.id,
-                            memberType: MEMBER_TYPES.GUEST,
-                            accessLevelId: aLevelId
-                        }
-                    }).catch(() => { });
+                const cleanEmail = email.toLowerCase().trim();
 
-                    // ALWAYS send in-app notification
-                    createNotification(
-                        request.server,
-                        guestUser.id,
-                        guestUser.orgId || orgId,
-                        'workspace_invite',
-                        'Invited to workspace',
-                        `${request.user.name || request.user.email} added you to workspace "${name}"`,
-                        workspace.id
-                    ).catch(err => console.error('Failed to create in-app notification:', err));
-                } else {
-                    // Member: must belong to the same org
-                    const invitedUser = await prisma.user.findFirst({
-                        where: { email: email.toLowerCase().trim(), orgId }
-                    });
-                    if (invitedUser && invitedUser.id !== userId) {
-                        await prisma.workspaceUser.create({
-                            data: {
-                                workspaceId: workspace.id,
-                                userId: invitedUser.id,
-                                memberType: mType,
-                                accessLevelId: aLevelId
-                            }
-                        }).catch(() => { });
+                const invitedUser = await prisma.user.findFirst({
+                    where: { email: cleanEmail }
+                });
 
-                        // ALWAYS send in-app notification
-                        createNotification(
-                            request.server,
-                            invitedUser.id,
-                            orgId,
-                            'workspace_invite',
-                            'Invited to workspace',
-                            `${request.user.name || request.user.email} added you to workspace "${name}"`,
-                            workspace.id
-                        ).catch(err => console.error('Failed to create in-app notification:', err));
-                    }
+                if (!invitedUser || invitedUser.status !== 'active') {
+                    // Skip invalid/inactive user
+                    continue;
                 }
+
+                if (invitedUser.id === userId) {
+                    // Skip if they invite themselves
+                    continue;
+                }
+
+                const isGuest = invitedUser.orgId !== orgId;
+                
+                // If the workspace is public (not restricted), we strictly forbid inviting members
+                if (!isRestricted && !isGuest) {
+                    continue;
+                }
+
+                const actualMemberType = isGuest ? MEMBER_TYPES.GUEST : MEMBER_TYPES.MEMBER;
+
+                await prisma.workspaceUser.create({
+                    data: {
+                        workspaceId: workspace.id,
+                        userId: invitedUser.id,
+                        memberType: actualMemberType,
+                        accessLevelId: aLevelId
+                    }
+                }).catch(() => {});
+
+                // ALWAYS send in-app notification
+                createNotification(
+                    request.server,
+                    invitedUser.id,
+                    invitedUser.orgId || orgId,
+                    'workspace_invite',
+                    'Invited to workspace',
+                    `${request.user.name || request.user.email} added you to workspace "${name}"`,
+                    workspace.id
+                ).catch(err => console.error('Failed to create in-app notification:', err));
 
                 if (sendInviteEmail) {
                     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-                    const appUrl = `${frontendUrl}`; // Base dashboard URL
-                    const cleanEmail = email.toLowerCase().trim();
-                    if (mType === MEMBER_TYPES.GUEST) {
+                    const appUrl = `${frontendUrl}`;
+                    if (isGuest) {
                         const orgNameObj = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });
                         emailService.sendWorkspaceGuestInvite(cleanEmail, {
                             workspaceName: name,
@@ -488,24 +471,6 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             }
         });
 
-        // Fallback: if no workspaces found, check if workspace exists in their org and add user to it
-        if (workspaces.length === 0 && orgId) {
-            const orgWorkspaces = await prisma.workspace.findMany({
-                where: { orgId },
-                orderBy: { createdAt: 'asc' }
-            });
-            if (orgWorkspaces.length > 0) {
-                for (const ws of orgWorkspaces) {
-                    await prisma.workspaceUser.upsert({
-                        where: { workspaceId_userId: { workspaceId: ws.id, userId: userId } },
-                        create: { workspaceId: ws.id, userId: userId },
-                        update: {}
-                    }).catch(() => { });
-                }
-                workspaces = orgWorkspaces;
-            }
-        }
-
         if (workspaces.length > 0) {
             const hasAnyDefault = workspaces.some(w => w.isDefault);
             if (!hasAnyDefault) {
@@ -542,6 +507,7 @@ module.exports.findWorkspaceMedia = async (request, reply) => {
 
         // ── Access gate ───────────────────────────────────────────────────────
         const hasAccess = await assertWorkspaceAccess(prisma, request.user, id);
+        console.log('hasAccess', hasAccess)
         if (!hasAccess) {
             return reply.code(403).send({
                 success: false,
@@ -891,10 +857,10 @@ module.exports.addProjectMember = async (request, reply) => {
         const user = await prisma.user.findUnique({ where: { email: cleanEmail } });
 
         if (!user) {
-            return reply.code(404).send({ success: false, message: 'User not found.' });
+            return reply.code(404).send({ success: false, message: 'User not found.', notFound: true });
         }
 
-        const effectiveMemberType = memberType || MEMBER_TYPES.MEMBER;
+        const effectiveMemberType = user.orgId === orgId ? MEMBER_TYPES.MEMBER : MEMBER_TYPES.GUEST;
 
         let resolvedAccessLevelId = null;
         if (accessLevel) {
@@ -958,7 +924,14 @@ module.exports.addProjectMember = async (request, reply) => {
 
         return reply.send({
             success: true,
-            message: `${effectiveMemberType} added to project successfully.`
+            message: `${effectiveMemberType} added to project successfully.`,
+            memberType: effectiveMemberType,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                avatarUrl: user.avatarUrl
+            }
         });
     } catch (error) {
         console.error('Error adding project member:', error);
@@ -1452,18 +1425,37 @@ module.exports.findFolderData = async (request, reply) => {
         }
 
         const pendingFolderIds = await getPendingOrDeletedFolderIds(prisma);
-        const folders = await prisma.folder.findMany({
+        let folders = await prisma.folder.findMany({
             where: {
                 parentId: id,
                 ...(pendingFolderIds.length > 0 ? { id: { notIn: pendingFolderIds } } : {})
             },
             include: {
                 sources: true,
+                _count: { select: { children: true, projects: true } }
             },
             orderBy: {
                 createdAt: 'desc',
             },
         });
+
+        const rootFolderIds = folders.map(f => f.id);
+        const folderAssetCounts = rootFolderIds.length > 0 ? await prisma.asset.groupBy({
+            by: ['ownerId'],
+            where: {
+                ownerType: 'FOLDER',
+                ownerId: { in: rootFolderIds },
+                deletedAt: null,
+                status: { notIn: ['pending_super_admin', 'pending_admin_review', 'trash', 'deleted'] }
+            },
+            _count: { _all: true }
+        }) : [];
+        const countMap = new Map(folderAssetCounts.map(c => [String(c.ownerId), c._count._all]));
+
+        folders = folders.map(f => ({
+            ...f,
+            itemCount: (f._count?.children || 0) + (f._count?.projects || 0) + (countMap.get(String(f.id)) || 0)
+        }));
 
         const projects = await prisma.project.findMany({
             where: {
@@ -1989,6 +1981,8 @@ module.exports.deleteFolder = async (request, reply) => {
             }
 
             await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Folder Deletion Request', `${userName} (${rawRoleName}) requested folder deletion for '${folderName}'.`, id);
+
+            logSuccess(ACTIVITY_NAME.FOLDER_DELETED, `Admin requested folder deletion for "${itemPath}". Submitted for Super Admin review.`, request);
 
             return reply.code(200).send({
                 success: true,
@@ -2746,7 +2740,9 @@ module.exports.updateProject = async (request, reply) => {
         const { id } = request.params;
         const { name, workspaceId, visibility, status, color } = request.body;
 
-        await verifyProjectAccess(id, request.user.id, 'Full Access');
+        const requiresFullAccess = (workspaceId !== undefined || visibility !== undefined || status !== undefined);
+        const requiredAccessLevel = requiresFullAccess ? 'Full Access' : 'Can edit';
+        await verifyProjectAccess(id, request.user.id, requiredAccessLevel);
 
         if (name === undefined && workspaceId === undefined && visibility === undefined && status === undefined && color === undefined) {
             return reply.code(400).send({
@@ -3161,6 +3157,8 @@ module.exports.deleteProject = async (request, reply) => {
 
                 await notifyRole(request.server, orgId, 'Admin', 'deletion_alert', 'Project Files Permanently Deleted', `${userName} (Super Admin) permanently deleted ${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) from project '${projectName}'.`, id);
 
+                logSuccess(ACTIVITY_NAME.PROJECT_DELETED, `Super Admin permanently deleted ${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) from project "${projectName}".`, request);
+
                 return reply.code(200).send({
                     success: true,
                     message: `${targetAssetIds.length} file(s) and ${targetFolderIds.length} folder(s) permanently deleted from database and Backblaze B2.`
@@ -3192,6 +3190,8 @@ module.exports.deleteProject = async (request, reply) => {
                 }
 
                 await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Project Deletion Request', `${userName} (${rawRoleName}) requested whole project deletion for '${projectName}'.`, id);
+
+                logSuccess(ACTIVITY_NAME.PROJECT_DELETED, `Admin requested whole project deletion for "${itemPath}". Submitted for Super Admin review.`, request);
 
                 return reply.code(200).send({
                     success: true,
@@ -3328,6 +3328,8 @@ module.exports.deleteProject = async (request, reply) => {
 
                 await notifyRole(request.server, orgId, 'Super Admin', 'approval_request', 'Project Deletion Request', `${userName} (${rawRoleName}) requested deletion of project '${projectName}' with selected files/folders.`, id);
 
+                logSuccess(ACTIVITY_NAME.PROJECT_DELETED, `Admin requested deletion of project "${itemPath}" with selected files/folders. Submitted for Super Admin review.`, request);
+
                 return reply.code(200).send({
                     success: true,
                     message: `Project deletion request for '${projectName}' submitted for Super Admin review.`
@@ -3410,12 +3412,16 @@ module.exports.restoreProject = async (request, reply) => {
             ).catch(() => null);
         }
 
+        const itemPath = await buildItemPath(prisma, 'project', id);
+        logSuccess(ACTIVITY_NAME.PROJECT_UPDATED, `Project "${itemPath}" restored from deletion queue.`, request);
+
         return reply.code(200).send({
             success: true,
             message: `Project '${projectName}' and all its associated files/folders restored to Active successfully.`
         });
     } catch (error) {
         console.error('Failed to restore project:', error);
+        logError(ACTIVITY_NAME.PROJECT_UPDATED, `Failed to restore project`, request, error);
         return reply.code(500).send({ success: false, message: 'Internal Server Error' });
     }
 };
@@ -3644,3 +3650,297 @@ module.exports.deleteWorkspace = async (request, reply) => {
 };
 
 module.exports.getPendingOrDeletedFolderIds = getPendingOrDeletedFolderIds;
+module.exports.removeWorkspaceMember = async (request, reply) => {
+    try {
+        const { id: workspaceId, memberId } = request.params;
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden' });
+        }
+
+        // Prevent removing Owner
+        const member = await prisma.workspaceUser.findFirst({
+            where: {
+                workspaceId,
+                OR: [{ id: memberId }, { userId: memberId }]
+            }
+        });
+
+        if (member && member.memberType === 'OWNER') {
+            return reply.code(403).send({ success: false, message: 'Cannot remove the owner of the workspace.' });
+        }
+
+        await prisma.workspaceUser.deleteMany({
+            where: {
+                workspaceId,
+                OR: [
+                    { id: memberId },
+                    { userId: memberId }
+                ]
+            }
+        });
+
+        await prisma.workspaceGroup.deleteMany({
+            where: {
+                workspaceId,
+                OR: [
+                    { id: memberId },
+                    { groupId: memberId }
+                ]
+            }
+        });
+
+        return reply.send({
+            success: true,
+            message: 'Workspace access removed successfully.'
+        });
+    } catch (error) {
+        console.error('Error removing workspace member:', error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Failed to remove workspace member.'
+        });
+    }
+};
+
+module.exports.searchWorkspaceMembers = async (request, reply) => {
+    try {
+        const { id: workspaceId } = request.params;
+        const { q = '' } = request.query;
+
+        const normalizedQuery = q.trim().toLowerCase();
+        if (!normalizedQuery) {
+            return reply.send({ success: true, users: [], groups: [] });
+        }
+
+        const orgId = request.user?.orgId;
+        if (!orgId) {
+            return reply.code(403).send({ success: false, message: 'No org associated with user.' });
+        }
+
+        // Fetch already-added workspace members so we can exclude them
+        const existingUsers = await prisma.workspaceUser.findMany({
+            where: { workspaceId },
+            select: { userId: true }
+        });
+        const existingGroups = await prisma.workspaceGroup.findMany({
+            where: { workspaceId },
+            select: { groupId: true }
+        });
+        const existingUserIds = new Set(existingUsers.map(u => u.userId));
+        const existingGroupIds = new Set(existingGroups.map(g => g.groupId));
+
+        // Search org users by name or email
+        const users = await prisma.user.findMany({
+            where: {
+                orgId,
+                OR: [
+                    { name: { contains: normalizedQuery, mode: 'insensitive' } },
+                    { email: { contains: normalizedQuery, mode: 'insensitive' } }
+                ]
+            },
+            select: { id: true, name: true, email: true, avatarUrl: true },
+            take: 5
+        });
+
+        // Search org groups by name
+        const groups = await prisma.userGroup.findMany({
+            where: {
+                orgId,
+                name: { contains: normalizedQuery, mode: 'insensitive' }
+            },
+            select: { id: true, name: true, description: true },
+            take: 5
+        });
+
+        return reply.send({
+            success: true,
+            users: users
+                .filter(u => !existingUserIds.has(u.id))
+                .map(u => ({
+                    id: u.id,
+                    name: u.name || u.email.split('@')[0],
+                    email: u.email,
+                    avatarUrl: u.avatarUrl || null,
+                    isOrganizationMember: true
+                })),
+            groups: groups
+                .filter(g => !existingGroupIds.has(g.id))
+                .map(g => ({
+                    id: g.id,
+                    name: g.name,
+                    description: g.description || ''
+                }))
+        });
+    } catch (error) {
+        console.error('Error searching workspace members:', error);
+        return reply.code(500).send({ success: false, message: 'Failed to search members.' });
+    }
+};
+
+module.exports.addWorkspaceMember = async (request, reply) => {
+    try {
+        const { id: workspaceId } = request.params;
+        const { email, memberType, accessLevel = 'Full Access', groupId, sendInviteEmail = false } = request.body;
+
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden' });
+        }
+
+        const workspace = await prisma.workspace.findUnique({
+            where: { id: workspaceId },
+            include: { organization: true }
+        });
+
+        if (!workspace) {
+            return reply.code(404).send({ success: false, message: 'Workspace not found.' });
+        }
+
+        const inviterName = request.user?.name || request.user?.email || 'A team member';
+        const orgId = request.user?.orgId;
+        const appUrl = request.headers.origin || process.env.FRONTEND_URL || (process.env.NODE_ENV === "production" ? "https://qa.noahcloud.ai" : "http://localhost:5173");
+
+        if (groupId) {
+            const group = await prisma.userGroup.findUnique({
+                where: { id: groupId },
+                include: {
+                    members: {
+                        include: {
+                            user: { select: { id: true, email: true, orgId: true } }
+                        }
+                    }
+                }
+            });
+            if (!group) {
+                return reply.code(404).send({ success: false, message: 'Group not found.' });
+            }
+            let resolvedAccessLevelId = null;
+            if (accessLevel) {
+                const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(accessLevel);
+                const lvl = await prisma.accessLevel.findFirst({ where: isUuid ? { id: accessLevel } : { OR: [{ title: accessLevel }, { name: accessLevel }] } });
+                if (lvl) resolvedAccessLevelId = lvl.id;
+            }
+            await prisma.workspaceGroup.upsert({
+                where: { workspaceId_groupId: { workspaceId, groupId: group.id } },
+                update: { accessLevelId: resolvedAccessLevelId || accessLevel },
+                create: {
+                    workspaceId,
+                    groupId: group.id,
+                    accessLevelId: resolvedAccessLevelId || accessLevel,
+                }
+            }).catch(() => { });
+
+            return reply.send({ success: true, message: 'Group added to workspace.' });
+        }
+
+        if (!email) {
+            return reply.code(400).send({ success: false, message: 'Email or group is required.' });
+        }
+
+        const cleanEmail = email.toLowerCase().trim();
+        const user = await prisma.user.findUnique({ where: { email: cleanEmail } });
+
+        if (!user) {
+            return reply.code(404).send({ success: false, message: 'User not found.', notFound: true });
+        }
+
+        const effectiveMemberType = user.orgId === orgId ? 'MEMBER' : 'GUEST';
+
+        if ((workspace.visibility === 'public' || workspace.visibility === 'PUBLIC') && effectiveMemberType === 'MEMBER') {
+            return reply.code(400).send({
+                success: false,
+                message: 'Organization members already have access to this public workspace.',
+                orgMemberInPublic: true
+            });
+        }
+
+        let resolvedAccessLevelId = null;
+        if (accessLevel) {
+            const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(accessLevel);
+            const lvl = await prisma.accessLevel.findFirst({ where: isUuid ? { id: accessLevel } : { OR: [{ title: accessLevel }, { name: accessLevel }] } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        } else {
+            const lvl = await prisma.accessLevel.findFirst({ where: { name: 'FULL_ACCESS' } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        }
+
+        await prisma.workspaceUser.upsert({
+            where: { workspaceId_userId: { workspaceId, userId: user.id } },
+            update: {
+                accessLevelId: resolvedAccessLevelId || accessLevel,
+                memberType: effectiveMemberType
+            },
+            create: {
+                workspaceId,
+                userId: user.id,
+                accessLevelId: resolvedAccessLevelId || accessLevel,
+                memberType: effectiveMemberType,
+            }
+        }).catch((err) => { console.error("Failed to add workspace member:", err) });
+
+        return reply.send({
+            success: true,
+            message: `${effectiveMemberType} added to workspace successfully.`,
+            memberType: effectiveMemberType,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                avatarUrl: user.avatarUrl
+            }
+        });
+    } catch (error) {
+        console.error('Error adding workspace member:', error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Failed to add workspace member.'
+        });
+    }
+};
+
+module.exports.updateWorkspaceMemberAccess = async (request, reply) => {
+    try {
+        const { id: workspaceId, memberId } = request.params;
+        const { accessLevel } = request.body;
+
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden' });
+        }
+
+        let resolvedAccessLevelId = null;
+        if (accessLevel) {
+            const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(accessLevel);
+            const lvl = await prisma.accessLevel.findFirst({ where: isUuid ? { id: accessLevel } : { OR: [{ title: accessLevel }, { name: accessLevel }] } });
+            if (lvl) resolvedAccessLevelId = lvl.id;
+        }
+
+        await prisma.workspaceUser.updateMany({
+            where: {
+                workspaceId,
+                OR: [{ id: memberId }, { userId: memberId }]
+            },
+            data: { accessLevelId: resolvedAccessLevelId || accessLevel }
+        });
+
+        await prisma.workspaceGroup.updateMany({
+            where: {
+                workspaceId,
+                OR: [{ id: memberId }, { groupId: memberId }]
+            },
+            data: { accessLevelId: resolvedAccessLevelId || accessLevel }
+        });
+
+        return reply.send({
+            success: true,
+            message: 'Workspace access updated successfully.'
+        });
+    } catch (error) {
+        console.error('Error updating workspace member access:', error);
+        return reply.code(500).send({
+            success: false,
+            message: 'Failed to update workspace member access.'
+        });
+    }
+};

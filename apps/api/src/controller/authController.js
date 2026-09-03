@@ -27,9 +27,10 @@ const { computeAiEnabledSync } = require("../services/ai/aiEntitlement");
 function formatOrganization(org) {
   if (!org) return null;
   const currentPlan = org.currentPlan || {};
-  const planType = currentPlan.name
-    ? currentPlan.name.toLowerCase()
-    : (org.metadata?.planId || 'free');
+  // SECURITY: planType is derived exclusively from the DB-linked plan record.
+  // metadata.planId is NOT used here — it is an untrusted client-supplied hint.
+  // If no plan record is linked (currentPlanId = null), the org is on the free tier.
+  const planType = currentPlan.name ? currentPlan.name.toLowerCase() : 'free';
   const storageQuotaBytes = (
     currentPlan.storageQuotaBytes !== undefined && currentPlan.storageQuotaBytes !== null
       ? currentPlan.storageQuotaBytes
@@ -181,7 +182,81 @@ async function syncToHubspot(payload) {
   } catch (err) {
     console.error("[HubSpot Sync ERROR] Connection exception:", err.message);
   }
-} // 1. Login Handler
+} // end syncToHubspot
+
+/**
+ * SECURITY: Server-side plan validation with payment verification.
+ *
+ * Resolves the requested planId/planName from the DB and verifies that a
+ * completed payment exists for any non-free (paid) plan. If no payment can
+ * be confirmed, the function silently falls back to the active Free plan,
+ * preventing plan-ID manipulation attacks at the signup/upgrade boundary.
+ *
+ * @param {object} prisma  – Prisma client instance
+ * @param {string} planId  – Raw planId string received from the client request
+ * @param {object} opts    – { orgId?: string, email?: string } used to query PaymentLog
+ * @returns {Promise<{ dbPlan: object, isFreePlan: boolean, isTrustedPaid: boolean }>}
+ */
+async function validatePlanAndPayment(prisma, planId, opts = {}) {
+  const { orgId, email } = opts;
+
+  // 1. Resolve the plan from the database by UUID or case-insensitive name.
+  let dbPlan = null;
+  if (planId && typeof planId === 'string' && planId.trim().length > 0) {
+    const normalized = planId.trim();
+    dbPlan = await prisma.plan.findFirst({
+      where: {
+        OR: [
+          { id: normalized },
+          { name: { equals: normalized, mode: 'insensitive' } },
+        ],
+        isActive: true,
+      },
+    }).catch(() => null);
+  }
+
+  // 2. If the plan wasn't found, fall back to the free plan.
+  if (!dbPlan) {
+    dbPlan = await prisma.plan.findFirst({
+      where: { isFree: true, isActive: true },
+    }).catch(() => null);
+    return { dbPlan, isFreePlan: true, isTrustedPaid: false };
+  }
+
+  // 3. If the resolved plan is a free plan, no payment check needed.
+  const isFreePlan = Boolean(dbPlan.isFree);
+  if (isFreePlan) {
+    return { dbPlan, isFreePlan: true, isTrustedPaid: false };
+  }
+
+  // 4. The resolved plan is a paid plan – verify a completed payment exists.
+  const orClauses = [];
+  if (orgId) orClauses.push({ orgId });
+  if (email) orClauses.push({ user: { email: { equals: email.toLowerCase().trim(), mode: 'insensitive' } } });
+
+  let hasVerifiedPayment = false;
+  if (orClauses.length > 0) {
+    const paymentCount = await prisma.paymentLog.count({
+      where: { status: 'COMPLETED', OR: orClauses },
+    }).catch(() => 0);
+    hasVerifiedPayment = paymentCount > 0;
+  }
+
+  if (!hasVerifiedPayment) {
+    // SECURITY: No confirmed payment – deny paid plan and fall back to free.
+    console.warn(
+      `[Security] Plan ID manipulation blocked: planId="${planId}" requested for org="${orgId || 'new'}" / email="${email || 'unknown'}" but no completed payment found. Falling back to free plan.`
+    );
+    const freePlan = await prisma.plan.findFirst({
+      where: { isFree: true, isActive: true },
+    }).catch(() => null);
+    return { dbPlan: freePlan, isFreePlan: true, isTrustedPaid: false };
+  }
+
+  return { dbPlan, isFreePlan: false, isTrustedPaid: true };
+}
+
+// 1. Login Handler
 module.exports.login = async (request, reply) => {
   try {
     const { email, password, mfaCode } = request.body || {};
@@ -458,17 +533,13 @@ module.exports.register = async (request, reply) => {
       const derivedOrgName = formatDomainToOrgName(email, orgName || name);
       const rawOrgName = orgName || name || email.split('@')[0];
       const formattedWorkspaceName = formatWorkspaceNameWithSuffix(rawOrgName);
-      let plan = null;
-      if (planId) {
-        plan = await request.server.prisma.plan.findUnique({
-          where: { id: planId }
-        });
-      }
-      if (!plan) {
-        plan = await request.server.prisma.plan.findFirst({
-          where: { isFree: true, isActive: true }
-        });
-      }
+      // SECURITY: Server-side plan validation – treats planId as untrusted input.
+      const { dbPlan: resolvedPlan } = await validatePlanAndPayment(
+        request.server.prisma,
+        planId,
+        { email }
+      );
+      const plan = resolvedPlan;
 
       const isFreePlan = Boolean(plan && plan.isFree);
       let planExpiresAt = null;
@@ -722,8 +793,20 @@ module.exports.registerRole = async (request, reply) => {
       });
     }
 
-    // 4. Determine Organization ID (Use provided orgId or fall back to Super Admin's orgId)
-    const finalOrgId = orgId || request.user?.orgId;
+    // SECURITY: Organization Isolation Guard (Prevent Cross-Tenant orgId Injection)
+    const callerOrgId = request.user?.orgId;
+    if (normalizedRole !== "platformadmin") {
+      if (orgId && callerOrgId && orgId !== callerOrgId) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. You are not authorized to invite users into a different organization.",
+        });
+      }
+    }
+
+    // Determine Organization ID (Must be the caller's organization for non-Platform Admins)
+    const finalOrgId = (normalizedRole === "platformadmin" ? (orgId || callerOrgId) : callerOrgId) || orgId;
     if (!finalOrgId) {
       return reply.status(400).send({
         success: false,
@@ -758,8 +841,6 @@ module.exports.registerRole = async (request, reply) => {
         message: "Member seat limit reached. Please upgrade your plan to add more members.",
       });
     }
-
-
 
     // 5. Fetch role from Roles table where id = roleId or name = roleId
     if (!roleId) {
@@ -796,6 +877,18 @@ module.exports.registerRole = async (request, reply) => {
       });
     }
 
+    // SECURITY: Privilege Escalation Guard (Prevent non-Super Admin from assigning Super Admin role)
+    const normalizedTargetRole = (roleObj.name || "").toLowerCase().replace(/[_ -]+/g, "");
+    if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
+      if (normalizedRole !== "superadmin" && normalizedRole !== "platformadmin") {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Only Super Admins can assign the Super Admin role.",
+        });
+      }
+    }
+
     // 6. Save ONLY email, roleId, role name, and orgId to the database
     const user = await request.server.prisma.user.create({
       data: {
@@ -808,7 +901,7 @@ module.exports.registerRole = async (request, reply) => {
     });
     user.role = roleObj.name;
 
-    if (['Super Admin', 'Admin', 'Platform Admin'].includes(user.role)) {
+    if (['Super Admin', 'Admin'].includes(user.role)) {
       if (user.orgId) {
         await autoAssignNewAdminToWorkspaces(request.server.prisma, user.orgId, user.id);
       }
@@ -848,6 +941,8 @@ module.exports.registerRole = async (request, reply) => {
       html: emailHtml,
     });
 
+    logSuccess(ACTIVITY_NAME.USER_INVITED, `Invited new user "${user.email}" with role "${user.role}".`, request);
+
     // 9. Return success response (No HubSpot sync performed)
     return reply.status(201).send({
       success: true,
@@ -863,6 +958,7 @@ module.exports.registerRole = async (request, reply) => {
     });
   } catch (error) {
     console.error("Register Role Error:", error);
+    logError(ACTIVITY_NAME.USER_INVITED, `Failed to invite user "${email || ''}".`, request, error);
     return reply.status(500).send({
       success: false,
       error: "Internal Server Error",
@@ -2047,6 +2143,8 @@ module.exports.sendSignupOtp = async (request, reply) => {
         data: {
           emailOTP: otpCode,
           emailOtpExpiresAt: expiresAt,
+          emailVerified: false,
+          failedLoginAttempts: 0,
         },
       });
       targetOrgId = existingUser.orgId;
@@ -2070,6 +2168,7 @@ module.exports.sendSignupOtp = async (request, reply) => {
           email: normalizedEmail,
           emailOTP: otpCode,
           emailOtpExpiresAt: expiresAt,
+          failedLoginAttempts: 0,
           status: "pending_signup",
           orgId: pendingOrg.id,
         },
@@ -2133,30 +2232,77 @@ module.exports.verifySignupOtp = async (request, reply) => {
       });
     }
 
-    // Verify OTP code (fallback to 123456 in dev environment for testing ease)
-    const isDevFallback = process.env.NODE_ENV !== "production" && trimmedCode === "123456";
-    const isValidOtp =
-      isDevFallback ||
-      (user.emailOTP &&
-        user.emailOTP === trimmedCode &&
-        user.emailOtpExpiresAt &&
-        new Date() <= new Date(user.emailOtpExpiresAt));
-
-    if (!isValidOtp) {
-      return reply.status(401).send({
+    // Check if OTP exists
+    if (!user.emailOTP || !user.emailOtpExpiresAt) {
+      return reply.status(400).send({
         success: false,
-        error: "Unauthorized",
-        message: "Invalid or expired verification code",
+        error: "Bad Request",
+        message: "No active verification code found. Please request a new code.",
       });
     }
 
-    // Mark email as verified
+    // Check OTP expiration
+    if (new Date() > new Date(user.emailOtpExpiresAt)) {
+      await request.server.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          emailOTP: null,
+          emailOtpExpiresAt: null,
+          failedLoginAttempts: 0,
+        },
+      });
+
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Verification code has expired. Please request a new code.",
+      });
+    }
+
+    // Strictly validate submitted code against generated OTP stored in database
+    if (trimmedCode !== user.emailOTP) {
+      const attempts = (user.failedLoginAttempts || 0) + 1;
+      const MAX_OTP_ATTEMPTS = 5;
+
+      if (attempts >= MAX_OTP_ATTEMPTS) {
+        // Invalidate OTP after 5 failed attempts to prevent brute-forcing
+        await request.server.prisma.user.update({
+          where: { id: user.id },
+          data: {
+            emailOTP: null,
+            emailOtpExpiresAt: null,
+            failedLoginAttempts: 0,
+          },
+        });
+
+        return reply.status(429).send({
+          success: false,
+          error: "Too Many Requests",
+          message: "Too many failed attempts. Your verification code has been invalidated. Please request a new code.",
+        });
+      }
+
+      await request.server.prisma.user.update({
+        where: { id: user.id },
+        data: { failedLoginAttempts: attempts },
+      });
+
+      const remaining = MAX_OTP_ATTEMPTS - attempts;
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: `Invalid verification code. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`,
+      });
+    }
+
+    // Mark email as verified and clear OTP credentials
     await request.server.prisma.user.update({
       where: { id: user.id },
       data: {
         emailVerified: true,
         emailOTP: null,
         emailOtpExpiresAt: null,
+        failedLoginAttempts: 0,
       },
     });
 
@@ -2208,6 +2354,24 @@ module.exports.completeSignup = async (request, reply) => {
       include: { organization: true },
     });
 
+    // Prevent Account Takeover: Reject registration if account exists & active or password set
+    if (user && (user.passwordHash || user.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    // Require genuine server-side email OTP verification before completing registration
+    if (!user || !user.emailVerified) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Email verification is required before completing registration.",
+      });
+    }
+
     let passwordHash = null;
     if (password && typeof password === "string" && password.trim().length > 0) {
       const passwordValidation = authService.validatePassword(password);
@@ -2227,27 +2391,21 @@ module.exports.completeSignup = async (request, reply) => {
     const uniqueSlug = `${slugBase}-${Date.now()}`;
 
     let organization = null;
-    let dbPlan = null;
-    if (planId && planId !== "free") {
-      dbPlan = await request.server.prisma.plan.findUnique({
-        where: { id: planId },
-      }).catch(() => null);
-    }
 
-    if (!dbPlan) {
-      dbPlan = await request.server.prisma.plan.findFirst({
-        where: { isFree: true, isActive: true },
-      }).catch(() => null);
-    }
-
-    const isFreePlan = Boolean(dbPlan && dbPlan.isFree);
+    // SECURITY: Validate plan server-side and verify payment for non-free plans.
+    // The planId from the client body is treated as untrusted input.
+    const { dbPlan, isFreePlan } = await validatePlanAndPayment(
+      request.server.prisma,
+      planId,
+      { email: normalizedEmail }
+    );
 
     const isMonthly = (billingCycle || "annual").toLowerCase() === "monthly";
     const now = new Date();
     const expiresAtDate = new Date(now);
 
     if (isFreePlan) {
-      const trialDays = dbPlan.trialDays ?? 3;
+      const trialDays = dbPlan?.trialDays ?? 3;
       expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);
     } else if (isMonthly) {
       expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
@@ -2255,15 +2413,10 @@ module.exports.completeSignup = async (request, reply) => {
       expiresAtDate.setFullYear(expiresAtDate.getFullYear() + 1);
     }
 
-    const PRICE_TABLE = {
-      free: { monthlyCents: 0, yearlyMonthlyCents: 0, yearlyTotalCents: 0 },
-      basic: { monthlyCents: 1000, yearlyMonthlyCents: 900, yearlyTotalCents: 10800 },
-      premium: { monthlyCents: 2500, yearlyMonthlyCents: 2300, yearlyTotalCents: 27000 },
-      enterprise: { monthlyCents: 5000, yearlyMonthlyCents: 4500, yearlyTotalCents: 54000 },
-    };
-
-    const priceInfo = PRICE_TABLE[planId] || PRICE_TABLE.free;
-    const subtotalCents = isMonthly ? priceInfo.monthlyCents : priceInfo.yearlyTotalCents;
+    // Derive pricing strictly from the validated DB plan record – never from client strings.
+    const monthlyCents = dbPlan?.monthlyPriceCents ?? 0;
+    const yearlyCents  = dbPlan?.yearlyPriceCents  ?? 0;
+    const subtotalCents = isFreePlan ? 0 : (isMonthly ? monthlyCents : yearlyCents);
     const taxCents = Math.round(subtotalCents * 0.06);
     const totalCents = subtotalCents + taxCents;
 
@@ -2271,7 +2424,7 @@ module.exports.completeSignup = async (request, reply) => {
       website: companyWebsite || null,
       teamSize: teamSize || null,
       primaryFocus: firstFocus || null,
-      planId: dbPlan ? dbPlan.id : planId,
+      planId: isFreePlan ? 'free' : (dbPlan?.name?.toLowerCase() ?? 'free'),
       billingCycle: isFreePlan ? `${dbPlan?.trialDays ?? 3}days` : (isMonthly ? "monthly" : "annual"),
       planSelectedAt: now.toISOString(),
       expiresAt: expiresAtDate.toISOString(),
@@ -2543,8 +2696,15 @@ module.exports.upgradePlan = async (request, reply) => {
       });
     }
 
-    const normalizedPlanId = String(planId).toLowerCase().trim();
-    const isRequestingFree = normalizedPlanId === 'free' || normalizedPlanId === 'f2fe83c1-d36a-4cd3-b173-7f394a77c6bd';
+    // SECURITY: Resolve plan from DB and verify payment for non-free upgrade requests.
+    const { dbPlan, isFreePlan: resolvedIsFree, isTrustedPaid } = await validatePlanAndPayment(
+      request.server.prisma,
+      planId,
+      { orgId: user.orgId }
+    );
+
+    const normalizedPlanId = dbPlan ? dbPlan.name.toLowerCase() : 'free';
+    const isRequestingFree = resolvedIsFree;
 
     if (isRequestingFree && Boolean(user.organization?.isFreeTrialUsed)) {
       return reply.status(403).send({
@@ -2554,22 +2714,22 @@ module.exports.upgradePlan = async (request, reply) => {
       });
     }
 
-    const dbPlan = await request.server.prisma.plan.findFirst({
-      where: {
-        OR: [
-          { id: normalizedPlanId },
-          { name: { equals: normalizedPlanId, mode: 'insensitive' } },
-        ],
-      },
-    }).catch(() => null);
+    // SECURITY: Block upgrade to paid plan if payment has not been confirmed.
+    if (!resolvedIsFree && !isTrustedPaid) {
+      return reply.status(402).send({
+        success: false,
+        error: 'Payment Required',
+        message: 'A confirmed payment is required before upgrading to a paid plan. Please complete the checkout process.',
+      });
+    }
 
-    const resolvedPlanName = dbPlan ? dbPlan.name.toLowerCase() : (normalizedPlanId.length > 30 ? 'free' : normalizedPlanId);
     const isMonthly = String(billingCycle).toLowerCase() === 'monthly';
 
     const now = new Date();
     let expiresAtDate = new Date(now);
-    if (resolvedPlanName === 'free') {
-      expiresAtDate.setDate(expiresAtDate.getDate() + 3);
+    if (resolvedIsFree) {
+      const trialDays = dbPlan?.trialDays ?? 3;
+      expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);
     } else if (isMonthly) {
       expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
     } else {
@@ -2585,7 +2745,7 @@ module.exports.upgradePlan = async (request, reply) => {
         metadata: {
           ...(typeof user.organization?.metadata === 'object' ? user.organization.metadata : {}),
           planId: normalizedPlanId,
-          billingCycle: normalizedPlanId === 'free' ? '3days' : (isMonthly ? 'monthly' : 'annual'),
+          billingCycle: resolvedIsFree ? `${dbPlan?.trialDays ?? 3}days` : (isMonthly ? 'monthly' : 'annual'),
           planSelectedAt: now.toISOString(),
           expiresAt: expiresAtDate.toISOString(),
         },

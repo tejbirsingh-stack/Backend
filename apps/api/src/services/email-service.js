@@ -269,6 +269,22 @@ class EmailService {
     `;
     return this.sendEmail({ to, subject, text, html });
   }
+
+  // Send Mention Notification Email
+  async sendMentionNotificationEmail(to, name, commenterName, videoName, commentText, videoUrl, { orgLogoUrl, orgName } = {}) {
+    const subject = `${commenterName} mentioned you on Noah`;
+    const text = `Hi ${name},\n\n${commenterName} mentioned you in a comment on "${videoName}":\n\n"${commentText}"\n\nView it here: ${videoUrl}\n\nThanks,\nNoah Platform`;
+    const html = renderMentionNotificationHtml({ name, commenterName, videoName, commentText, videoUrl, orgLogoUrl, orgName });
+    return this.sendEmail({ to, subject, text, html });
+  }
+
+  // Send New Annotation Email
+  async sendNewAnnotationEmail(to, name, commenterName, videoName, commentText, videoUrl, { orgLogoUrl, orgName } = {}) {
+    const subject = `New comment on ${videoName}`;
+    const text = `Hi ${name},\n\n${commenterName} left a comment on "${videoName}":\n\n"${commentText}"\n\nView it here: ${videoUrl}\n\nThanks,\nNoah Platform`;
+    const html = renderNewAnnotationHtml({ name, commenterName, videoName, commentText, videoUrl, orgLogoUrl, orgName });
+    return this.sendEmail({ to, subject, text, html });
+  }
 }
 
 module.exports = new EmailService();

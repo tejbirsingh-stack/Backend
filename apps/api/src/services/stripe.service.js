@@ -85,11 +85,13 @@ class StripeService {
    * @param {string} priceId - The Stripe Price ID (from Plan table)
    * @param {string} successUrl - URL to redirect to on success
    * @param {string} cancelUrl - URL to redirect to on cancel
+   * @param {object} [metadata] - Optional metadata object (e.g. orgId, userId)
+   * @param {string} [clientReferenceId] - Optional orgId or reference ID
    */
-  async createCheckoutSession(customerId, priceId, successUrl, cancelUrl) {
+  async createCheckoutSession(customerId, priceId, successUrl, cancelUrl, metadata = {}, clientReferenceId = null) {
     try {
       const stripe = await getStripe();
-      const session = await stripe.checkout.sessions.create({
+      const payload = {
         customer: customerId,
         payment_method_types: ['card'],
         billing_address_collection: 'auto',
@@ -102,7 +104,14 @@ class StripeService {
         mode: 'subscription',
         success_url: successUrl,
         cancel_url: cancelUrl,
-      });
+      };
+      if (clientReferenceId) {
+        payload.client_reference_id = clientReferenceId;
+      }
+      if (metadata && Object.keys(metadata).length > 0) {
+        payload.metadata = metadata;
+      }
+      const session = await stripe.checkout.sessions.create(payload);
       return session;
     } catch (error) {
       console.error('[StripeService] Error creating checkout session:', error);

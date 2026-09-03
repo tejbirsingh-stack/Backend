@@ -466,7 +466,9 @@ class StripeController {
         customerId,
         checkoutPriceId,
         finalSuccessUrl,
-        finalCancelUrl
+        finalCancelUrl,
+        { orgId: org.id, userId: request.user?.id || '' },
+        org.id
       );
 
       // Log Payment Audit Event
@@ -561,6 +563,11 @@ class StripeController {
         return reply.code(400).send({ error: 'Missing orgId or sessionId' });
       }
 
+      const org = await prisma.organization.findUnique({ where: { id: orgId } });
+      if (!org) {
+        return reply.code(404).send({ error: 'Organization not found' });
+      }
+
       const session = await stripeService.retrieveCheckoutSession(sessionId);
       if (!session || session.payment_status !== 'paid') {
         await recordPaymentEvent({
@@ -573,6 +580,38 @@ class StripeController {
         });
 
         return reply.code(400).send({ error: 'Session is not paid or invalid' });
+      }
+
+      // Security Verification: Ensure session belongs to requesting organization
+      const sessionCustomerId = typeof session.customer === 'object' ? session.customer?.id : session.customer;
+      const sessionOrgId = session.client_reference_id || session.metadata?.orgId;
+
+      const isCustomerMatch = Boolean(org.stripeCustomerId && sessionCustomerId && org.stripeCustomerId === sessionCustomerId);
+      const isOrgMatch = Boolean(sessionOrgId && sessionOrgId === orgId);
+
+      if (!isCustomerMatch && !isOrgMatch) {
+        console.warn(`[Stripe Sync Security Block] Org ${orgId} attempted to reuse checkout session ${sessionId} created for customer ${sessionCustomerId} / org ${sessionOrgId}`);
+
+        await recordPaymentEvent({
+          orgId,
+          userId: request.user?.id || null,
+          stripeCustomerId: sessionCustomerId || null,
+          stripeSessionId: sessionId,
+          eventType: 'sync_session_unauthorized_cross_account_reuse',
+          status: 'FAILED',
+          failureReason: 'Attempted to use a Stripe session belonging to a different account/organization',
+          metadata: {
+            sessionCustomer: sessionCustomerId,
+            orgStripeCustomer: org.stripeCustomerId,
+            sessionOrgId,
+            attemptedOrgId: orgId,
+          },
+        });
+
+        return reply.code(403).send({
+          error: 'Unauthorized checkout session',
+          message: 'This payment session does not belong to your account.',
+        });
       }
 
       const lineItem = session.line_items?.data?.[0];
@@ -1546,7 +1585,16 @@ class StripeController {
       if (!stripeInvoice && sessionId) {
         const session = await stripeService.retrieveCheckoutSession(sessionId).catch(() => null);
         if (session) {
-          customerId = customerId || (typeof session.customer === 'string' ? session.customer : session.customer?.id);
+          const sessionCustomerId = typeof session.customer === 'object' ? session.customer?.id : session.customer;
+          const sessionOrgId = session.client_reference_id || session.metadata?.orgId;
+          const isCustomerMatch = Boolean(org?.stripeCustomerId && sessionCustomerId && org.stripeCustomerId === sessionCustomerId);
+          const isOrgMatch = Boolean(sessionOrgId && sessionOrgId === orgId);
+
+          if (!isCustomerMatch && !isOrgMatch) {
+            return reply.code(403).send({ error: 'Unauthorized access to invoice session' });
+          }
+
+          customerId = customerId || sessionCustomerId;
           let invId = typeof session.invoice === 'string' ? session.invoice : session.invoice?.id;
           if (!invId && session.subscription) {
             const subLatest = typeof session.subscription === 'object' ? session.subscription.latest_invoice : null;

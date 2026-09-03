@@ -13,7 +13,6 @@ const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 
-const { enqueueAiAnalyze, isAiEnabledForOrg } = require("../services/ai/enqueueAiAnalyze");
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
 
@@ -48,6 +47,7 @@ const redisClient = new Redis({
 
 const B2StorageService = require("../b2-storage.cjs");
 const { assertQuotaAvailable, recordStorageDelta } = require("../services/usage-meter.service");
+const { persistUploadAiRequest, tryStartPendingUploadAi } = require("../services/ai/enqueueAiAnalyze");
 
 const b2Storage = new B2StorageService({
   keyId: process.env.B2_KEY_ID,
@@ -56,6 +56,25 @@ const b2Storage = new B2StorageService({
   endpoint: process.env.B2_ENDPOINT,
   region: process.env.B2_REGION,
 });
+
+async function applyUploadAiFeatureRequest(prisma, { assetId, orgId, assetType, aiFeatures }) {
+  if (!orgId || !Array.isArray(aiFeatures) || aiFeatures.length === 0) {
+    return;
+  }
+  try {
+    const persisted = await persistUploadAiRequest(prisma, {
+      assetId,
+      orgId,
+      assetType,
+      aiFeatures,
+    });
+    if (persisted && assetType === 'audio') {
+      await tryStartPendingUploadAi(prisma, assetId);
+    }
+  } catch (err) {
+    console.warn(`[Upload AI] Failed for asset ${assetId}:`, err.message);
+  }
+}
 
 async function enforceWorkspaceFolderStructure(prisma, ownerType, ownerId) {
   if (ownerType === 'WORKSPACE' && ownerId) {
@@ -789,9 +808,14 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       include: { files: true }
     });
     if (asset && asset.files.length > 0) {
-      const proxy = asset.files.find(f => f.fileClass === 'proxy');
+      const wantOriginal = request.query?.original === 'true' || request.query?.type === 'original';
+      const proxy = asset.files.find(f => f.fileClass === 'proxy' && Number(f.sizeBytes || 0) > 0);
       const original = asset.files.find(f => f.fileClass === 'original');
-      b2Key = proxy ? proxy.filePath : original?.filePath;
+      if (wantOriginal && original) {
+        b2Key = original.filePath;
+      } else {
+        b2Key = proxy ? proxy.filePath : original?.filePath;
+      }
     }
   } else {
     const file = await request.server.prisma.assetFile.findFirst({
@@ -1462,18 +1486,14 @@ module.exports.softDelete = async (request, reply) => {
 
     let whereClause = {
       status: { in: ['trash'] },
-      deletedAt: { not: null }
+      deletedAt: { not: null },
+      OR: [
+        { deletedByUserId: userId },
+        { deletedByUserId: null, uploadedByUserId: userId }
+      ]
     };
 
-    const isSuperAdminOrAdmin =
-      userRole === 'super admin' ||
-      userRole === 'superadmin' ||
-      userRole === 'super_admin' ||
-      userRole === 'admin' ||
-      liveUser?.roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
-      liveUser?.roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
-
-    if (request.user?.orgId && isSuperAdminOrAdmin) {
+    if (request.user?.orgId) {
       whereClause.AND = [
         {
           OR: [
@@ -1481,11 +1501,6 @@ module.exports.softDelete = async (request, reply) => {
             { orgId: null }
           ]
         }
-      ];
-    } else if (!isSuperAdminOrAdmin) {
-      whereClause.OR = [
-        { uploadedByUserId: userId },
-        { deletedByUserId: userId }
       ];
     }
 
@@ -1545,6 +1560,8 @@ module.exports.softDelete = async (request, reply) => {
 module.exports.restoreSoftDelete = async (request, reply) => {
   try {
     const { filename } = request.params;
+    const userId = request.user?.id;
+    const callerOrgId = request.user?.orgId;
 
     let restoredFromDb = false;
 
@@ -1553,6 +1570,49 @@ module.exports.restoreSoftDelete = async (request, reply) => {
       try {
         const asset = await request.server.prisma.asset.findUnique({ where: { id: filename } });
         if (asset) {
+          const liveUser = await request.server.prisma.user.findUnique({
+            where: { id: userId },
+            include: { roleRelation: true }
+          });
+          const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+          const userRole = rawRoleName.trim().toLowerCase();
+          const roleId = liveUser?.roleId || request.user?.roleId;
+
+          const isPlatformAdmin = Boolean(
+            request.platformAdmin ||
+            request.user?.isPlatformAdmin ||
+            userRole === 'platform admin' ||
+            userRole === 'platformadmin'
+          );
+
+          const isSuperAdminOrAdmin =
+            isPlatformAdmin ||
+            userRole === 'super admin' ||
+            userRole === 'superadmin' ||
+            userRole === 'super_admin' ||
+            userRole === 'admin' ||
+            roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
+            roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+
+          // SECURITY: Cross-Tenant Organization Isolation Guard
+          if (!isPlatformAdmin && asset.orgId && callerOrgId && asset.orgId !== callerOrgId) {
+            return reply.code(403).send({
+              success: false,
+              error: "Forbidden",
+              message: "Access Denied: You do not have permission to restore assets from another organization."
+            });
+          }
+
+          // SECURITY: IDOR Restoration Authorization & Ownership Check
+          const isOriginalOwner = asset.uploadedByUserId === userId;
+          if (!isSuperAdminOrAdmin && !isOriginalOwner) {
+            return reply.code(403).send({
+              success: false,
+              error: "Forbidden",
+              message: "Access Denied: You do not have permission to restore this file."
+            });
+          }
+
           let updateData = {
             deletedAt: null,
             status: "active",
@@ -1565,6 +1625,8 @@ module.exports.restoreSoftDelete = async (request, reply) => {
             data: updateData
           });
           restoredFromDb = true;
+        } else {
+          return reply.code(404).send({ success: false, error: "Asset not found" });
         }
       } catch (dbErr) {
         console.warn("Could not restore asset in database:", dbErr.message);
@@ -1609,6 +1671,64 @@ module.exports.deletePermanently = async (request, reply) => {
   let itemPath = 'Unknown Item';
   try {
     const { filename } = request.params;
+    const userId = request.user?.id;
+    const callerOrgId = request.user?.orgId;
+
+    const liveUser = await request.server.prisma.user.findUnique({
+      where: { id: userId },
+      include: { roleRelation: true }
+    });
+    const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
+    const userRole = rawRoleName.trim().toLowerCase();
+    const roleId = liveUser?.roleId || request.user?.roleId;
+
+    const isPlatformAdmin = Boolean(
+      request.platformAdmin ||
+      request.user?.isPlatformAdmin ||
+      userRole === 'platform admin' ||
+      userRole === 'platformadmin'
+    );
+
+    const isSuperAdminOrAdmin =
+      isPlatformAdmin ||
+      userRole === 'super admin' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin' ||
+      userRole === 'admin' ||
+      roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
+      roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+
+    let assetToDelete = null;
+
+    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      assetToDelete = await request.server.prisma.asset.findUnique({
+        where: { id: filename },
+        include: { files: true },
+      });
+
+      if (!assetToDelete) {
+        return reply.code(404).send({ success: false, error: "Asset not found" });
+      }
+
+      // SECURITY: Cross-Tenant Organization Isolation Guard
+      if (!isPlatformAdmin && assetToDelete.orgId && callerOrgId && assetToDelete.orgId !== callerOrgId) {
+        return reply.code(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access Denied: You do not have permission to permanently delete assets from another organization."
+        });
+      }
+
+      // SECURITY: IDOR Deletion Authorization & Ownership Check
+      const isOriginalOwner = assetToDelete.uploadedByUserId === userId;
+      if (!isSuperAdminOrAdmin && !isOriginalOwner) {
+        return reply.code(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access Denied: You do not have permission to permanently delete this file."
+        });
+      }
+    }
 
     let deletedFromLocal = false;
     let deletedFromB2 = false;
@@ -1639,64 +1759,56 @@ module.exports.deletePermanently = async (request, reply) => {
 
     const orgId = request.user?.orgId;
     let dbDeleted = false;
-    let assetToDelete = null;
 
-    // First delete from database if it's a UUID
-    if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+    if (assetToDelete) {
       try {
-        assetToDelete = await request.server.prisma.asset.findFirst({
-          where: { id: filename, ...(orgId ? { orgId } : {}) },
-          include: { files: true },
-        });
-        if (assetToDelete) {
-          // Delete all associated file variants (original, proxy, thumbnails) directly from B2 Cloud
-          if (b2Storage.isEnabled() && assetToDelete.files && assetToDelete.files.length > 0) {
-            for (const f of assetToDelete.files) {
-              if (f.filePath) {
-                try {
-                  await b2Storage.deleteFile(f.filePath);
-                  deletedFromB2 = true;
-                } catch (b2Err) {
-                  console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
-                }
+        // Delete all associated file variants (original, proxy, thumbnails) directly from B2 Cloud
+        if (b2Storage.isEnabled() && assetToDelete.files && assetToDelete.files.length > 0) {
+          for (const f of assetToDelete.files) {
+            if (f.filePath) {
+              try {
+                await b2Storage.deleteFile(f.filePath);
+                deletedFromB2 = true;
+              } catch (b2Err) {
+                console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
               }
             }
           }
+        }
 
-          itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
-          const totalSize = assetToDelete.files.reduce((acc, f) => acc + Number(f.sizeBytes || 0), 0);
-          await request.server.prisma.asset.delete({
-            where: { id: filename }
-          });
-          dbDeleted = true;
-          if (totalSize > 0 && assetToDelete.orgId) {
-            try {
-              await recordStorageDelta(request.server.prisma, {
-                orgId: assetToDelete.orgId,
-                deltaBytes: -totalSize,
-                assetId: assetToDelete.id,
-                reason: 'permanent_delete',
-              });
-            } catch (dErr) {
-              console.warn('Failed to record storage delta for permanent delete:', dErr.message);
-            }
+        itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
+        const totalSize = assetToDelete.files.reduce((acc, f) => acc + Number(f.sizeBytes || 0), 0);
+        await request.server.prisma.asset.delete({
+          where: { id: filename }
+        });
+        dbDeleted = true;
+        if (totalSize > 0 && assetToDelete.orgId) {
+          try {
+            await recordStorageDelta(request.server.prisma, {
+              orgId: assetToDelete.orgId,
+              deltaBytes: -totalSize,
+              assetId: assetToDelete.id,
+              reason: 'permanent_delete',
+            });
+          } catch (dErr) {
+            console.warn('Failed to record storage delta for permanent delete:', dErr.message);
           }
-          if (assetToDelete.deletedByUserId) {
-            await createNotification(request.server, assetToDelete.deletedByUserId, assetToDelete.orgId, 'deletion_approved', 'Permanently Deleted', `Your asset ${assetToDelete.title} has been permanently deleted.`, assetToDelete.id);
-          }
+        }
+        if (assetToDelete.deletedByUserId) {
+          await createNotification(request.server, assetToDelete.deletedByUserId, assetToDelete.orgId, 'deletion_approved', 'Permanently Deleted', `Your asset ${assetToDelete.title} has been permanently deleted.`, assetToDelete.id);
+        }
 
-          const deleterUser = await request.server.prisma.user.findUnique({
-            where: { id: request.user.id },
-            include: { roleRelation: true }
-          }).catch(() => null);
-          const deleterRole = (deleterUser?.roleRelation?.name || deleterUser?.role || 'User').trim().toLowerCase();
-          const isDeleterSuperAdmin = ['super admin', 'superadmin'].includes(deleterRole);
+        const deleterUser = await request.server.prisma.user.findUnique({
+          where: { id: request.user.id },
+          include: { roleRelation: true }
+        }).catch(() => null);
+        const deleterRole = (deleterUser?.roleRelation?.name || deleterUser?.role || 'User').trim().toLowerCase();
+        const isDeleterSuperAdmin = ['super admin', 'superadmin'].includes(deleterRole);
 
-          if (isDeleterSuperAdmin) {
-            await notifyRole(request.server, assetToDelete.orgId, 'Admin', 'deletion_alert', 'File Permanently Deleted', `${deleterUser?.name || deleterUser?.email || 'Super Admin'} (Super Admin) permanently deleted file '${assetToDelete.title}'.`, assetToDelete.id);
-          } else {
-            await notifyRole(request.server, assetToDelete.orgId, 'Super Admin', 'deletion_alert', 'File Permanently Deleted', `${deleterUser?.name || deleterUser?.email || 'Admin'} (${deleterRole}) permanently deleted file '${assetToDelete.title}'.`, assetToDelete.id);
-          }
+        if (isDeleterSuperAdmin) {
+          await notifyRole(request.server, assetToDelete.orgId, 'Admin', 'deletion_alert', 'File Permanently Deleted', `${deleterUser?.name || deleterUser?.email || 'Super Admin'} (Super Admin) permanently deleted file '${assetToDelete.title}'.`, assetToDelete.id);
+        } else {
+          await notifyRole(request.server, assetToDelete.orgId, 'Super Admin', 'deletion_alert', 'File Permanently Deleted', `${deleterUser?.name || deleterUser?.email || 'Admin'} (${deleterRole}) permanently deleted file '${assetToDelete.title}'.`, assetToDelete.id);
         }
       } catch (dbErr) {
         console.warn("Could not delete asset from database during permanent delete:", dbErr.message);
@@ -2249,6 +2361,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
           setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
         }
 
+        const legacyAiFeatures = request.body?.aiFeatures;
+        if (request.user?.orgId) {
+          await applyUploadAiFeatureRequest(request.server.prisma, {
+            assetId: newAsset.id,
+            orgId: request.user.orgId,
+            assetType,
+            aiFeatures: legacyAiFeatures,
+          });
+        }
+
         if (assetType === 'image') {
           const ext = path.extname(part.filename || "").toLowerCase().replace(".", "");
           if (NON_WEB_IMAGE_EXTS.has(ext)) {
@@ -2337,7 +2459,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
 module.exports.deleteMediaFile = async (request, reply) => {
   try {
     const { filename } = request.params;
-    const userRole = request.user?.role || 'Viewer';
+    const userId = request.user?.id;
+    const callerOrgId = request.user?.orgId;
 
     // If it's a database UUID, handle deletion logic based on role
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
@@ -2358,7 +2481,15 @@ module.exports.deleteMediaFile = async (request, reply) => {
         let userRole = rawRoleName.trim().toLowerCase();
         const roleId = liveUser?.roleId || request.user?.roleId;
 
+        const isPlatformAdmin = Boolean(
+          request.platformAdmin ||
+          request.user?.isPlatformAdmin ||
+          userRole === 'platform admin' ||
+          userRole === 'platformadmin'
+        );
+
         const isSuperAdminOrAdmin =
+          isPlatformAdmin ||
           userRole === 'super admin' ||
           userRole === 'superadmin' ||
           userRole === 'super_admin' ||
@@ -2366,8 +2497,16 @@ module.exports.deleteMediaFile = async (request, reply) => {
           roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
           roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
 
-        // If target resource is a Folder, enforce Super Admin or Admin role requirement
+        // If target resource is a Folder, enforce Super Admin or Admin role requirement and Org Isolation
         if (folderToDelete) {
+          if (!isPlatformAdmin && folderToDelete.orgId && callerOrgId && folderToDelete.orgId !== callerOrgId) {
+            return reply.code(403).send({
+              success: false,
+              error: "Forbidden",
+              message: "Access Denied: You do not have permission to delete folders from another organization."
+            });
+          }
+
           if (folderToDelete.name && folderToDelete.name.trim().toLowerCase() === 'restore') {
             return reply.code(400).send({
               success: false,
@@ -2396,13 +2535,25 @@ module.exports.deleteMediaFile = async (request, reply) => {
           return reply.code(404).send({ success: false, error: "Asset or folder not found" });
         }
 
-        if (assetToUpdate.globalMedia) {
+        // SECURITY: Cross-Tenant Organization Isolation Guard
+        if (!isPlatformAdmin && assetToUpdate.orgId && callerOrgId && assetToUpdate.orgId !== callerOrgId) {
+          return reply.code(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Access Denied: You do not have permission to delete assets from another organization."
+          });
+        }
+
+        if (assetToUpdate.globalMedia && !isPlatformAdmin) {
           return reply.code(400).send({
             success: false,
             error: "BadRequest",
             message: "Global media assets are protected system files and cannot be deleted."
           });
         }
+
+        // SECURITY: IDOR Deletion Authorization & Ownership Check
+        const isOriginalOwner = assetToUpdate.uploadedByUserId === userId;
 
         // Check if asset is linked to any project
         const projectSource = await request.server.prisma.projectSource.findFirst({
@@ -2412,16 +2563,43 @@ module.exports.deleteMediaFile = async (request, reply) => {
         if (projectSource) {
           try {
             const level = await verifyProjectAccess(projectSource.projectId, request.user.id, 'Can edit', request.server.prisma);
-            if (level === 'Full Access' || (level === 'Can edit' && assetToUpdate.uploadedByUserId === request.user.id)) {
-              // Project access overrides global role to allow deletion
+            if (level === 'Full Access' || (level === 'Can edit' && isOriginalOwner)) {
               userRole = 'editor';
             } else {
-              // Block if they don't meet project deletion rules (even if they are a global admin/editor)
-              return reply.code(403).send({ success: false, error: "Access Denied: You do not have permission to delete this project asset." });
+              return reply.code(403).send({ success: false, error: "Forbidden", message: "Access Denied: You do not have permission to delete this project asset." });
             }
           } catch (e) {
-            // If verifyProjectAccess throws 403, it means they are 'Can view' or have no access
-            return reply.code(403).send({ success: false, error: "Access Denied: You do not have permission to delete this project asset." });
+            return reply.code(403).send({ success: false, error: "Forbidden", message: "Access Denied: You do not have permission to delete this project asset." });
+          }
+        } else if (!isSuperAdminOrAdmin && !isOriginalOwner) {
+          // Asset has no project link and requester is NOT Super Admin/Admin and NOT the original uploader/owner
+          let isAuthorizedWorkspaceMember = false;
+          if (assetToUpdate.workspaceId) {
+            const wsUser = await request.server.prisma.workspaceUser.findFirst({
+              where: { workspaceId: assetToUpdate.workspaceId, userId }
+            });
+            if (wsUser && (wsUser.role === 'ADMIN' || wsUser.role === 'OWNER' || wsUser.role === 'SUPER_ADMIN')) {
+              isAuthorizedWorkspaceMember = true;
+            }
+          }
+
+          if (!isAuthorizedWorkspaceMember) {
+            const assetUser = await request.server.prisma.assetUser.findUnique({
+              where: { assetId_userId: { assetId: assetToUpdate.id, userId } },
+              include: { accessLevel: true }
+            }).catch(() => null);
+
+            if (assetUser && (assetUser.accessLevel?.name === 'Full Access' || assetUser.accessLevel?.name === 'Can edit')) {
+              isAuthorizedWorkspaceMember = true;
+            }
+          }
+
+          if (!isAuthorizedWorkspaceMember) {
+            return reply.code(403).send({
+              success: false,
+              error: "Forbidden",
+              message: "Access Denied: You do not have permission to delete this file."
+            });
           }
         }
 
@@ -2433,7 +2611,7 @@ module.exports.deleteMediaFile = async (request, reply) => {
 
         // 2. Admin: Submit for Super Admin review (pending_super_admin status, NOT trash)
         const isAdminRole = userRole === 'admin' || roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
-        if (isAdminRole) {
+        if (isAdminRole && !isPlatformAdmin) {
           const asset = await request.server.prisma.asset.update({
             where: { id: filename },
             data: {
@@ -2447,6 +2625,9 @@ module.exports.deleteMediaFile = async (request, reply) => {
           const userName = liveUser?.name || liveUser?.email || request.user?.name || 'Admin';
           await notifyRole(request.server, asset.orgId || request.user?.orgId, 'Super Admin', 'approval_request', 'Super Admin Deletion Review', `${userName} (Admin) requested deletion for file: '${asset.title}'. Approval needed.`, asset.id);
 
+          const itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
+          logSuccess(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `Admin requested file deletion for "${itemPath}". Submitted for Super Admin review.`, request);
+
           return reply.send({
             success: true,
             status: "pending_super_admin",
@@ -2454,7 +2635,7 @@ module.exports.deleteMediaFile = async (request, reply) => {
           });
         }
 
-        // 3. Editor: Soft Delete (goes to Trash normally)
+        // 3. Editor / Owner: Soft Delete (goes to Trash normally)
         const asset = await request.server.prisma.asset.update({
           where: { id: filename },
           data: {
@@ -2478,12 +2659,16 @@ module.exports.deleteMediaFile = async (request, reply) => {
           );
         }
 
+        const itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
+        logSuccess(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `File "${itemPath}" moved to trash.`, request);
+
         return reply.send({
           success: true,
           message: "File deleted successfully",
         });
       } catch (dbErr) {
         console.warn("Could not soft delete asset in database:", dbErr.message);
+        logError(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `Failed to soft delete asset in database`, request, dbErr);
         return reply.code(500).send({
           success: false,
           error: "Failed to soft delete asset in database",
@@ -2496,6 +2681,7 @@ module.exports.deleteMediaFile = async (request, reply) => {
       });
     }
   } catch (error) {
+    logError(ACTIVITY_NAME.MEDIA_SOFT_DELETED, `Failed to soft delete file`, request, error);
     return reply.code(500).send({
       success: false,
       error: error.message,
@@ -2507,6 +2693,8 @@ module.exports.deleteMediaFile = async (request, reply) => {
 module.exports.requestPermanentDelete = async (request, reply) => {
   try {
     const { filename } = request.params;
+    const userId = request.user?.id;
+    const callerOrgId = request.user?.orgId;
 
     const liveUser = await request.server.prisma.user.findUnique({
       where: { id: request.user.id },
@@ -2515,8 +2703,50 @@ module.exports.requestPermanentDelete = async (request, reply) => {
     const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || 'Viewer';
     const userRole = rawRoleName.trim().toLowerCase();
     const isAdmin = userRole === 'admin';
+    const roleId = liveUser?.roleId || request.user?.roleId;
+
+    const isPlatformAdmin = Boolean(
+      request.platformAdmin ||
+      request.user?.isPlatformAdmin ||
+      userRole === 'platform admin' ||
+      userRole === 'platformadmin'
+    );
+
+    const isSuperAdminOrAdmin =
+      isPlatformAdmin ||
+      userRole === 'super admin' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin' ||
+      userRole === 'admin' ||
+      roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15' ||
+      roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
 
     if (filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      const targetAsset = await request.server.prisma.asset.findUnique({ where: { id: filename } });
+
+      if (!targetAsset) {
+        return reply.code(404).send({ success: false, error: "Asset not found" });
+      }
+
+      // SECURITY: Cross-Tenant Organization Isolation Guard
+      if (!isPlatformAdmin && targetAsset.orgId && callerOrgId && targetAsset.orgId !== callerOrgId) {
+        return reply.code(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access Denied: You do not have permission to request deletion of assets from another organization."
+        });
+      }
+
+      // SECURITY: IDOR Deletion Authorization & Ownership Check
+      const isOriginalOwner = targetAsset.uploadedByUserId === userId;
+      if (!isSuperAdminOrAdmin && !isOriginalOwner) {
+        return reply.code(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access Denied: You do not have permission to request permanent deletion for this file."
+        });
+      }
+
       const nextStatus = isAdmin ? "pending_super_admin" : "pending_admin_review";
       const asset = await request.server.prisma.asset.update({
         where: { id: filename },
@@ -3308,7 +3538,7 @@ module.exports.getUploadStatus = async (request, reply) => {
 
 //15. Complete Multipart Upload Session and Create Database Record
 module.exports.completeResumableUpload = async (request, reply) => {
-  const { sessionId, parts, title, summary, tagIds, folderId, technicalSpecs } = request.body || {};
+  const { sessionId, parts, title, summary, tagIds, folderId, technicalSpecs, aiFeatures } = request.body || {};
   if (!sessionId) {
     return reply.status(400).send({ message: "sessionId is required" })
   }
@@ -3625,6 +3855,15 @@ module.exports.completeResumableUpload = async (request, reply) => {
       setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
     }
 
+    if (request.user?.orgId) {
+      await applyUploadAiFeatureRequest(request.server.prisma, {
+        assetId: newAsset.id,
+        orgId: request.user.orgId,
+        assetType,
+        aiFeatures,
+      });
+    }
+
     // Clean up Redis Sessions
     await redisClient.del(`upload:session:${sessionId}`);
 
@@ -3745,23 +3984,39 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
         // Retrieve actual proxy file size via HEAD request (microscopic bandwidth)
         const proxySize = await b2Storage.getFileSize(compressedKey);
 
-        await request.server.prisma.assetFile.create({
-          data: {
-            assetId: newAssetId,
-            fileClass: "proxy",
-            fileName: compressedKey.split('/').pop() || (isAudio ? 'compressed.mp3' : 'compressed.mp4'),
-            filePath: compressedKey,
-            sizeBytes: BigInt(proxySize || 0),
-            mimeType: isAudio ? 'audio/mpeg' : 'video/mp4',
-            cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
-          }
+        const existingProxy = await request.server.prisma.assetFile.findFirst({
+          where: { assetId: newAssetId, fileClass: 'proxy' }
         });
 
-        if ((asset.type === 'video' || asset.type === 'audio') && await isAiEnabledForOrg(asset.orgId, request.server.prisma)) {
+        if (existingProxy) {
+          await request.server.prisma.assetFile.update({
+            where: { id: existingProxy.id },
+            data: {
+              filePath: compressedKey,
+              fileName: compressedKey.split('/').pop() || (isAudio ? 'compressed.mp3' : 'compressed.mp4'),
+              sizeBytes: BigInt(proxySize || 0),
+              cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
+            }
+          });
+        } else {
+          await request.server.prisma.assetFile.create({
+            data: {
+              assetId: newAssetId,
+              fileClass: "proxy",
+              fileName: compressedKey.split('/').pop() || (isAudio ? 'compressed.mp3' : 'compressed.mp4'),
+              filePath: compressedKey,
+              sizeBytes: BigInt(proxySize || 0),
+              mimeType: isAudio ? 'audio/mpeg' : 'video/mp4',
+              cdnUrl: `/api/media/${encodeURIComponent(compressedKey)}/stream`
+            }
+          });
+        }
+
+        if (request.server?.prisma) {
           try {
-            await enqueueAiAnalyze({ assetId: newAssetId, orgId: asset.orgId, force: false });
-          } catch (aiErr) {
-            console.warn('[AI] Failed to enqueue analyze job:', aiErr && aiErr.message ? aiErr.message : aiErr);
+            await tryStartPendingUploadAi(request.server.prisma, newAssetId);
+          } catch (aiStartErr) {
+            console.warn(`[Upload AI] Failed to start pending AI for ${newAssetId}:`, aiStartErr.message);
           }
         }
 
@@ -4222,74 +4477,143 @@ module.exports.retryTranscode = async (request, reply) => {
       return reply.status(400).send({ error: "Only video and audio assets can be transcoded." });
     }
 
-    const job = await request.server.prisma.transcodeJob.findFirst({
-      where: { assetId: id, provider: "coconut" }
-    });
-
-    // Duration Check
-    const maxDurationStr = process.env.COCONUT_MAX_DURATION_SECONDS;
-    if (asset.type !== 'audio' && maxDurationStr) {
-      const maxDuration = parseInt(maxDurationStr, 10);
-      if (!isNaN(maxDuration)) {
-        let metadata = asset.metadata;
-        if (typeof metadata?.customProperties === 'string') {
-          // Prisma stringified it, so try to parse if needed, but technicalSpecs should be an object
-        }
-        const technicalSpecs = metadata?.technicalSpecs;
-        const durationSeconds = technicalSpecs?.durationSeconds;
-        if (durationSeconds && durationSeconds > maxDuration) {
-          // Immediately set asset and job to failed, and return error
-          if (job) {
-            await request.server.prisma.transcodeJob.update({
-              where: { id: job.id },
-              data: { status: 'failed', providerMetadata: { error: 'Duration limit exceeded' } }
-            });
-          }
-          await request.server.prisma.asset.update({
-            where: { id },
-            data: { status: 'failed', compressedKey: null }
-          });
-          return reply.status(400).send({ error: `Asset duration exceeds maximum allowed limit of ${maxDuration} seconds for free tier.` });
-        }
-      }
+    const coconutApiKey = process.env.COCONUT_API_KEY || '';
+    if (!coconutApiKey) {
+      return reply.status(500).send({ error: "COCONUT_API_KEY is not configured on this server." });
     }
 
-    if (job) {
+    const originalFile = asset.files.find(f => f.fileClass === "original");
+    if (!originalFile || !originalFile.filePath) {
+      return reply.status(400).send({
+        error: `Original file not found for this asset. Files in DB: ${JSON.stringify(asset.files.map(f => ({ class: f.fileClass, path: f.filePath })))}`
+      });
+    }
+
+    // Reset DB state
+    const existingJob = await request.server.prisma.transcodeJob.findFirst({
+      where: { assetId: id, provider: "coconut" }
+    });
+    if (existingJob) {
       await request.server.prisma.transcodeJob.update({
-        where: { id: job.id },
-        data: { status: "queued", jobId: null, providerMetadata: {} }
+        where: { id: existingJob.id },
+        data: { status: "processing", jobId: null, providerMetadata: {} }
       });
     } else {
       await request.server.prisma.transcodeJob.create({
-        data: { assetId: id, provider: "coconut", status: "queued" }
+        data: { assetId: id, provider: "coconut", status: "processing" }
+      });
+    }
+    await request.server.prisma.asset.update({ where: { id }, data: { status: "active" } });
+
+    // Build file keys
+    const key = originalFile.filePath;
+    const isAudio = asset.type === 'audio';
+    const parts = key.split('/');
+    const filename = parts.pop() || '';
+    const compressedFilename = filename.startsWith('raw-')
+      ? filename.replace('raw-', 'compressed-')
+      : `compressed-${filename}`;
+    const proxyFilename = isAudio ? compressedFilename.replace(/\.[^/.]+$/, '') + '.mp3' : compressedFilename;
+    const compressedKey = parts.length > 0 ? `${parts.join('/')}/${proxyFilename}` : proxyFilename;
+
+    // Generate B2 presigned URLs
+    let sourceUrl, outputUrl;
+    try {
+      sourceUrl = await b2Storage.getPresignedUrl(key, 86400);
+    } catch (b2Err) {
+      await request.server.prisma.transcodeJob.updateMany({ where: { assetId: id, provider: "coconut" }, data: { status: 'failed' } });
+      await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
+      return reply.status(500).send({ error: `B2 source URL generation failed: ${b2Err.message}` });
+    }
+    try {
+      outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400);
+    } catch (b2Err) {
+      await request.server.prisma.transcodeJob.updateMany({ where: { assetId: id, provider: "coconut" }, data: { status: 'failed' } });
+      await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
+      return reply.status(500).send({ error: `B2 output URL generation failed: ${b2Err.message}` });
+    }
+
+    await request.server.prisma.asset.update({ where: { id }, data: { compressedKey } });
+
+    // Determine output settings based on resolution and file size
+    const fileSizeBytes = Number(originalFile.sizeBytes || 0);
+    const technicalSpecs = asset.metadata?.technicalSpecs || {};
+    const srcW = parseInt(technicalSpecs.width, 10);
+    const srcH = parseInt(technicalSpecs.height, 10);
+    const isMassiveFile = fileSizeBytes >= 800 * 1024 * 1024;
+    const isLargeFile   = fileSizeBytes >= 300 * 1024 * 1024;
+    const is4KOrAbove   = (!isNaN(srcW) && srcW > 3840) || (!isNaN(srcH) && srcH > 2160);
+    const is2KOrAbove   = (!isNaN(srcW) && srcW > 1920) || (!isNaN(srcH) && srcH > 1080);
+
+    let outputs = {};
+    if (isAudio) {
+      outputs = { 'mp3': { url: outputUrl } };
+    } else {
+      let formatKey = 'mp4';
+      if (isMassiveFile || is4KOrAbove) {
+        formatKey = 'mp4:720p';
+      } else if (isLargeFile || is2KOrAbove) {
+        formatKey = 'mp4:1080p';
+      }
+
+      const [t1, t2, t3, t4, t5] = await Promise.all([
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400),
+        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400),
+      ]);
+      outputs = {
+        [formatKey]: { url: outputUrl },
+        'jpg:300x#10%': { url: t1 },
+        'jpg:300x#30%': { url: t2 },
+        'jpg:300x#50%': { url: t3 },
+        'jpg:300x#70%': { url: t4 },
+        'jpg:300x#90%': { url: t5 },
+      };
+    }
+
+    const webhookHost = process.env.WEBHOOK_HOST || 'https://qa.noahcloud.ai';
+    const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?newAssetId=${id}&compressedKey=${encodeURIComponent(compressedKey)}`;
+
+    // Call Coconut synchronously — errors surface immediately in the browser
+    const coconutResponse = await fetch('https://api.coconut.co/v2/jobs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${Buffer.from(coconutApiKey + ':').toString('base64')}`
+      },
+      body: JSON.stringify({
+        input: { url: sourceUrl },
+        outputs,
+        notification: { type: 'http', url: webhookUrl, events: true }
+      })
+    });
+
+    const responseText = await coconutResponse.text();
+    if (!coconutResponse.ok) {
+      console.error(`[retryTranscode] Coconut rejected asset ${id}: HTTP ${coconutResponse.status} — ${responseText}`);
+      await request.server.prisma.transcodeJob.updateMany({
+        where: { assetId: id, provider: "coconut" },
+        data: { status: 'failed', providerMetadata: { coconutStatus: coconutResponse.status, coconutError: responseText } }
+      });
+      await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
+      return reply.status(502).send({
+        error: `Coconut rejected the job (HTTP ${coconutResponse.status}): ${responseText}`
       });
     }
 
-    // Reset asset status to active so it can be retried
-    await request.server.prisma.asset.update({
-      where: { id },
-      data: { status: "active" }
-    });
+    const jobData = JSON.parse(responseText);
+    console.log(`[retryTranscode] Coconut job ${jobData.id} submitted for asset ${id} (${Math.round(fileSizeBytes/1024/1024)}MB, ${srcW}x${srcH})`);
 
-    const originalFile = asset.files.find(f => f.fileClass === "original");
-    if (!originalFile) {
-      return reply.status(400).send({ error: "Original file not found for this asset." });
+    if (jobData.id) {
+      await request.server.prisma.transcodeJob.updateMany({
+        where: { assetId: id, provider: "coconut" },
+        data: { jobId: jobData.id.toString() }
+      });
     }
 
-    // 300MB threshold for heavy queue
-    const heavyThreshold = 300 * 1024 * 1024;
-    const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
-
-    await queueToUse.add("compress", {
-      assetId: id,
-      key: originalFile.filePath,
-      preset: "medium",
-      fileSizeBytes: size,
-    });
-
-    console.log(`[Queue] Re-added compression job for asset ${id} to ${size >= heavyThreshold ? 'heavy' : 'standard'} queue (${Math.round(size / 1024 / 1024)}MB)`);
-
-    return reply.send({ success: true, message: "Transcode job queued" });
+    return reply.send({ success: true, message: "Transcode job submitted to Coconut", coconutJobId: jobData.id });
   } catch (error) {
     console.error("Failed to retry transcode:", error);
     return reply.status(500).send({ success: false, error: error.message });
@@ -4786,8 +5110,8 @@ module.exports.moveMediaFile = async (request, reply) => {
       }
     });
     
-    const itemPath = await buildItemPath(request.server.prisma, 'asset', mediaIds[0]);
-    logSuccess(ACTIVITY_NAME.MEDIA_MOVED, `Moved ${mediaIds?.length || 1} media file(s) (e.g. ${itemPath}).`, request);
+    const itemPath = await buildItemPath(request.server.prisma, 'asset', id);
+    logSuccess(ACTIVITY_NAME.MEDIA_MOVED, `Moved 1 media file(s) (e.g. ${itemPath}).`, request);
     return reply.code(200).send({
       success: true,
       message: 'Media moved successfully.',

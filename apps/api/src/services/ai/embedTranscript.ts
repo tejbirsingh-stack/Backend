@@ -86,7 +86,7 @@ export async function replaceAssetEmbeddings(
   try {
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw(
-        Prisma.sql`DELETE FROM "ai_embeddings" WHERE "assetId" = ${assetId}::uuid`,
+        Prisma.sql`DELETE FROM "ai_embeddings" WHERE "assetId" = ${assetId}::uuid AND source_type = ${sourceType}`,
       );
       for (let i = 0; i < chunks.length; i += 1) {
         const chunk = chunks[i];
@@ -121,7 +121,8 @@ export async function embedTranscriptForAsset(
   force: boolean,
 ): Promise<'completed' | 'skipped'> {
   const existing = await prisma.$queryRaw<Array<{ count: bigint }>>`
-    SELECT COUNT(*)::bigint AS count FROM "ai_embeddings" WHERE "assetId" = ${assetId}::uuid
+    SELECT COUNT(*)::bigint AS count FROM "ai_embeddings"
+    WHERE "assetId" = ${assetId}::uuid AND source_type = 'transcript'
   `;
   if (!force && Number(existing[0]?.count || 0) > 0) {
     return 'skipped';
