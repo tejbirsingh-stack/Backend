@@ -31,8 +31,6 @@ async function getOrCreateGlobalSettings() {
         ssoDomain: null,
         sessionTimeoutDays: 30,
         contentSecurityPolicy: JSON.stringify(['noahcloud.ai', 'localhost']),
-        platformIpRestrictionEnabled: false,
-        platformAllowedIps: '127.0.0.1, ::1',
       },
     });
   }
@@ -50,8 +48,6 @@ module.exports.getGlobalSecuritySettings = async (request, reply) => {
         ssoDomain: settings.ssoDomain || '',
         sessionTimeoutDays: Number(settings.sessionTimeoutDays) || 30,
         contentSecurityPolicy: settings.contentSecurityPolicy || JSON.stringify(['noahcloud.ai', 'localhost']),
-        platformIpRestrictionEnabled: Boolean(settings.platformIpRestrictionEnabled),
-        platformAllowedIps: settings.platformAllowedIps || '127.0.0.1, ::1',
         updatedAt: settings.updatedAt,
       },
     });
@@ -72,8 +68,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
       ssoDomain,
       sessionTimeoutDays,
       contentSecurityPolicy,
-      platformIpRestrictionEnabled,
-      platformAllowedIps,
     } = request.body || {};
 
     let existing = await prisma.globalAdminSetting.findFirst();
@@ -87,12 +81,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
     }
     if (contentSecurityPolicy !== undefined) {
       updateData.contentSecurityPolicy = normalizeCspToJson(contentSecurityPolicy);
-    }
-    if (typeof platformIpRestrictionEnabled === 'boolean') {
-      updateData.platformIpRestrictionEnabled = platformIpRestrictionEnabled;
-    }
-    if (typeof platformAllowedIps === 'string') {
-      updateData.platformAllowedIps = platformAllowedIps.trim();
     }
 
     let updated;
@@ -109,8 +97,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
           ssoDomain: ssoDomain || null,
           sessionTimeoutDays: parseInt(sessionTimeoutDays || '30', 10),
           contentSecurityPolicy: normalizeCspToJson(contentSecurityPolicy),
-          platformIpRestrictionEnabled: Boolean(platformIpRestrictionEnabled),
-          platformAllowedIps: platformAllowedIps || '127.0.0.1, ::1',
         },
       });
     }
@@ -138,8 +124,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
         ssoDomain: updated.ssoDomain || '',
         sessionTimeoutDays: Number(updated.sessionTimeoutDays) || 30,
         contentSecurityPolicy: updated.contentSecurityPolicy || JSON.stringify(['noahcloud.ai', 'localhost']),
-        platformIpRestrictionEnabled: Boolean(updated.platformIpRestrictionEnabled),
-        platformAllowedIps: updated.platformAllowedIps || '127.0.0.1, ::1',
         updatedAt: updated.updatedAt,
       },
     });

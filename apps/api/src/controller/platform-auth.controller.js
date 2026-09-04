@@ -1,46 +1,5 @@
 const platformAuthService = require('../services/platform-auth.service');
-const prisma = require('../utils/prisma');
 const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
-
-/**
- * Checks if client IP is authorized under IP restriction rules.
- * Supports exact IPs, wildcard subnets (e.g. 192.168.1.*), IPv4-mapped IPv6, and CIDR subnets.
- */
-function isClientIpAllowed(clientIp, allowedIpsInput) {
-  if (!allowedIpsInput || typeof allowedIpsInput !== 'string') return true;
-  const cleanedInput = allowedIpsInput.trim();
-  if (!cleanedInput || cleanedInput === '*') return true;
-
-  let ip = (clientIp || '').trim();
-  if (ip.startsWith('::ffff:')) {
-    ip = ip.substring(7);
-  }
-
-  const allowedList = cleanedInput
-    .split(/[\n,;]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  if (allowedList.length === 0 || allowedList.includes('*')) return true;
-
-  for (const entry of allowedList) {
-    let target = entry.trim();
-    if (target.startsWith('::ffff:')) {
-      target = target.substring(7);
-    }
-    if (target === ip || target === '*') return true;
-
-    // Wildcard matching (e.g. 192.168.1.* or 10.0.*.*)
-    if (target.includes('*')) {
-      const regexPattern = '^' + target.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$';
-      if (new RegExp(regexPattern).test(ip)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
 
 async function platformLogin(request, reply) {
   try {
@@ -59,36 +18,12 @@ async function platformLogin(request, reply) {
       ? String(request.headers['x-forwarded-for']).split(',')[0].trim()
       : request.ip;
 
-    // Fetch Global Admin Security Settings
-    const globalSettings = await prisma.globalAdminSetting.findFirst().catch(() => null);
-
     const admin = await platformAuthService.findAdminByEmail(email);
     if (!admin) {
       return reply.status(401).send({
         error: 'Unauthorized',
         message: 'Invalid platform credentials',
         statusCode: 401,
-      });
-    }
-
-    // IP Restriction Validation
-    const globalIpEnabled = Boolean(globalSettings?.platformIpRestrictionEnabled);
-    const globalAllowedIps = globalSettings?.platformAllowedIps || '';
-    const effectiveAllowedIps = admin.allowedIps || globalAllowedIps;
-    const ipCheckRequired = globalIpEnabled || Boolean(admin.allowedIps);
-
-    if (ipCheckRequired && !isClientIpAllowed(clientIp, effectiveAllowedIps)) {
-      await writePlatformAudit({
-        activityName: ACTIVITY_NAME.PLATFORM_ADMIN_LOGIN,
-        description: `Blocked platform admin login for ${admin.email} from unauthorized IP ${clientIp}`,
-        activityType: ACTIVITY_TYPE.WARNING,
-        admin,
-      }).catch(() => null);
-
-      return reply.status(403).send({
-        error: 'Forbidden',
-        message: `Access denied: IP address (${clientIp}) is not authorized for Platform Admin login`,
-        statusCode: 403,
       });
     }
 
