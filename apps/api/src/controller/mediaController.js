@@ -49,6 +49,7 @@ const B2StorageService = require("../b2-storage.cjs");
 const { assertQuotaAvailable, recordStorageDelta } = require("../services/usage-meter.service");
 const { persistUploadAiRequest, tryStartPendingUploadAi } = require("../services/ai/enqueueAiAnalyze");
 const { getB2Storage } = require('../services/b2Config');
+const { getCoconutConfig } = require('../services/coconutConfig');
 
 /**
  * Lazily-initialized B2 storage singleton.
@@ -4477,7 +4478,7 @@ module.exports.retryTranscode = async (request, reply) => {
       return reply.status(400).send({ error: "Only video and audio assets can be transcoded." });
     }
 
-    const coconutApiKey = process.env.COCONUT_API_KEY || '';
+    const { apiKey: coconutApiKey } = await getCoconutConfig();
     if (!coconutApiKey) {
       return reply.status(500).send({ error: "COCONUT_API_KEY is not configured on this server." });
     }

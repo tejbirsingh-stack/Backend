@@ -11,6 +11,8 @@ import { v4 as uuidv4 } from 'uuid';
 import './ai-worker.js';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { getB2Storage } = require('./services/b2Config');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { getCoconutConfig } = require('./services/coconutConfig');
 
 /** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
 async function b2(): Promise<InstanceType<typeof B2StorageService>> { return getB2Storage(B2StorageService); }
@@ -42,9 +44,9 @@ const processCompressionJob = async (job: Job) => {
   }
 
   try {
-    const coconutApiKey = process.env.COCONUT_API_KEY || '';
+    const { apiKey: coconutApiKey } = await getCoconutConfig();
     if (!coconutApiKey) {
-      throw new Error("COCONUT_API_KEY is not set in the .env file!");
+      throw new Error("COCONUT_API_KEY is not configured in AWS Secrets Manager or .env!");
     }
 
     const asset = assetId ? await prisma.asset.findUnique({

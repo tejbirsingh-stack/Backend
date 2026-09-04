@@ -12,6 +12,7 @@ const { createDefaultWorkspace: createDefaultWorkspaceWithStarterContent } = req
 const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
 const { resolveOrgBranding } = require('../services/branding.service');
 const { getHubspotConfig } = require('../services/hubspotConfig');
+const { getOauthConfig } = require('../services/oauthConfig');
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -1345,8 +1346,8 @@ module.exports.resetPassword = async (request, reply) => {
 //10. Google Login Hander
 module.exports.googleLogin = async (request, reply) => {
   const { idToken } = request.body || {};
-  const clientId = process.env.GOOGLE_CLIENT_ID || "967923512322-0oullb620hh9se1ff0prs8stvbspi829.apps.googleusercontent.com";
-  const googleClient = new OAuth2Client(clientId);
+  const { googleClientId } = await getOauthConfig();
+  const googleClient = new OAuth2Client(googleClientId);
 
   // Global SSO enforcement check
   try {
@@ -1640,7 +1641,7 @@ module.exports.googleLogin = async (request, reply) => {
 // 11. Microsoft Login Handler
 module.exports.microsoftLogin = async (request, reply) => {
   const { idToken } = request.body;
-  const clientId = process.env.MICROSOFT_CLIENT_ID;
+  const { microsoftClientId: clientId } = await getOauthConfig();
 
   // Global SSO enforcement check
   try {

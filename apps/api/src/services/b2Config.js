@@ -43,11 +43,11 @@ function getAwsClient() {
 // ─── Env-var fallback (local dev or Secrets Manager unavailable) ──────────────
 function configFromEnv() {
   return {
-    keyId:          process.env.B2_KEY_ID          || process.env.B2_APPLICATION_KEY_ID || '',
+    keyId: process.env.B2_KEY_ID || process.env.B2_APPLICATION_KEY_ID || '',
     applicationKey: process.env.B2_APPLICATION_KEY || '',
-    bucketName:     process.env.B2_BUCKET_NAME     || '',
-    endpoint:       process.env.B2_ENDPOINT        || '',
-    region:         process.env.B2_REGION          || '',
+    bucketName: process.env.B2_BUCKET_NAME || '',
+    endpoint: process.env.B2_ENDPOINT || '',
+    region: process.env.B2_REGION || '',
   };
 }
 
@@ -60,10 +60,10 @@ async function fetchFromSecretsManager() {
     const fetchPromise = getAwsClient().send(
       new GetSecretValueCommand({ SecretId: secretId })
     );
-    const timeoutPromise = new Promise((_, reject) => 
+    const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('AWS Secrets Manager connection timed out')), 3000)
     );
-    
+
     const response = await Promise.race([fetchPromise, timeoutPromise]);
 
     if (!response.SecretString) {
@@ -79,11 +79,11 @@ async function fetchFromSecretsManager() {
     }
 
     return {
-      keyId:          b2.key_id,
+      keyId: b2.key_id,
       applicationKey: b2.app_key,
-      bucketName:     b2.bucket   || '',
-      endpoint:       b2.endpoint || '',
-      region:         b2.region   || '',
+      bucketName: b2.bucket || '',
+      endpoint: b2.endpoint || '',
+      region: b2.region || '',
     };
   } catch (err) {
     console.warn(`[b2Config] AWS Secrets Manager fetch failed (${err.message}). Falling back to .env B2_* vars.`);
