@@ -53,7 +53,7 @@ function configFromEnv() {
 
 // ─── Secrets Manager fetch ────────────────────────────────────────────────────
 async function fetchFromSecretsManager() {
-  const secretId = process.env.AWS_UAT_SECRET_ID || 'noah/uat/app-config-all';
+  const secretId = process.env.AWS_APP_SECRET_ID || process.env.AWS_UAT_SECRET_ID || 'noah/uat/app-config-all';
 
   try {
     // Add a 3-second timeout to prevent indefinite hanging if IAM role/network is missing in UAT

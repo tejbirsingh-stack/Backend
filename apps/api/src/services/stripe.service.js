@@ -1,5 +1,6 @@
 const Stripe = require('stripe');
 const prisma = require('../utils/prisma');
+const { getStripeConfig } = require('./stripeConfig');
 
 let cachedSecretKey = null;
 let cachedStripeInstance = null;
@@ -11,7 +12,10 @@ async function getStripe() {
       where: { key: { in: ['TEST_STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY'] } }
     });
     if (setting?.value) key = setting.value;
-    if (!key) key = process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+    if (!key) {
+      const config = await getStripeConfig();
+      key = config.secretKey;
+    }
 
     if (cachedStripeInstance && cachedSecretKey === key) {
       return cachedStripeInstance;
@@ -20,7 +24,8 @@ async function getStripe() {
     cachedStripeInstance = new Stripe(key, { apiVersion: '2023-10-16' });
     return cachedStripeInstance;
   } catch (err) {
-    const fallbackKey = process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+    const config = await getStripeConfig().catch(() => ({ secretKey: '' }));
+    const fallbackKey = config.secretKey || process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
     return new Stripe(fallbackKey, { apiVersion: '2023-10-16' });
   }
 }
@@ -513,10 +518,8 @@ class StripeService {
       } catch (e) { }
 
       if (!webhookSecret) {
-        webhookSecret =
-          process.env.QA_STRIPE_WEBHOOK_SECRET ||
-          process.env.LOCAL_STRIPE_WEBHOOK_SECRET ||
-          process.env.STRIPE_WEBHOOK_SECRET;
+        const config = await getStripeConfig();
+        webhookSecret = config.webhookSecret || config.qaWebhookSecret || config.localWebhookSecret;
       }
       return stripe.webhooks.constructEvent(payload, signature, webhookSecret);
     } catch (error) {
