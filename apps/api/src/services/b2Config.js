@@ -61,7 +61,7 @@ async function fetchFromSecretsManager() {
       new GetSecretValueCommand({ SecretId: secretId })
     );
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('AWS Secrets Manager connection timed out')), 3000)
+      setTimeout(() => reject(new Error('AWS Secrets Manager connection timed out')), 10000)
     );
 
     const response = await Promise.race([fetchPromise, timeoutPromise]);

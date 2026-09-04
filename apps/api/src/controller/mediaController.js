@@ -873,7 +873,7 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       return reply.send(mediaStream.stream);
     } catch (b2ProxyErr) {
       console.warn(`B2 Proxy streaming warning for ${b2Key}:`, b2ProxyErr.message);
-      
+
       if (b2ProxyErr.message && b2ProxyErr.message.includes('cap exceeded')) {
         return reply.code(403).send({
           success: false,
@@ -1650,7 +1650,7 @@ module.exports.restoreSoftDelete = async (request, reply) => {
         console.warn("Could not restore file from B2:", b2Error.message);
       }
     }
-    
+
     const itemPath = await buildItemPath(request.server.prisma, 'asset', filename);
     logSuccess(ACTIVITY_NAME.MEDIA_RESTORED, `File "${itemPath}" restored from trash.`, request);
     return reply.send({
@@ -4430,10 +4430,10 @@ module.exports.updateAssetReviewStatus = async (request, reply) => {
     const previousStatus = currentCustomProps.reviewStatus || 'New';
     if (previousStatus !== reviewStatus && ['Request for Review', 'Approved', 'Rejected'].includes(reviewStatus)) {
       if (asset.uploadedByUserId && asset.uploadedByUserId !== request.user.id) {
-        const statusVerb = 
+        const statusVerb =
           reviewStatus === 'Request for Review' ? 'requested a review for' :
-          reviewStatus === 'Approved' ? 'approved' : 'rejected';
-          
+            reviewStatus === 'Approved' ? 'approved' : 'rejected';
+
         try {
           await createNotification(
             request.server,
@@ -4542,9 +4542,9 @@ module.exports.retryTranscode = async (request, reply) => {
     const srcW = parseInt(technicalSpecs.width, 10);
     const srcH = parseInt(technicalSpecs.height, 10);
     const isMassiveFile = fileSizeBytes >= 800 * 1024 * 1024;
-    const isLargeFile   = fileSizeBytes >= 300 * 1024 * 1024;
-    const is4KOrAbove   = (!isNaN(srcW) && srcW > 3840) || (!isNaN(srcH) && srcH > 2160);
-    const is2KOrAbove   = (!isNaN(srcW) && srcW > 1920) || (!isNaN(srcH) && srcH > 1080);
+    const isLargeFile = fileSizeBytes >= 300 * 1024 * 1024;
+    const is4KOrAbove = (!isNaN(srcW) && srcW > 3840) || (!isNaN(srcH) && srcH > 2160);
+    const is2KOrAbove = (!isNaN(srcW) && srcW > 1920) || (!isNaN(srcH) && srcH > 1080);
 
     let outputs = {};
     if (isAudio) {
@@ -4605,7 +4605,7 @@ module.exports.retryTranscode = async (request, reply) => {
     }
 
     const jobData = JSON.parse(responseText);
-    console.log(`[retryTranscode] Coconut job ${jobData.id} submitted for asset ${id} (${Math.round(fileSizeBytes/1024/1024)}MB, ${srcW}x${srcH})`);
+    console.log(`[retryTranscode] Coconut job ${jobData.id} submitted for asset ${id} (${Math.round(fileSizeBytes / 1024 / 1024)}MB, ${srcW}x${srcH})`);
 
     if (jobData.id) {
       await request.server.prisma.transcodeJob.updateMany({
@@ -4630,7 +4630,7 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
     // Fetch asset access overrides (direct access users)
     const assetUsers = await request.server.prisma.assetUser.findMany({
       where: { assetId },
-      include: { 
+      include: {
         accessLevelObj: true,
         user: {
           select: { id: true, name: true, email: true }
@@ -4712,7 +4712,7 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
     const targetUser = await request.server.prisma.user.findUnique({ where: { id: targetUserId } });
     if (targetUser) {
       const inviterName = request.user.name || request.user.email;
-      
+
       // ALWAYS send in-app notification
       createNotification(
         request.server,
@@ -5110,7 +5110,7 @@ module.exports.moveMediaFile = async (request, reply) => {
         workspaceId: newWorkspaceId
       }
     });
-    
+
     const itemPath = await buildItemPath(request.server.prisma, 'asset', id);
     logSuccess(ACTIVITY_NAME.MEDIA_MOVED, `Moved 1 media file(s) (e.g. ${itemPath}).`, request);
     return reply.code(200).send({
@@ -5148,19 +5148,19 @@ module.exports.renameMediaAsset = async (request, reply) => {
     }
 
     const existingAsset = await request.server.prisma.asset.findFirst({
-        where: {
-            workspaceId: asset.workspaceId,
-            title: title.trim(),
-            id: { not: assetId },
-            status: { notIn: ['deleted', 'trash'] }
-        }
+      where: {
+        workspaceId: asset.workspaceId,
+        title: title.trim(),
+        id: { not: assetId },
+        status: { notIn: ['deleted', 'trash'] }
+      }
     });
 
     if (existingAsset) {
-        return reply.code(400).send({
-            success: false,
-            error: 'A file with this name already exists in this workspace.'
-        });
+      return reply.code(400).send({
+        success: false,
+        error: 'A file with this name already exists in this workspace.'
+      });
     }
 
     const updatedAsset = await request.server.prisma.asset.update({
