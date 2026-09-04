@@ -34,7 +34,7 @@ This document provides guidance on setting up all environment variables required
 | Variable | Description | Notes |
 |----------|-------------|-------|
 | `JWT_SECRET` | Legacy JWT signing secret | Generate as with ACCESS_TOKEN_SECRET |
-| `JWT_EXPIRES_IN` | Legacy token expiry | Set to `7d` or as needed |
+| `JWT_EXPIRES_IN` | Legacy token expiry | Set to `15m` or as needed |
 | `ENCRYPTION_KEY` | Key for encrypting sensitive data | 32-character random string |
 | `BCRYPT_ROUNDS` | Rounds for bcrypt hashing | `12` is recommended for good security/performance balance |
 

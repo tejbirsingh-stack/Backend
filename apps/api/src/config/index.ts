@@ -76,7 +76,7 @@ function validateConfig(): Config {
     REDIS_SENTINEL_PORT: parseInt(process.env.REDIS_SENTINEL_PORT || '26379', 10),
 
     JWT_SECRET: process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production',
-    JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '1d',
+    JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '15m',
     REFRESH_TOKEN_SECRET: process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 'your-refresh-secret-key',
     REFRESH_TOKEN_EXPIRES_IN: process.env.REFRESH_TOKEN_EXPIRES_IN || '30d',
     BCRYPT_ROUNDS: parseInt(process.env.BCRYPT_ROUNDS || '12', 10),
