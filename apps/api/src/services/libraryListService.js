@@ -27,18 +27,47 @@ async function listItems(prisma, params) {
   const limit = parseInt(pageSize, 10) + 1;
   const isDesc = sortOrder === 'desc';
 
-  // For keyset pagination
+  // For keyset pagination — use the correct column based on sortBy
   if (cursor) {
-    if (isDesc) {
-      cursorCondition = Prisma.sql`AND (
-        sort_date < ${new Date(cursor.sv)} 
-        OR (sort_date = ${new Date(cursor.sv)} AND id < ${cursor.id})
-      )`;
+    if (sortBy === 'name') {
+      const sv = cursor.sv || '';
+      if (isDesc) {
+        cursorCondition = Prisma.sql`AND (
+          sort_name < ${sv}
+          OR (sort_name = ${sv} AND id < ${cursor.id})
+        )`;
+      } else {
+        cursorCondition = Prisma.sql`AND (
+          sort_name > ${sv}
+          OR (sort_name = ${sv} AND id > ${cursor.id})
+        )`;
+      }
+    } else if (sortBy === 'size') {
+      const sv = BigInt(cursor.sv || 0);
+      if (isDesc) {
+        cursorCondition = Prisma.sql`AND (
+          sort_size < ${sv}
+          OR (sort_size = ${sv} AND id < ${cursor.id})
+        )`;
+      } else {
+        cursorCondition = Prisma.sql`AND (
+          sort_size > ${sv}
+          OR (sort_size = ${sv} AND id > ${cursor.id})
+        )`;
+      }
     } else {
-      cursorCondition = Prisma.sql`AND (
-        sort_date > ${new Date(cursor.sv)} 
-        OR (sort_date = ${new Date(cursor.sv)} AND id > ${cursor.id})
-      )`;
+      // date (default)
+      if (isDesc) {
+        cursorCondition = Prisma.sql`AND (
+          sort_date < ${new Date(cursor.sv)}
+          OR (sort_date = ${new Date(cursor.sv)} AND id < ${cursor.id})
+        )`;
+      } else {
+        cursorCondition = Prisma.sql`AND (
+          sort_date > ${new Date(cursor.sv)}
+          OR (sort_date = ${new Date(cursor.sv)} AND id > ${cursor.id})
+        )`;
+      }
     }
   }
 
@@ -297,7 +326,8 @@ async function listItems(prisma, params) {
       title as name, 
       'asset'::text as type, 
       "createdAt" as sort_date,
-      COALESCE((SELECT MAX("sizeBytes") FROM "asset_files" WHERE "assetId" = "assets".id), 0)::bigint as sort_size
+      COALESCE((SELECT MAX("sizeBytes") FROM "asset_files" WHERE "assetId" = "assets".id), 0)::bigint as sort_size,
+      LOWER(COALESCE(title, '')) as sort_name
     FROM "assets"
     ${assetWhere}
 
@@ -308,7 +338,8 @@ async function listItems(prisma, params) {
       name, 
       'folder'::text as type, 
       "created_at" as sort_date,
-      0::bigint as sort_size
+      0::bigint as sort_size,
+      LOWER(COALESCE(name, '')) as sort_name
     FROM "folders"
     ${folderWhere}
 
@@ -319,14 +350,22 @@ async function listItems(prisma, params) {
       name, 
       'project'::text as type, 
       "created_at" as sort_date,
-      0::bigint as sort_size
+      0::bigint as sort_size,
+      LOWER(COALESCE(name, '')) as sort_name
     FROM "projects"
     ${projectWhere}
   `;
 
-  const orderBy = sortBy === 'date' ? 'sort_date' : sortBy === 'name' ? 'name' : 'sort_size';
+  let orderBySql;
   const direction = isDesc ? 'DESC' : 'ASC';
-  const orderBySql = Prisma.raw(`ORDER BY ${orderBy} ${direction}, id ${direction}`);
+  if (sortBy === 'name') {
+    orderBySql = Prisma.raw(`ORDER BY sort_name ${direction} NULLS LAST, id ${direction}`);
+  } else if (sortBy === 'size') {
+    orderBySql = Prisma.raw(`ORDER BY sort_size ${direction}, id ${direction}`);
+  } else {
+    // date (default)
+    orderBySql = Prisma.raw(`ORDER BY sort_date ${direction}, id ${direction}`);
+  }
 
   const finalQuery = Prisma.sql`
     WITH UnifiedList AS (
@@ -511,8 +550,16 @@ async function listItems(prisma, params) {
   let nextPageToken = null;
   if (hasNextPage) {
     const lastItem = rawResults[rawResults.length - 1];
+    let sortValue;
+    if (sortBy === 'name') {
+      sortValue = lastItem.sort_name || '';
+    } else if (sortBy === 'size') {
+      sortValue = String(lastItem.sort_size ?? 0);
+    } else {
+      sortValue = lastItem.sort_date.toISOString();
+    }
     nextPageToken = encodeCursor({
-      sortValue: lastItem.sort_date.toISOString(),
+      sortValue,
       id: lastItem.id,
       sortBy,
       sortOrder,
