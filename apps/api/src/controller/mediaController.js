@@ -48,14 +48,14 @@ const redisClient = new Redis({
 const B2StorageService = require("../b2-storage.cjs");
 const { assertQuotaAvailable, recordStorageDelta } = require("../services/usage-meter.service");
 const { persistUploadAiRequest, tryStartPendingUploadAi } = require("../services/ai/enqueueAiAnalyze");
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/**
+ * Lazily-initialized B2 storage singleton.
+ * Resolves credentials from .env in development, AWS Secrets Manager in all other envs.
+ * Usage inside any async handler: const b2Storage = await b2();
+ */
+async function b2() { return getB2Storage(B2StorageService); }
 
 async function applyUploadAiFeatureRequest(prisma, { assetId, orgId, assetType, aiFeatures }) {
   if (!orgId || !Array.isArray(aiFeatures) || aiFeatures.length === 0) {
@@ -841,10 +841,10 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
   }
   const isNonWebImage = NON_WEB_IMAGE_EXTS.has(targetExt);
 
-  if (b2Key && b2Storage.isEnabled() && (download || !isNonWebImage)) {
+  if (b2Key && (await b2()).isEnabled() && (download || !isNonWebImage)) {
     try {
       const rangeHeader = request.headers.range;
-      const mediaStream = await b2Storage.getB2MediaStream(b2Key, rangeHeader);
+      const mediaStream = await (await b2()).getB2MediaStream(b2Key, rangeHeader);
 
       const mimeType = inferMimeType(path.basename(b2Key || filename)) || mediaStream.contentType || 'application/octet-stream';
       const name = filename.replace(/^\d+-/, "");
@@ -889,7 +889,7 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
     }
   }
 
-  if (b2Key && b2Storage.isEnabled() && isNonWebImage && !download) {
+  if (b2Key && (await b2()).isEnabled() && isNonWebImage && !download) {
     try {
       const previewsDir = path.join(getUploadsDir(), "web_previews");
       if (!fs.existsSync(previewsDir)) fs.mkdirSync(previewsDir, { recursive: true });
@@ -911,7 +911,7 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       const tempRawPath = path.join(tempRawDir, rawBaseName);
 
       if (!fs.existsSync(tempRawPath) || fs.statSync(tempRawPath).size === 0) {
-        await b2Storage.downloadFile(b2Key, tempRawPath);
+        await (await b2()).downloadFile(b2Key, tempRawPath);
       }
 
       const previewRes = await getOrGenerateWebImagePreview(tempRawPath);
@@ -1291,9 +1291,9 @@ module.exports.getThumbnail = async (request, reply) => {
     // 1. If proxy thumbnail exists
     if (proxyFile) {
       const proxyThumbKey = `${proxyFile.filePath}_thumb1.jpg`;
-      if (b2Storage.isEnabled()) {
+      if ((await b2()).isEnabled()) {
         try {
-          const mediaStream = await b2Storage.getB2MediaStream(proxyThumbKey);
+          const mediaStream = await (await b2()).getB2MediaStream(proxyThumbKey);
           reply.header("Accept-Ranges", "bytes");
           reply.type("image/jpeg");
           reply.code(200);
@@ -1336,13 +1336,13 @@ module.exports.getThumbnail = async (request, reply) => {
     // 4. Download source from B2 if needed to generate preview/thumbnail locally
     let localSourcePath = path.join(getUploadsDir(), filePath);
     if (!fs.existsSync(localSourcePath) || fs.statSync(localSourcePath).size === 0) {
-      if (b2Storage.isEnabled() && filePath) {
+      if ((await b2()).isEnabled() && filePath) {
         const tempRawDir = path.join(getUploadsDir(), "b2_temp");
         if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
         const tempPath = path.join(tempRawDir, rawBaseName);
         if (!fs.existsSync(tempPath) || fs.statSync(tempPath).size === 0) {
           try {
-            await b2Storage.downloadFile(filePath, tempPath);
+            await (await b2()).downloadFile(filePath, tempPath);
           } catch (b2Err) {
             console.warn("[getThumbnail] B2 download error:", b2Err.message);
           }
@@ -1441,7 +1441,7 @@ module.exports.downloadFile = async (request, reply) => {
       }
     }
 
-    if (b2Key && b2Storage.isEnabled()) {
+    if (b2Key && (await b2()).isEnabled()) {
       try {
         // Build a presigned URL with ResponseContentDisposition to force download.
         // This avoids proxying through the backend (which caused 502 errors).
@@ -1450,11 +1450,11 @@ module.exports.downloadFile = async (request, reply) => {
         const rawName = path.basename(b2Key).replace(/^\d+-/, '');
         const safeDisplayName = rawName.replace(/[^\w.\-_() ]/g, '_') || 'download';
         const command = new GetObjectCommand({
-          Bucket: b2Storage.bucket,
+          Bucket: (await b2()).bucket,
           Key: b2Key,
           ResponseContentDisposition: `attachment; filename="${safeDisplayName}"`,
         });
-        const presignedUrl = await getSignedUrl(b2Storage.s3Client, command, { expiresIn: 3600 });
+        const presignedUrl = await getSignedUrl((await b2()).s3Client, command, { expiresIn: 3600 });
         return reply.redirect(presignedUrl, 302);
       } catch (presignErr) {
         console.error(`[downloadFile] Presigned URL generation failed for ${b2Key}:`, presignErr.message);
@@ -1634,16 +1634,16 @@ module.exports.restoreSoftDelete = async (request, reply) => {
     }
 
     // 2. Also try restoring from B2 if B2 is enabled
-    if (b2Storage.isEnabled()) {
+    if ((await b2()).isEnabled()) {
       try {
         const b2Files = [
-          ...(await b2Storage.listTrashFiles("noah-uploads/")),
-          ...(await b2Storage.listTrashFiles("uploads/"))
+          ...(await (await b2()).listTrashFiles("noah-uploads/")),
+          ...(await (await b2()).listTrashFiles("uploads/"))
         ];
         const exactMatch = b2Files.find(f => f.id === filename || f.name === filename || f.key.endsWith(filename));
 
         if (exactMatch) {
-          await b2Storage.restoreFile(exactMatch.key);
+          await (await b2()).restoreFile(exactMatch.key);
         }
       } catch (b2Error) {
         console.warn("Could not restore file from B2:", b2Error.message);
@@ -1733,23 +1733,23 @@ module.exports.deletePermanently = async (request, reply) => {
     let deletedFromLocal = false;
     let deletedFromB2 = false;
 
-    if (b2Storage.isEnabled()) {
+    if ((await b2()).isEnabled()) {
       try {
         const b2Files = [
-          ...(await b2Storage.listTrashFiles("noah-uploads/")),
-          ...(await b2Storage.listTrashFiles("uploads/"))
+          ...(await (await b2()).listTrashFiles("noah-uploads/")),
+          ...(await (await b2()).listTrashFiles("uploads/"))
         ];
-        const activeFiles = await b2Storage.searchFiles(filename);
+        const activeFiles = await (await b2()).searchFiles(filename);
 
         const allB2Files = [...b2Files, ...activeFiles];
         const exactMatch = allB2Files.find(f => f.id === filename || f.key === filename || f.key.endsWith(filename));
 
         if (exactMatch) {
-          await b2Storage.permanentlyDeleteFile(exactMatch.key);
+          await (await b2()).permanentlyDeleteFile(exactMatch.key);
           deletedFromB2 = true;
         } else {
           const cleanKey = filename.startsWith("noah-uploads/") || filename.startsWith("uploads/") ? filename : `noah-uploads/${filename}`;
-          await b2Storage.permanentlyDeleteFile(cleanKey);
+          await (await b2()).permanentlyDeleteFile(cleanKey);
           deletedFromB2 = true;
         }
       } catch (b2Error) {
@@ -1763,11 +1763,11 @@ module.exports.deletePermanently = async (request, reply) => {
     if (assetToDelete) {
       try {
         // Delete all associated file variants (original, proxy, thumbnails) directly from B2 Cloud
-        if (b2Storage.isEnabled() && assetToDelete.files && assetToDelete.files.length > 0) {
+        if ((await b2()).isEnabled() && assetToDelete.files && assetToDelete.files.length > 0) {
           for (const f of assetToDelete.files) {
             if (f.filePath) {
               try {
-                await b2Storage.deleteFile(f.filePath);
+                await (await b2()).deleteFile(f.filePath);
                 deletedFromB2 = true;
               } catch (b2Err) {
                 console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
@@ -2071,7 +2071,7 @@ module.exports.getMediaFile = async (request, reply) => {
 //10. Upload media asset
 module.exports.uploadMediaFile = async (request, reply) => {
   try {
-    if (!b2Storage.isEnabled()) {
+    if (!(await b2()).isEnabled()) {
       return reply.code(500).send({
         success: false,
         message: "Cloud storage is not configured. Local storage is disabled.",
@@ -2183,7 +2183,7 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
         let b2Result;
         try {
-          b2Result = await b2Storage.uploadStream(
+          b2Result = await (await b2()).uploadStream(
             part.file,
             b2Key,
             part.mimetype,
@@ -2218,8 +2218,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
         }
 
         try {
-          if (b2Storage.isEnabled()) {
-            const presignedUrl = await b2Storage.getPresignedUrl(b2Key, 3600);
+          if ((await b2()).isEnabled()) {
+            const presignedUrl = await (await b2()).getPresignedUrl(b2Key, 3600);
             if (presignedUrl) {
               const serverExif = await extractServerSideMetadata(presignedUrl);
               if (serverExif && Object.keys(serverExif).length > 0) {
@@ -2379,8 +2379,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
                 const tempRawDir = path.join(getUploadsDir(), "b2_temp");
                 if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
                 const tempRawPath = path.join(tempRawDir, path.basename(b2Key));
-                if (b2Storage.isEnabled()) {
-                  await b2Storage.downloadFile(b2Key, tempRawPath);
+                if ((await b2()).isEnabled()) {
+                  await (await b2()).downloadFile(b2Key, tempRawPath);
                 }
                 await getOrGenerateWebImagePreview(tempRawPath);
               } catch (err) {
@@ -3378,7 +3378,7 @@ module.exports.initiateResumableUpload = async (request, reply) => {
       : `noah-uploads/${orgSlug}/${subFolder}/${userIdentifier}/${folderName}/${uniqueId}-raw-${safeFileName}`;
 
     // Initiate upload session with Backblaze B2 S3
-    const { uploadId } = await b2Storage.initiateMultipartUpload(b2Key, mimeType);
+    const { uploadId } = await (await b2()).initiateMultipartUpload(b2Key, mimeType);
 
     const sessionData = {
       sessionId,
@@ -3455,7 +3455,7 @@ module.exports.uploadChunk = async (request, reply) => {
     }
 
     // Upload chunk to B2
-    const partResult = await b2Storage.uploadPart(session.key, session.uploadId, partNumber, chunkBuffer);
+    const partResult = await (await b2()).uploadPart(session.key, session.uploadId, partNumber, chunkBuffer);
 
     // Add ETag to session parts
     session.parts = session.parts.filter(p => p.PartNumber !== partNumber);
@@ -3499,7 +3499,7 @@ module.exports.getChunkUploadUrl = async (request, reply) => {
     const session = JSON.parse(sessionRaw);
 
     // Get Presigned URL for this chunk directly to B2
-    const presignedUrl = await b2Storage.getPresignedPartUrl(session.key, session.uploadId, partNumber);
+    const presignedUrl = await (await b2()).getPresignedPartUrl(session.key, session.uploadId, partNumber);
 
     return { success: true, partNumber, presignedUrl };
   } catch (error) {
@@ -3557,7 +3557,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
     // Complete the multipart upload on B2
     console.log(`Completing multipart upload in B2 for key ${session.key}...`);
 
-    await b2Storage.completeMultipartUpload(session.key, session.uploadId, finalParts);
+    await (await b2()).completeMultipartUpload(session.key, session.uploadId, finalParts);
 
     let actualSessionMimeType = session.mimeType;
     if (!actualSessionMimeType || actualSessionMimeType === 'application/octet-stream') {
@@ -3582,8 +3582,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
 
     // Extract EXIF & camera metadata server-side using ExifTool
     try {
-      if (b2Storage.isEnabled()) {
-        const presignedUrl = await b2Storage.getPresignedUrl(session.key, 3600);
+      if ((await b2()).isEnabled()) {
+        const presignedUrl = await (await b2()).getPresignedUrl(session.key, 3600);
         if (presignedUrl) {
           const serverExif = await Promise.race([
             extractServerSideMetadata(presignedUrl),
@@ -3875,8 +3875,8 @@ module.exports.completeResumableUpload = async (request, reply) => {
             const tempRawDir = path.join(getUploadsDir(), "b2_temp");
             if (!fs.existsSync(tempRawDir)) fs.mkdirSync(tempRawDir, { recursive: true });
             const tempRawPath = path.join(tempRawDir, path.basename(session.key));
-            if (b2Storage.isEnabled()) {
-              await b2Storage.downloadFile(session.key, tempRawPath);
+            if ((await b2()).isEnabled()) {
+              await (await b2()).downloadFile(session.key, tempRawPath);
             }
             await getOrGenerateWebImagePreview(tempRawPath);
           } catch (err) {
@@ -3933,7 +3933,7 @@ module.exports.abortResumableUpload = async (request, reply) => {
 
       // Tell B2 to delete the partial uploaded chunks
       try {
-        await b2Storage.abortMultipartUpload(session.key, session.uploadId);
+        await (await b2()).abortMultipartUpload(session.key, session.uploadId);
         console.log(`[Upload Aborted] Cleaned up B2 chunks for key: ${session.key}`);
       } catch (b2Err) {
         console.error(`[Upload Aborted] Failed to clean up B2 chunks:`, b2Err.message);
@@ -3982,7 +3982,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
 
       if (compressedKey) {
         // Retrieve actual proxy file size via HEAD request (microscopic bandwidth)
-        const proxySize = await b2Storage.getFileSize(compressedKey);
+        const proxySize = await (await b2()).getFileSize(compressedKey);
 
         const existingProxy = await request.server.prisma.assetFile.findFirst({
           where: { assetId: newAssetId, fileClass: 'proxy' }
@@ -4109,7 +4109,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
               for (let i = 1; i <= 5; i++) {
                 try {
                   const thumbKey = `${baseKey}_thumb${i}.jpg`;
-                  const thumbUrl = await b2Storage.getPresignedUrl(thumbKey, 3600);
+                  const thumbUrl = await (await b2()).getPresignedUrl(thumbKey, 3600);
 
                   if (thumbUrl) {
                     let fetchResponse = null;
@@ -4202,7 +4202,7 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
       if (asset.type !== 'audio' && baseKey) {
         for (let i = 2; i <= 5; i++) {
           try {
-            await b2Storage.deleteFile(`${baseKey}_thumb${i}.jpg`);
+            await (await b2()).deleteFile(`${baseKey}_thumb${i}.jpg`);
           } catch (delErr) {
             console.error(`[Webhook] Failed to delete thumb ${i}:`, delErr.message);
           }
@@ -4519,14 +4519,14 @@ module.exports.retryTranscode = async (request, reply) => {
     // Generate B2 presigned URLs
     let sourceUrl, outputUrl;
     try {
-      sourceUrl = await b2Storage.getPresignedUrl(key, 86400);
+      sourceUrl = await (await b2()).getPresignedUrl(key, 86400);
     } catch (b2Err) {
       await request.server.prisma.transcodeJob.updateMany({ where: { assetId: id, provider: "coconut" }, data: { status: 'failed' } });
       await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
       return reply.status(500).send({ error: `B2 source URL generation failed: ${b2Err.message}` });
     }
     try {
-      outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400);
+      outputUrl = await (await b2()).getPresignedPutUrl(compressedKey, 86400);
     } catch (b2Err) {
       await request.server.prisma.transcodeJob.updateMany({ where: { assetId: id, provider: "coconut" }, data: { status: 'failed' } });
       await request.server.prisma.asset.update({ where: { id }, data: { status: 'failed' } });
@@ -4557,11 +4557,11 @@ module.exports.retryTranscode = async (request, reply) => {
       }
 
       const [t1, t2, t3, t4, t5] = await Promise.all([
-        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400),
-        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400),
-        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400),
-        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400),
-        b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400),
+        (await b2()).getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400),
+        (await b2()).getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400),
+        (await b2()).getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400),
+        (await b2()).getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400),
+        (await b2()).getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400),
       ]);
       outputs = {
         [formatKey]: { url: outputUrl },

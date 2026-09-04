@@ -14,14 +14,10 @@ const { recordStorageDelta } = require('../services/usage-meter.service');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-    keyId: process.env.B2_KEY_ID,
-    applicationKey: process.env.B2_APPLICATION_KEY,
-    bucketName: process.env.B2_BUCKET_NAME,
-    endpoint: process.env.B2_ENDPOINT,
-    region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 function formatWorkspaceNameWithSuffix(value) {
     if (!value || typeof value !== "string") return "ARK";
@@ -1810,10 +1806,10 @@ module.exports.deleteFolder = async (request, reply) => {
                 if (asset.files && asset.files.length > 0) {
                     for (const f of asset.files) {
                         assetSizeBytes += Number(f.sizeBytes || 0);
-                        if (f.filePath && b2Storage.isEnabled()) {
+                        if (f.filePath && (await b2()).isEnabled()) {
                             try {
-                                await b2Storage.deleteFile(f.filePath);
-                                await b2Storage.permanentlyDeleteFile(f.filePath);
+                                await (await b2()).deleteFile(f.filePath);
+                                await (await b2()).permanentlyDeleteFile(f.filePath);
                             } catch (b2Err) {
                                 console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
                             }
@@ -2930,10 +2926,10 @@ module.exports.deleteProject = async (request, reply) => {
                     if (asset.files && asset.files.length > 0) {
                         for (const f of asset.files) {
                             assetSizeBytes += Number(f.sizeBytes || 0);
-                            if (f.filePath && b2Storage.isEnabled()) {
+                            if (f.filePath && (await b2()).isEnabled()) {
                                 try {
-                                    await b2Storage.deleteFile(f.filePath);
-                                    await b2Storage.permanentlyDeleteFile(f.filePath);
+                                    await (await b2()).deleteFile(f.filePath);
+                                    await (await b2()).permanentlyDeleteFile(f.filePath);
                                 } catch (b2Err) {
                                     console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
                                 }
@@ -3060,10 +3056,10 @@ module.exports.deleteProject = async (request, reply) => {
                         if (asset.files && asset.files.length > 0) {
                             for (const f of asset.files) {
                                 assetSizeBytes += Number(f.sizeBytes || 0);
-                                if (f.filePath && b2Storage.isEnabled()) {
+                                if (f.filePath && (await b2()).isEnabled()) {
                                     try {
-                                        await b2Storage.deleteFile(f.filePath);
-                                        await b2Storage.permanentlyDeleteFile(f.filePath);
+                                        await (await b2()).deleteFile(f.filePath);
+                                        await (await b2()).permanentlyDeleteFile(f.filePath);
                                     } catch (b2Err) {
                                         console.warn(`[Permanent Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
                                     }
@@ -3571,10 +3567,10 @@ module.exports.deleteWorkspace = async (request, reply) => {
             if (asset.files && asset.files.length > 0) {
                 for (const f of asset.files) {
                     assetSizeBytes += Number(f.sizeBytes || 0);
-                    if (f.filePath && b2Storage.isEnabled()) {
+                    if (f.filePath && (await b2()).isEnabled()) {
                         try {
-                            await b2Storage.deleteFile(f.filePath);
-                            await b2Storage.permanentlyDeleteFile(f.filePath);
+                            await (await b2()).deleteFile(f.filePath);
+                            await (await b2()).permanentlyDeleteFile(f.filePath);
                         } catch (b2Err) {
                             console.warn(`[Workspace Delete] Could not delete B2 key ${f.filePath}:`, b2Err.message);
                         }

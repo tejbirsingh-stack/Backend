@@ -10,7 +10,8 @@ const { ensureDefaultOrganizationSettings } = require("../services/organization.
 const { autoAssignAdminsToWorkspace, autoAssignNewAdminToWorkspaces } = require("../services/workspace.service");
 const { createDefaultWorkspace: createDefaultWorkspaceWithStarterContent } = require("../lib/platform-provision");
 const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
-const { resolveOrgBranding } = require("../services/branding.service");
+const { resolveOrgBranding } = require('../services/branding.service');
+const { getHubspotConfig } = require('../services/hubspotConfig');
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -84,12 +85,10 @@ function formatWorkspaceNameWithSuffix(value) {
 }
 
 async function syncToHubspot(payload) {
-  const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
-  const formId = process.env.HUBSPOT_FORM_ID?.trim();
-  const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
+  const { portalId, formId, accessToken } = await getHubspotConfig();
 
   if (!portalId || !formId) {
-    console.warn("[HubSpot Sync] Skipped: HUBSPOT_PORTAL_ID or HUBSPOT_FORM_ID missing in env.");
+    console.warn("[HubSpot Sync] Skipped: credentials not available in AWS Secrets Manager.");
     return;
   }
 
@@ -636,9 +635,7 @@ module.exports.register = async (request, reply) => {
     }
 
     // --- HUBSPOT BACKGROUND SYNC BLOCK ---
-    const portalId = process.env.HUBSPOT_PORTAL_ID?.trim();
-    const formId = process.env.HUBSPOT_FORM_ID?.trim();
-    const accessToken = process.env.HUBSPOT_ACCESS_TOKEN?.trim();
+    const { portalId, formId, accessToken } = await getHubspotConfig();
 
     if (portalId && formId) {
       // Split name into first and last name for HubSpot
@@ -1547,9 +1544,7 @@ module.exports.googleLogin = async (request, reply) => {
         slug: organization.slug
       };
       // HubSpot Sync for Auto-provisioned user
-      const portalId = process.env.HUBSPOT_PORTAL_ID;
-      const formId = process.env.HUBSPOT_FORM_ID;
-      const hubspotToken = process.env.HUBSPOT_ACCESS_TOKEN;
+      const { portalId, formId, accessToken: hubspotToken } = await getHubspotConfig();
       if (portalId && formId && hubspotToken) {
         const fallbackName = name || normalizedEmail.split('@')[0];
         const nameParts = fallbackName.trim().split(" ").filter(Boolean);

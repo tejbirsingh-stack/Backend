@@ -3,14 +3,10 @@ const { roles, logSuccess, logError, ACTIVITY_NAME, ACTIVITY_TYPE } = require('.
 const { autoAssignNewAdminToWorkspaces } = require('../services/workspace.service');
 const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 // 1. Get all users belonging to the logged-in user's organization (orgId)
 module.exports.getUsers = async (request, reply) => {
@@ -278,7 +274,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
     const b2Key = `noah-uploads/${sanitizedOrgName}/Profile Photo/${folderName}/${uniqueFilename}`;
 
     // Upload to B2
-    const uploadedAsset = await b2Storage.uploadStream(
+    const uploadedAsset = await (await b2()).uploadStream(
       data.file,
       b2Key,
       data.mimetype,
@@ -288,7 +284,7 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
     // If the user already had an avatar, permanently delete the old one from B2 to save space
     if (user.avatarKey && user.avatarKey !== uploadedAsset.key) {
       try {
-        await b2Storage.permanentlyDeleteFile(user.avatarKey);
+        await (await b2()).permanentlyDeleteFile(user.avatarKey);
       } catch (delErr) {
         request.log.warn(`Failed to delete old avatar ${user.avatarKey}: ${delErr.message}`);
       }
@@ -335,8 +331,8 @@ module.exports.getAvatar = async (request, reply) => {
 
     // If we have an avatar key, generate a fresh presigned URL
     if (user.avatarKey) {
-      if (b2Storage.isEnabled()) {
-        const presignedUrl = await b2Storage.getPresignedUrl(user.avatarKey, 3600);
+      if ((await b2()).isEnabled()) {
+        const presignedUrl = await (await b2()).getPresignedUrl(user.avatarKey, 3600);
         if (presignedUrl) {
           // Temporarily redirect to the fresh B2 presigned URL
           return reply.redirect(presignedUrl, 302);

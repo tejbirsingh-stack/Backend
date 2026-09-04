@@ -3,14 +3,12 @@ const path = require('path');
 const B2StorageService = require("../b2-storage.cjs");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { logSuccess, logError, ACTIVITY_NAME } = require('../lib');
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});//1. Get organizations
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
+
+//1. Get organizations
 module.exports.getOrganizations = async (request, reply) => {
     try{
       const orgs = await request.server.prisma.organization.findMany({
@@ -41,8 +39,8 @@ module.exports.getSingleOrganization = async (request, reply) => {
       return reply.code(404).send({ error: 'Organization not found' });
     }
     if (org.metadata && org.metadata.logoKey) {
-      if (b2Storage.isEnabled()) {
-        org.metadata.logoUrl = await b2Storage.getPresignedUrl(org.metadata.logoKey);
+      if ((await b2()).isEnabled()) {
+        org.metadata.logoUrl = await (await b2()).getPresignedUrl(org.metadata.logoKey);
       }
     }
     return reply.send(org);
@@ -136,7 +134,7 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
     const b2Key = `noah-uploads/${sanitizedOrgName}/logo/${uniqueFilename}`;
 
     // Upload to B2
-    const uploadedAsset = await b2Storage.uploadStream(
+    const uploadedAsset = await (await b2()).uploadStream(
       data.file,
       b2Key,
       data.mimetype,
@@ -144,7 +142,7 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
     );
 
     // Store long-lived / public URL for branding logo
-    const longLivedLogoUrl = (await b2Storage.getPresignedUrl(uploadedAsset.key, 604800)) || b2Storage.getPublicUrl(uploadedAsset.key) || uploadedAsset.url;
+    const longLivedLogoUrl = (await (await b2()).getPresignedUrl(uploadedAsset.key, 604800)) || (await b2()).getPublicUrl(uploadedAsset.key) || uploadedAsset.url;
 
     // Also update logoKey & logoUrl in organisation_branding_settings
     await request.server.prisma.organisationBrandingSetting.upsert({
@@ -271,11 +269,11 @@ module.exports.getBrandingSettings = async (request, reply) => {
     }
 
     // Refresh B2 presigned URLs with long-lived validity (7 days) if keys exist
-    if (branding.logoKey && b2Storage.isEnabled()) {
-      branding.logoUrl = await b2Storage.getPresignedUrl(branding.logoKey, 604800).catch(() => branding.logoUrl);
+    if (branding.logoKey && (await b2()).isEnabled()) {
+      branding.logoUrl = await (await b2()).getPresignedUrl(branding.logoKey, 604800).catch(() => branding.logoUrl);
     }
-    if (branding.headerImageKey && b2Storage.isEnabled()) {
-      branding.headerImageUrl = await b2Storage.getPresignedUrl(branding.headerImageKey, 604800).catch(() => branding.headerImageUrl);
+    if (branding.headerImageKey && (await b2()).isEnabled()) {
+      branding.headerImageUrl = await (await b2()).getPresignedUrl(branding.headerImageKey, 604800).catch(() => branding.headerImageUrl);
     }
 
     return reply.send({
@@ -385,7 +383,7 @@ module.exports.uploadBrandingHeader = async (request, reply) => {
     const uniqueFilename = `header_${Date.now()}${ext}`;
     const b2Key = `noah-uploads/${sanitizedOrgName}/branding/${uniqueFilename}`;
 
-    const uploadedAsset = await b2Storage.uploadStream(
+    const uploadedAsset = await (await b2()).uploadStream(
       data.file,
       b2Key,
       data.mimetype,

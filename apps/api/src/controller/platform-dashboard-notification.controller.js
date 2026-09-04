@@ -1,13 +1,9 @@
 const prisma = require('../utils/prisma');
 const B2StorageService = require('../b2-storage.cjs');
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 const NOTIFICATION_MEDIA_FOLDER = 'notification-media';
 
@@ -41,7 +37,7 @@ async function resolveImagesWithUrls(images) {
     images.map(async (img) => {
       let url = null;
 
-      if (img.filePath && b2Storage.isEnabled()) {
+      if (img.filePath && (await b2()).isEnabled()) {
         const cacheStillValid =
           img.cachedUrl &&
           img.cachedUrlExpiresAt &&
@@ -53,7 +49,7 @@ async function resolveImagesWithUrls(images) {
         } else {
           // Slow path: generate a fresh presigned URL and persist it
           try {
-            url = await b2Storage.getPresignedUrl(img.filePath, URL_TTL_SECONDS);
+            url = await (await b2()).getPresignedUrl(img.filePath, URL_TTL_SECONDS);
             const expiresAt = new Date(now + URL_TTL_SECONDS * 1000);
             // Fire-and-forget update — don't block the response
             prisma.dashboardNotificationImage
@@ -144,7 +140,7 @@ module.exports.updateDashboardNotification = async (request, reply) => {
 };
 
 module.exports.uploadNotificationImage = async (request, reply) => {
-  if (!b2Storage.isEnabled()) {
+  if (!(await b2()).isEnabled()) {
     return reply.status(500).send({
       error: 'StorageNotConfigured',
       message: 'Cloud storage is not configured',
@@ -189,7 +185,7 @@ module.exports.uploadNotificationImage = async (request, reply) => {
             let measured = 0;
             part.file.on('data', (chunk) => { measured += chunk.length; });
 
-            await b2Storage.uploadStream(part.file, b2Key, mimeType, {
+            await (await b2()).uploadStream(part.file, b2Key, mimeType, {
               type: 'notification-media',
             });
 
@@ -205,7 +201,7 @@ module.exports.uploadNotificationImage = async (request, reply) => {
             let cachedUrl = null;
             let cachedUrlExpiresAt = null;
             try {
-              cachedUrl = await b2Storage.getPresignedUrl(b2Key, URL_TTL_SECONDS);
+              cachedUrl = await (await b2()).getPresignedUrl(b2Key, URL_TTL_SECONDS);
               cachedUrlExpiresAt = new Date(Date.now() + URL_TTL_SECONDS * 1000);
             } catch (e) {
               console.warn('[dash-notif] post-upload presign failed:', e.message);
@@ -291,9 +287,9 @@ module.exports.deleteNotificationImage = async (request, reply) => {
       data: { updatedAt: new Date() },
     });
 
-    if (b2Storage.isEnabled() && image.filePath) {
+    if ((await b2()).isEnabled() && image.filePath) {
       try {
-        await b2Storage.permanentlyDeleteFile(image.filePath);
+        await (await b2()).permanentlyDeleteFile(image.filePath);
       } catch (e) {
         console.warn('[dash-notif] B2 delete warning:', e.message);
       }

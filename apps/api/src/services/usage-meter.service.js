@@ -1,13 +1,9 @@
 const prisma = require('../utils/prisma');
 const B2StorageService = require('../b2-storage.cjs');
+const { getB2Storage } = require('./b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID || process.env.B2_APPLICATION_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 /**
  * Format bytes into human-readable string using B2/Cloud standard (1 MB = 1,000,000 Bytes)
@@ -278,19 +274,20 @@ async function getUsageSummary(orgId) {
   }
 
   // Query direct physical B2 folder sizes if B2 service is enabled
-  if (b2Storage.isEnabled()) {
+  const _b2 = await b2();
+  if (_b2.isEnabled()) {
     try {
       const orgSlug = org.slug || (org.name ? org.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') : '');
       if (orgSlug) {
         const [v1, v2, i1, i2, a1, a2, d1, d2] = await Promise.all([
-          b2Storage.getFolderSize(`noah-uploads/${orgSlug}/videos/`),
-          b2Storage.getFolderSize(`uploads/${orgSlug}/videos/`),
-          b2Storage.getFolderSize(`noah-uploads/${orgSlug}/images/`),
-          b2Storage.getFolderSize(`uploads/${orgSlug}/images/`),
-          b2Storage.getFolderSize(`noah-uploads/${orgSlug}/audios/`),
-          b2Storage.getFolderSize(`uploads/${orgSlug}/audios/`),
-          b2Storage.getFolderSize(`noah-uploads/${orgSlug}/files/`),
-          b2Storage.getFolderSize(`uploads/${orgSlug}/files/`),
+          _b2.getFolderSize(`noah-uploads/${orgSlug}/videos/`),
+          _b2.getFolderSize(`uploads/${orgSlug}/videos/`),
+          _b2.getFolderSize(`noah-uploads/${orgSlug}/images/`),
+          _b2.getFolderSize(`uploads/${orgSlug}/images/`),
+          _b2.getFolderSize(`noah-uploads/${orgSlug}/audios/`),
+          _b2.getFolderSize(`uploads/${orgSlug}/audios/`),
+          _b2.getFolderSize(`noah-uploads/${orgSlug}/files/`),
+          _b2.getFolderSize(`uploads/${orgSlug}/files/`),
         ]);
 
         const b2VideoTotal = BigInt(v1 + v2);

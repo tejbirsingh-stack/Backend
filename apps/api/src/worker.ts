@@ -9,6 +9,11 @@ import os from 'os';
 import B2StorageService from './b2-storage.cjs';
 import { v4 as uuidv4 } from 'uuid';
 import './ai-worker.js';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { getB2Storage } = require('./services/b2Config');
+
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2(): Promise<InstanceType<typeof B2StorageService>> { return getB2Storage(B2StorageService); }
 
 // 1. Initialize DB and Cache connections (reusing config)
 const redisConnection = new Redis({
@@ -20,14 +25,6 @@ const redisConnection = new Redis({
 
 // @ts-ignore
 const prisma = require('./utils/prisma.js');
-
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
 
 console.log(' Noah Media Compression Worker is starting...');
 
@@ -60,7 +57,8 @@ const processCompressionJob = async (job: Job) => {
 // Duration limit check removed to support long videos on paid Coconut accounts.
 
     // Generate a Presigned GET URL so Coconut can read the raw file
-    const sourceUrl = await b2Storage.getPresignedUrl(key, 86400); // URL valid for 24 hours
+    const _b2 = await b2();
+    const sourceUrl = await _b2.getPresignedUrl(key, 86400); // URL valid for 24 hours
 
     // Generate compressed key by replacing 'raw-' with 'compressed-'
     const parts = key.split('/');
@@ -83,7 +81,7 @@ const processCompressionJob = async (job: Job) => {
       where: { id: assetId },
       data: { compressedKey: compressedKey }
     }).catch((err: any) => console.error(`[Job ${job.id}] Failed to save compressedKey:`, err.message));
-    const outputUrl = await b2Storage.getPresignedPutUrl(compressedKey, 86400);
+    const outputUrl = await _b2.getPresignedPutUrl(compressedKey, 86400);
 
     let outputs: any = {};
     if (isAudio) {
@@ -91,11 +89,11 @@ const processCompressionJob = async (job: Job) => {
         'mp3': { url: outputUrl }
       };
     } else {
-      const thumbUrl1 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400);
-      const thumbUrl2 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400);
-      const thumbUrl3 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400);
-      const thumbUrl4 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
-      const thumbUrl5 = await b2Storage.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
+      const thumbUrl1 = await _b2.getPresignedPutUrl(`${compressedKey}_thumb1.jpg`, 86400);
+      const thumbUrl2 = await _b2.getPresignedPutUrl(`${compressedKey}_thumb2.jpg`, 86400);
+      const thumbUrl3 = await _b2.getPresignedPutUrl(`${compressedKey}_thumb3.jpg`, 86400);
+      const thumbUrl4 = await _b2.getPresignedPutUrl(`${compressedKey}_thumb4.jpg`, 86400);
+      const thumbUrl5 = await _b2.getPresignedPutUrl(`${compressedKey}_thumb5.jpg`, 86400);
 
       const technicalSpecs = asset?.metadata?.technicalSpecs as any;
       const fileSizeBytes = job.data.fileSizeBytes || Number(technicalSpecs?.sizeBytes || technicalSpecs?.fileSize || 0);

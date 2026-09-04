@@ -1,12 +1,8 @@
 const B2StorageService = require('../b2-storage.cjs');
+const { getB2Storage } = require('./b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID || process.env.B2_APPLICATION_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 const DEFAULT_NOAH_LOGO_URL = 'https://qa.noahcloud.ai/noah-logo.png';
 
@@ -54,10 +50,11 @@ async function resolveOrgBranding(prisma, orgId, options = {}) {
     }
 
     // 2. If logo_url is missing or localhost, generate 7-day presigned URL from logoKey via B2 storage
-    if ((!logoUrl || logoUrl.includes('localhost')) && logoKey && b2Storage.isEnabled()) {
+    const _b2 = await b2();
+    if ((!logoUrl || logoUrl.includes('localhost')) && logoKey && _b2.isEnabled()) {
       try {
         const expiresIn = options.forEmail || options.longLived ? 604800 : 86400;
-        logoUrl = await b2Storage.getPresignedUrl(logoKey, expiresIn);
+        logoUrl = await _b2.getPresignedUrl(logoKey, expiresIn);
       } catch (e) {
         console.warn(`[Branding Service] Error generating presigned URL for key ${logoKey}:`, e.message);
       }

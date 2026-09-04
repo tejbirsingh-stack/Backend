@@ -7,14 +7,10 @@ const { broadcastToRoom } = require('./realtimeController');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { createNotification } = require('./notificationController');
 const B2StorageService = require('../b2-storage.cjs');
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 
 /**
@@ -610,8 +606,8 @@ async function validateShareToken(req, reply) {
 
         // headerImageUrl still uses presigned URL (header images are for guest page background, not email)
         let bHeaderImageUrl = dbBranding.headerImageUrl;
-        if (dbBranding.headerImageKey && b2Storage.isEnabled()) {
-          bHeaderImageUrl = await b2Storage.getPresignedUrl(dbBranding.headerImageKey).catch(() => dbBranding.headerImageUrl);
+        if (dbBranding.headerImageKey && (await b2()).isEnabled()) {
+          bHeaderImageUrl = await (await b2()).getPresignedUrl(dbBranding.headerImageKey).catch(() => dbBranding.headerImageUrl);
         }
         branding = {
           accountName: dbBranding.accountName || shareLink.organization?.name || "User's Account",
@@ -936,7 +932,7 @@ async function getPublicOrgLogo(req, reply) {
       return reply.redirect(FALLBACK_LOGO, 302);
     }
 
-    if (!b2Storage.isEnabled()) {
+    if (!(await b2()).isEnabled()) {
       return reply.redirect(FALLBACK_LOGO, 302);
     }
 
@@ -944,11 +940,11 @@ async function getPublicOrgLogo(req, reply) {
     // This works even with a PRIVATE B2 bucket because our server authenticates
     const { GetObjectCommand } = require('@aws-sdk/client-s3');
     const command = new GetObjectCommand({
-      Bucket: b2Storage.bucket,
+      Bucket: (await b2()).bucket,
       Key: logoKey,
     });
 
-    const s3Response = await b2Storage.s3Client.send(command);
+    const s3Response = await (await b2()).s3Client.send(command);
 
     const contentType = s3Response.ContentType || 'image/png';
     const contentLength = s3Response.ContentLength;
