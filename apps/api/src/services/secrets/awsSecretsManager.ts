@@ -27,24 +27,44 @@ async function loadBundle(): Promise<Record<string, string>> {
     return bundleCache.data;
   }
 
-  const secretId = process.env.AWS_AI_SECRET_ID;
-  if (!secretsManagerEnabled() || !secretId) {
+  if (!secretsManagerEnabled()) {
     return {};
   }
 
+  const bundle: Record<string, string> = {};
+
+  // 1. Try single master secret bundle (AWS_APP_SECRET_ID: noah/uat/app-config-all, noah/prod/app-config-all, etc.)
+  const uatSecretId = process.env.AWS_APP_SECRET_ID || process.env.AWS_UAT_SECRET_ID || 'noah/uat/app-config-all';
   try {
-    const out = await getClient().send(new GetSecretValueCommand({ SecretId: secretId }));
-    const raw = out.SecretString;
-    if (!raw) {
-      return {};
+    const out = await getClient().send(new GetSecretValueCommand({ SecretId: uatSecretId }));
+    if (out.SecretString) {
+      const parsed = JSON.parse(out.SecretString);
+      if (parsed.ai_credentials) Object.assign(bundle, parsed.ai_credentials);
+      if (parsed.azure_vi) Object.assign(bundle, parsed.azure_vi);
+      // Top level fallbacks if flat
+      if (parsed.ASSEMBLY_API_KEY) bundle.ASSEMBLY_API_KEY = parsed.ASSEMBLY_API_KEY;
+      if (parsed.OPENAI_API_KEY) bundle.OPENAI_API_KEY = parsed.OPENAI_API_KEY;
     }
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    bundleCache = { data: parsed, expiresAt: Date.now() + TTL_MS };
-    return parsed;
   } catch {
-    console.warn('[Secrets] AWS Secrets Manager unavailable; using process.env fallback');
-    return {};
+    // Ignore master fetch error, try legacy AI secret
   }
+
+  // 2. Try legacy AI secret (AWS_AI_SECRET_ID: noah/qa/ai/credentials)
+  const aiSecretId = process.env.AWS_AI_SECRET_ID;
+  if (aiSecretId) {
+    try {
+      const out = await getClient().send(new GetSecretValueCommand({ SecretId: aiSecretId }));
+      if (out.SecretString) {
+        const parsed = JSON.parse(out.SecretString) as Record<string, string>;
+        Object.assign(bundle, parsed);
+      }
+    } catch {
+      // Ignore legacy fetch error
+    }
+  }
+
+  bundleCache = { data: bundle, expiresAt: Date.now() + TTL_MS };
+  return bundle;
 }
 
 /** Logical keys: ASSEMBLY_API_KEY, OPENAI_API_KEY, AZURE_VI_*. Env wins when set (local keys already in .env). */

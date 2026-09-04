@@ -31,7 +31,7 @@ function getAwsClient() {
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
 async function fetchFromSecretsManager() {
-  const secretId = process.env.AWS_UAT_SECRET_ID || 'noah/uat/app-config-all';
+  const secretId = process.env.AWS_APP_SECRET_ID || process.env.AWS_UAT_SECRET_ID || 'noah/uat/app-config-all';
 
   try {
     const response = await getAwsClient().send(

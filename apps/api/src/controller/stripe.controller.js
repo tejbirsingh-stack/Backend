@@ -2,6 +2,7 @@ const stripeService = require('../services/stripe.service.js');
 const prisma = require('../utils/prisma');
 const { resolveOrgBranding } = require('../services/branding.service.js');
 const { buildCustomInvoicePdf } = require('../services/invoicePdf.service.js');
+const { getStripeConfig } = require('../services/stripeConfig.js');
 
 function getFrontendUrl(req) {
   if (req) {
@@ -1102,7 +1103,8 @@ class StripeController {
         if (setting?.value) publishableKey = setting.value;
       } catch (e) {}
       if (!publishableKey) {
-        publishableKey = process.env.TEST_STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
+        const config = await getStripeConfig();
+        publishableKey = config.publishableKey || process.env.TEST_STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
       }
 
       return reply.send({
