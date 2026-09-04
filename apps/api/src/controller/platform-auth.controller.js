@@ -14,6 +14,10 @@ async function platformLogin(request, reply) {
       });
     }
 
+    const clientIp = request.headers['x-forwarded-for']
+      ? String(request.headers['x-forwarded-for']).split(',')[0].trim()
+      : request.ip;
+
     const admin = await platformAuthService.findAdminByEmail(email);
     if (!admin) {
       return reply.status(401).send({
@@ -61,7 +65,7 @@ async function platformLogin(request, reply) {
     await platformAuthService.createSession(
       admin.id,
       token,
-      request.ip,
+      clientIp,
       request.headers['user-agent'],
     );
     await platformAuthService.recordLoginSuccess(admin.id);

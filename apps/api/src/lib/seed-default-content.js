@@ -1,12 +1,8 @@
 const B2StorageService = require('../b2-storage.cjs');
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 function sanitizeSlug(value, fallback = 'org') {
   const slug = String(value || '')
@@ -75,10 +71,11 @@ async function seedDefaultContentIntoWorkspace(prisma, { orgId, workspaceId, org
       const subFolder = subFolderForType(item.assetType);
       let finalPath = item.filePath;
 
-      if (b2Storage.isEnabled() && item.filePath) {
+      const _b2 = await b2();
+      if (_b2.isEnabled() && item.filePath) {
         const destKey = `noah-uploads/${orgSlug}/${subFolder}/platform-default/${baseName}-${uniqueId}/${uniqueId}-raw-${safeFileName}`;
         try {
-          await b2Storage.copyFile(item.filePath, destKey);
+          await _b2.copyFile(item.filePath, destKey);
           finalPath = destKey;
         } catch (copyErr) {
           console.warn(

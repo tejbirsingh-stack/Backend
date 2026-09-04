@@ -12,6 +12,11 @@ import { highlightTranscriptForAsset } from './services/ai/highlightTranscript.j
 // CJS entitlement helper
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { isAiEnabledForOrg } = require('./services/ai/aiEntitlement.js');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { getB2Storage } = require('./services/b2Config');
+
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2(): Promise<InstanceType<typeof B2StorageService>> { return getB2Storage(B2StorageService); }
 
 const redisConnection = new Redis({
   host: process.env.REDIS_HOST || 'localhost',
@@ -23,14 +28,6 @@ const redisConnection = new Redis({
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 const prisma = globalForPrisma.prisma || new PrismaClient();
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
-
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
 
 type AiFeature = 'asr' | 'highlights' | 'embeddings' | 'people_scenes';
 
@@ -88,7 +85,7 @@ async function getProxyUrl(assetId: string): Promise<{ proxyUrl: string; title: 
   if (!mediaFile?.filePath) {
     throw new Error('Proxy AssetFile missing; cannot run AI on original');
   }
-  const proxyUrl = await b2Storage.getPresignedUrl(mediaFile.filePath, 86400);
+  const proxyUrl = await (await b2()).getPresignedUrl(mediaFile.filePath, 86400);
   if (!proxyUrl) {
     throw new Error('Failed to generate proxy presigned URL');
   }

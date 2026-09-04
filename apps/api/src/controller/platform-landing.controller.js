@@ -1,6 +1,7 @@
 const prisma = require('../utils/prisma');
 const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const emailService = require('../services/email-service');
+const { getHubspotConfig } = require('../services/hubspotConfig');
 
 const DEFAULT_SECTIONS = { plansEnabled: true };
 
@@ -292,8 +293,7 @@ async function submitDemoRequest(request, reply) {
     }
 
     // 2. Submit lead to HubSpot Forms API
-    const portalId = process.env.HUBSPOT_PORTAL_ID || '44555337';
-    const formId = process.env.HUBSPOT_DEMO_FORM_ID || 'beb1f88a-e521-4e75-a39a-cfaafd810a6c';
+    const { portalId, demoFormId: formId } = await getHubspotConfig();
 
     if (portalId && formId) {
       try {

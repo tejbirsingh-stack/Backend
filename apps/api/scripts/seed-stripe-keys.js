@@ -13,13 +13,16 @@ try {
   /* optional */
 }
 
+const { getStripeConfig } = require('../src/services/stripeConfig');
+
 const prisma = new PrismaClient();
 
 async function main() {
-  const pubKey = process.env.TEST_STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY;
-  const secKey = process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
-  const qaWebhookSecret = process.env.QA_STRIPE_WEBHOOK_SECRET;
-  const localWebhookSecret = process.env.LOCAL_STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
+  const stripeConfig = await getStripeConfig();
+  const pubKey = stripeConfig.publishableKey || process.env.TEST_STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY;
+  const secKey = stripeConfig.secretKey || process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+  const qaWebhookSecret = stripeConfig.qaWebhookSecret || process.env.QA_STRIPE_WEBHOOK_SECRET;
+  const localWebhookSecret = stripeConfig.localWebhookSecret || process.env.LOCAL_STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
 
   console.log('Seeding Stripe System Settings to database...');
 
@@ -65,21 +68,22 @@ async function main() {
   }
 
   // Sync Plan Stripe Price IDs into Plan records
+  const priceIds = stripeConfig.priceIds || {};
   const planPriceMap = [
     {
       name: 'Basic',
-      monthlyPriceId: process.env.STRIPE_BASIC_MONTHLY_PRICE_ID,
-      yearlyPriceId: process.env.STRIPE_BASIC_YEARLY_PRICE_ID,
+      monthlyPriceId: priceIds.basicMonthly || process.env.STRIPE_BASIC_MONTHLY_PRICE_ID,
+      yearlyPriceId: priceIds.basicYearly || process.env.STRIPE_BASIC_YEARLY_PRICE_ID,
     },
     {
       name: 'Premium',
-      monthlyPriceId: process.env.STRIPE_PREMIUM_MONTHLY_PRICE_ID,
-      yearlyPriceId: process.env.STRIPE_PREMIUM_YEARLY_PRICE_ID,
+      monthlyPriceId: priceIds.premiumMonthly || process.env.STRIPE_PREMIUM_MONTHLY_PRICE_ID,
+      yearlyPriceId: priceIds.premiumYearly || process.env.STRIPE_PREMIUM_YEARLY_PRICE_ID,
     },
     {
       name: 'Enterprise',
-      monthlyPriceId: process.env.STRIPE_ENTERPRISE_MONTHLY_PRICE_ID,
-      yearlyPriceId: process.env.STRIPE_ENTERPRISE_YEARLY_PRICE_ID,
+      monthlyPriceId: priceIds.enterpriseMonthly || process.env.STRIPE_ENTERPRISE_MONTHLY_PRICE_ID,
+      yearlyPriceId: priceIds.enterpriseYearly || process.env.STRIPE_ENTERPRISE_YEARLY_PRICE_ID,
     },
   ];
 

@@ -1,14 +1,10 @@
 const prisma = require('../utils/prisma');
 const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 const B2StorageService = require('../b2-storage.cjs');
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-  keyId: process.env.B2_KEY_ID,
-  applicationKey: process.env.B2_APPLICATION_KEY,
-  bucketName: process.env.B2_BUCKET_NAME,
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 function normalizeAssetType(mimeType = '', filename = '') {
   const mime = String(mimeType || '').toLowerCase();
@@ -42,9 +38,9 @@ function serializeItem(item, previewUrl = null) {
 
 async function withPreviewUrl(item) {
   let previewUrl = null;
-  if (item?.filePath && b2Storage.isEnabled()) {
+  if (item?.filePath && (await b2()).isEnabled()) {
     try {
-      previewUrl = await b2Storage.getPresignedUrl(item.filePath, 3600);
+      previewUrl = await (await b2()).getPresignedUrl(item.filePath, 3600);
     } catch (err) {
       console.warn('[default-content] preview URL failed:', err.message);
     }
@@ -74,9 +70,9 @@ async function listDefaultContent(request, reply) {
       const origFile = gAsset.files?.find((f) => f.fileClass === 'original') || gAsset.files?.[0];
       if (origFile && !existingFilePaths.has(origFile.filePath)) {
         let previewUrl = null;
-        if (origFile.filePath && b2Storage.isEnabled()) {
+        if (origFile.filePath && (await b2()).isEnabled()) {
           try {
-            previewUrl = await b2Storage.getPresignedUrl(origFile.filePath, 3600);
+            previewUrl = await (await b2()).getPresignedUrl(origFile.filePath, 3600);
           } catch (err) {
             console.warn('[default-content] global asset preview URL failed:', err.message);
           }
@@ -113,7 +109,7 @@ async function listDefaultContent(request, reply) {
 
 async function uploadDefaultContent(request, reply) {
   try {
-    if (!b2Storage.isEnabled()) {
+    if (!(await b2()).isEnabled()) {
       return reply.status(500).send({
         error: 'StorageNotConfigured',
         message: 'Cloud storage is not configured',
@@ -149,7 +145,7 @@ async function uploadDefaultContent(request, reply) {
           measured += chunk.length;
         });
 
-        await b2Storage.uploadStream(part.file, b2Key, mimeType, {
+        await (await b2()).uploadStream(part.file, b2Key, mimeType, {
           type: 'global-media',
           uploadedBy: request.platformAdmin?.id || 'unknown',
         });
@@ -397,9 +393,9 @@ async function updateDefaultContent(request, reply) {
 
       const origFile = updatedAsset.files?.find((f) => f.fileClass === 'original') || updatedAsset.files?.[0];
       let previewUrl = null;
-      if (origFile?.filePath && b2Storage.isEnabled()) {
+      if (origFile?.filePath && (await b2()).isEnabled()) {
         try {
-          previewUrl = await b2Storage.getPresignedUrl(origFile.filePath, 3600);
+          previewUrl = await (await b2()).getPresignedUrl(origFile.filePath, 3600);
         } catch (e) { }
       }
 
@@ -498,10 +494,10 @@ async function deleteDefaultContent(request, reply) {
       await prisma.asset.delete({ where: { id } });
     }
 
-    if (b2Storage.isEnabled()) {
+    if ((await b2()).isEnabled()) {
       for (const filePath of filePathsToDelete) {
         try {
-          await b2Storage.permanentlyDeleteFile(filePath);
+          await (await b2()).permanentlyDeleteFile(filePath);
         } catch (delErr) {
           console.warn(`[default-content] Failed to delete B2 file ${filePath}:`, delErr.message);
         }

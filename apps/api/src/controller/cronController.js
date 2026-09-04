@@ -2,14 +2,10 @@ const { logSuccess, logError, ACTIVITY_NAME, ACTOR_TYPE } = require("../lib/audi
 const { createNotification, notifyRole } = require("./notificationController");
 const { recordStorageDelta } = require("../services/usage-meter.service");
 const B2StorageService = require("../b2-storage.cjs");
+const { getB2Storage } = require('../services/b2Config');
 
-const b2Storage = new B2StorageService({
-    keyId: process.env.B2_KEY_ID || process.env.B2_APPLICATION_KEY_ID,
-    applicationKey: process.env.B2_APPLICATION_KEY,
-    bucketName: process.env.B2_BUCKET_NAME,
-    endpoint: process.env.B2_ENDPOINT,
-    region: process.env.B2_REGION,
-});
+/** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
+async function b2() { return getB2Storage(B2StorageService); }
 
 const cleanupAuditLogs = async (request, reply) => {
     try {
@@ -81,11 +77,11 @@ const processTrashRetention = async (request, reply) => {
 
                 if (isSuperAdmin) {
                     // Super Admin deleted this file 30 days ago: Purge permanently from B2 and DB
-                    if (b2Storage.isEnabled() && asset.files && asset.files.length > 0) {
+                    if ((await b2()).isEnabled() && asset.files && asset.files.length > 0) {
                         for (const f of asset.files) {
                             if (f.filePath) {
                                 try {
-                                    await b2Storage.deleteFile(f.filePath);
+                                    await (await b2()).deleteFile(f.filePath);
                                 } catch (b2Err) {
                                     request.server.logger.warn(`[Cron Purge] Could not delete B2 key ${f.filePath}: ${b2Err.message}`);
                                 }

@@ -1,4 +1,5 @@
 const sgMail = require("@sendgrid/mail");
+const { getSendgridConfig } = require("./sendgridConfig");
 const {
   renderEmailVerificationHtml,
   renderPasswordResetHtml,
@@ -16,34 +17,14 @@ const {
 
 class EmailService {
   constructor() {
-    const apiKey = this.apiKey;
-    if (apiKey) {
-      sgMail.setApiKey(apiKey);
-    } else {
-      console.warn("⚠️ SENDGRID_API_KEY is not set at startup. Emails will fall back to console logging unless set later.");
-    }
-  }
-
-  get apiKey() {
-    const raw = process.env.SENDGRID_API_KEY;
-    return raw ? raw.replace(/^["']|["']$/g, "").trim() : null;
-  }
-
-  get fromEmail() {
-    const raw = process.env.SMTP_FROM_EMAIL || process.env.EMAIL_FROM || "noreply@noah-dev.local";
-    return raw.replace(/^["']|["']$/g, "").trim();
-  }
-
-  get fromName() {
-    const raw = process.env.SMTP_FROM_NAME || "Noah Platform";
-    return raw.replace(/^["']|["']$/g, "").trim();
+    // Credentials are resolved dynamically from AWS Secrets Manager on demand
   }
 
   /**
    * Send a general email — clean HTML message with transactional headers
    */
   async sendEmail({ to, subject, text, html }) {
-    const apiKey = this.apiKey;
+    const { apiKey, fromEmail, fromName } = await getSendgridConfig();
 
     // Transactional Reference ID to guarantee Inbox delivery in Gmail
     const txnId = Math.floor(1000 + Math.random() * 9000);
@@ -52,8 +33,8 @@ class EmailService {
     const msg = {
       to,
       from: {
-        email: this.fromEmail,
-        name: this.fromName,
+        email: fromEmail,
+        name: fromName,
       },
       subject: finalSubject,
       text,
@@ -79,7 +60,7 @@ class EmailService {
 
     console.log(`\n================= ✉️ SENDGRID EMAIL DEBUG =================`);
     console.log(`Sending To     : ${to}`);
-    console.log(`Sending From   : "${this.fromName}" <${this.fromEmail}>`);
+    console.log(`Sending From   : "${fromName}" <${fromEmail}>`);
     console.log(`Subject        : ${finalSubject}`);
     console.log(`API Key Prefix : ${apiKey.substring(0, 10)}... (${apiKey.length} characters)`);
     console.log(`===========================================================\n`);
