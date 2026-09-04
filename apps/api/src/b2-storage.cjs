@@ -1,5 +1,5 @@
 const dns = require('dns');
-try { dns.setDefaultResultOrder('ipv4first'); } catch (e) {}
+try { dns.setDefaultResultOrder('ipv4first'); } catch (e) { }
 
 const {
   S3Client,
@@ -40,13 +40,13 @@ class B2StorageService {
     const keyId = config && config.keyId ? String(config.keyId).trim() : null;
     const applicationKey = config && config.applicationKey ? String(config.applicationKey).trim() : null;
     const bucketName = config && config.bucketName ? String(config.bucketName).trim() : null;
-    const endpoint = config && config.endpoint ? String(config.endpoint).trim() : 'https://s3.us-west-002.backblazeb2.com';
-    const region = config && config.region ? String(config.region).trim() : 'us-west-002';
+    const endpoint = config && config.endpoint ? String(config.endpoint).trim() : null;
+    const region = config && config.region ? String(config.region).trim() : null;
 
-    // Check if B2 configuration is provided
-    if (keyId && applicationKey && bucketName) {
+    // Check if B2 configuration is completely provided
+    if (keyId && applicationKey && bucketName && endpoint && region) {
       this.endpoint = endpoint;
-      
+
       let requestHandler;
       try {
         const { NodeHttpHandler } = require('@smithy/node-http-handler');
