@@ -3,7 +3,6 @@ const {
   platformLogin,
   platformMe,
   platformLogout,
-  updatePlatformProfile,
 } = require('../controller/platform-auth.controller');
 const { getDashboardSummary } = require('../controller/platform-dashboard.controller');
 const {
@@ -93,7 +92,6 @@ module.exports = function platformRoutes(fastify, _opts, done) {
 
   // Protected platform routes
   fastify.get('/auth/me', { preHandler: requirePlatformAdmin }, platformMe);
-  fastify.patch('/auth/me', { preHandler: requirePlatformAdmin }, updatePlatformProfile);
   fastify.post('/auth/logout', { preHandler: requirePlatformAdmin }, platformLogout);
 
   fastify.get('/dashboard/summary', { preHandler: requirePlatformAdmin }, getDashboardSummary);

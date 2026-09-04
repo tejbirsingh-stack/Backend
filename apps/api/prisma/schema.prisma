@@ -1070,9 +1070,6 @@ model PlatformAdmin {
   name                String?   @db.VarChar(100)
   passwordHash        String    @db.VarChar(255)
   status              String    @default("active") @db.VarChar(50) // active | inactive | suspended
-  mfaEnabled          Boolean   @default(true) @map("mfa_enabled")
-  emailOTP            String?   @map("email_otp") @db.VarChar(10)
-  emailOtpExpiresAt   DateTime? @map("email_otp_expires_at") @db.Timestamptz(6)
   allowedIps          String?   @map("allowed_ips") @db.Text
   failedLoginAttempts Int       @default(0)
   lockoutUntil        DateTime? @db.Timestamptz(6)
@@ -1347,7 +1344,6 @@ model GlobalAdminSetting {
   ssoDomain             String?  @map("sso_domain") @db.VarChar(255)
   sessionTimeoutDays    Int      @default(30) @map("session_timeout_days")
   contentSecurityPolicy String   @default("*.noahcloud.ai, localhost") @map("content_security_policy") @db.Text
-  platformMfaRequired           Boolean  @default(true) @map("platform_mfa_required")
   platformIpRestrictionEnabled Boolean  @default(false) @map("platform_ip_restriction_enabled")
   platformAllowedIps            String?  @map("platform_allowed_ips") @db.Text
   createdAt             DateTime @default(now()) @db.Timestamptz(6)

@@ -31,7 +31,6 @@ async function getOrCreateGlobalSettings() {
         ssoDomain: null,
         sessionTimeoutDays: 30,
         contentSecurityPolicy: JSON.stringify(['noahcloud.ai', 'localhost']),
-        platformMfaRequired: true,
         platformIpRestrictionEnabled: false,
         platformAllowedIps: '127.0.0.1, ::1',
       },
@@ -51,7 +50,6 @@ module.exports.getGlobalSecuritySettings = async (request, reply) => {
         ssoDomain: settings.ssoDomain || '',
         sessionTimeoutDays: Number(settings.sessionTimeoutDays) || 30,
         contentSecurityPolicy: settings.contentSecurityPolicy || JSON.stringify(['noahcloud.ai', 'localhost']),
-        platformMfaRequired: settings.platformMfaRequired !== undefined ? Boolean(settings.platformMfaRequired) : true,
         platformIpRestrictionEnabled: Boolean(settings.platformIpRestrictionEnabled),
         platformAllowedIps: settings.platformAllowedIps || '127.0.0.1, ::1',
         updatedAt: settings.updatedAt,
@@ -74,7 +72,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
       ssoDomain,
       sessionTimeoutDays,
       contentSecurityPolicy,
-      platformMfaRequired,
       platformIpRestrictionEnabled,
       platformAllowedIps,
     } = request.body || {};
@@ -90,9 +87,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
     }
     if (contentSecurityPolicy !== undefined) {
       updateData.contentSecurityPolicy = normalizeCspToJson(contentSecurityPolicy);
-    }
-    if (typeof platformMfaRequired === 'boolean') {
-      updateData.platformMfaRequired = platformMfaRequired;
     }
     if (typeof platformIpRestrictionEnabled === 'boolean') {
       updateData.platformIpRestrictionEnabled = platformIpRestrictionEnabled;
@@ -115,7 +109,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
           ssoDomain: ssoDomain || null,
           sessionTimeoutDays: parseInt(sessionTimeoutDays || '30', 10),
           contentSecurityPolicy: normalizeCspToJson(contentSecurityPolicy),
-          platformMfaRequired: platformMfaRequired !== undefined ? Boolean(platformMfaRequired) : true,
           platformIpRestrictionEnabled: Boolean(platformIpRestrictionEnabled),
           platformAllowedIps: platformAllowedIps || '127.0.0.1, ::1',
         },
@@ -145,7 +138,6 @@ module.exports.updateGlobalSecuritySettings = async (request, reply) => {
         ssoDomain: updated.ssoDomain || '',
         sessionTimeoutDays: Number(updated.sessionTimeoutDays) || 30,
         contentSecurityPolicy: updated.contentSecurityPolicy || JSON.stringify(['noahcloud.ai', 'localhost']),
-        platformMfaRequired: updated.platformMfaRequired !== undefined ? Boolean(updated.platformMfaRequired) : true,
         platformIpRestrictionEnabled: Boolean(updated.platformIpRestrictionEnabled),
         platformAllowedIps: updated.platformAllowedIps || '127.0.0.1, ::1',
         updatedAt: updated.updatedAt,
