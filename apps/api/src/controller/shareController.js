@@ -644,6 +644,10 @@ async function validateShareToken(req, reply) {
     const durationVal = techSpecs.durationSeconds || techSpecs.duration || customProps.durationSeconds || customProps.duration;
     const fileSizeVal = Number(originalFile?.sizeBytes || asset?.fileSize || 0);
 
+    // Only expose the custom link name for public link-mode shares.
+    // Private links and email-mode invites do not surface the name to external viewers.
+    const isPublicLinkMode = shareLink.visibility === 'public' && shareLink.mode === 'link';
+
     return reply.send({
       valid: true,
       requiresPassword: Boolean(shareLink.passwordHash),
@@ -651,6 +655,7 @@ async function validateShareToken(req, reply) {
       expiresAt: shareLink.expiresAt,
       visibility: shareLink.visibility,
       mode: shareLink.mode,
+      ...(isPublicLinkMode && shareLink.name ? { linkName: shareLink.name } : {}),
       branding,
       assetMeta: {
         id: asset ? asset.id : shareLink.assetId,
