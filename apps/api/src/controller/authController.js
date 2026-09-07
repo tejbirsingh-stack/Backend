@@ -887,6 +887,28 @@ module.exports.registerRole = async (request, reply) => {
       }
     }
 
+    // SECURITY: Role Hierarchy Guard (Admin can only invite Editor and Viewer, not Admin)
+    if (normalizedRole === "admin") {
+      const allowedRolesForAdmin = ["editor", "viewer"];
+      if (!allowedRolesForAdmin.includes(normalizedTargetRole)) {
+        console.warn(`[Privilege Escalation Prevention] Admin ${request.user.id} attempted to assign role ${roleObj.name} to ${normalizedEmail}`);
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Admins can only invite Editor and Viewer users.",
+        });
+      }
+    }
+
+    // SECURITY: Super Admin cannot invite other Super Admins (already handled above, but explicit check)
+    if (normalizedRole === "superadmin" && normalizedTargetRole === "superadmin") {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Access denied. Super Admins cannot invite other Super Admins.",
+      });
+    }
+
     // 6. Save ONLY email, roleId, role name, and orgId to the database
     const user = await request.server.prisma.user.create({
       data: {

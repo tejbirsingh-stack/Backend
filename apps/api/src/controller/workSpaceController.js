@@ -2496,10 +2496,21 @@ module.exports.updateFolder = async (request, reply) => {
 
         const folderToUpdate = await prisma.folder.findUnique({
             where: { id },
-            select: { workspaceId: true, name: true }
+            include: { workspace: true }
         });
         if (!folderToUpdate) {
             return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        // Security: Verify the folder belongs to the user's organization
+        const userOrgId = request.user?.orgId;
+        const folderOrgId = folderToUpdate.workspace?.orgId;
+        if (folderOrgId && userOrgId && folderOrgId !== userOrgId) {
+            console.warn(`[IDOR Prevention] User ${request.user.id} (org: ${userOrgId}) attempted to update folder ${id} belonging to org ${folderOrgId}`);
+            return reply.code(403).send({
+                success: false,
+                message: 'You do not have permission to modify folders from another organization.'
+            });
         }
 
         if (folderToUpdate.name && folderToUpdate.name.trim().toLowerCase() === 'restore') {
@@ -2563,11 +2574,23 @@ module.exports.moveFolder = async (request, reply) => {
         }
 
         const folder = await prisma.folder.findFirst({
-            where: { id }
+            where: { id },
+            include: { workspace: true }
         });
 
         if (!folder) {
             return reply.code(404).send({ success: false, message: 'Folder not found.' });
+        }
+
+        // Security: Verify the folder belongs to the user's organization
+        const userOrgId = request.user?.orgId;
+        const folderOrgId = folder.workspace?.orgId;
+        if (folderOrgId && userOrgId && folderOrgId !== userOrgId) {
+            console.warn(`[IDOR Prevention] User ${request.user.id} (org: ${userOrgId}) attempted to move folder ${id} belonging to org ${folderOrgId}`);
+            return reply.code(403).send({
+                success: false,
+                message: 'You do not have permission to move folders from another organization.'
+            });
         }
 
         if (folder.name && folder.name.trim().toLowerCase() === 'restore') {
@@ -2926,6 +2949,17 @@ module.exports.deleteProject = async (request, reply) => {
         });
         if (!targetProject) {
             return reply.code(404).send({ success: false, message: 'Project not found.' });
+        }
+
+        // Security: Verify the project belongs to the user's organization
+        const userOrgId = liveUser?.orgId || request.user?.orgId;
+        const projectOrgId = targetProject.workspace?.orgId;
+        if (projectOrgId && userOrgId && projectOrgId !== userOrgId) {
+            console.warn(`[IDOR Prevention] User ${request.user.id} (org: ${userOrgId}) attempted to delete project ${id} belonging to org ${projectOrgId}`);
+            return reply.code(403).send({
+                success: false,
+                message: 'You do not have permission to delete projects from another organization.'
+            });
         }
 
         const projectName = targetProject?.name || 'Project';
@@ -3569,6 +3603,15 @@ module.exports.deleteWorkspace = async (request, reply) => {
             return reply.code(404).send({
                 success: false,
                 message: 'Workspace not found.'
+            });
+        }
+
+        // Security: Verify the workspace belongs to the user's organization
+        if (workspace.orgId && orgId && workspace.orgId !== orgId) {
+            console.warn(`[IDOR Prevention] User ${request.user.id} (org: ${orgId}) attempted to delete workspace ${id} belonging to org ${workspace.orgId}`);
+            return reply.code(403).send({
+                success: false,
+                message: 'You do not have permission to delete workspaces from another organization.'
             });
         }
 
