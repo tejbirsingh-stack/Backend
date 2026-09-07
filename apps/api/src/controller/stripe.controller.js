@@ -1352,6 +1352,34 @@ class StripeController {
 
       if (invoiceId && invoiceId !== 'latest' && invoiceId !== 'null' && invoiceId !== 'undefined') {
         stripeInvoice = await stripeService.retrieveInvoice(invoiceId).catch(() => null);
+        
+        // Security: Verify the invoice belongs to the authenticated user's organization
+        if (stripeInvoice) {
+          const invoiceCustomerId = typeof stripeInvoice.customer === 'object' ? stripeInvoice.customer?.id : stripeInvoice.customer;
+          const invoiceOrgId = stripeInvoice.metadata?.orgId;
+          
+          // Check 1: If org has stripeCustomerId, invoice must belong to that customer
+          if (org?.stripeCustomerId && invoiceCustomerId && invoiceCustomerId !== org.stripeCustomerId) {
+            console.warn(`[IDOR Prevention] User ${orgId} attempted to access invoice ${invoiceId} belonging to customer ${invoiceCustomerId}`);
+            return reply.code(403).send({ error: 'Unauthorized access to invoice' });
+          }
+          
+          // Check 2: If invoice has orgId in metadata, it must match the requesting org
+          if (invoiceOrgId && invoiceOrgId !== orgId) {
+            console.warn(`[IDOR Prevention] User ${orgId} attempted to access invoice ${invoiceId} belonging to org ${invoiceOrgId}`);
+            return reply.code(403).send({ error: 'Unauthorized access to invoice' });
+          }
+          
+          // Check 3: If org has no stripeCustomerId and invoice has no orgId metadata, deny access
+          // (can't verify ownership)
+          if (!org?.stripeCustomerId && !invoiceOrgId && invoiceCustomerId) {
+            console.warn(`[IDOR Prevention] User ${orgId} attempted to access invoice ${invoiceId} - cannot verify ownership`);
+            return reply.code(403).send({ error: 'Unauthorized access to invoice' });
+          }
+        } else {
+          // Invoice doesn't exist in Stripe - return 404 instead of falling through to other logic
+          return reply.code(404).send({ error: 'Invoice not found' });
+        }
       }
 
       if (!stripeInvoice && sessionId) {

@@ -808,6 +808,32 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       where: { id: filename },
       include: { files: true }
     });
+    
+    // Security: Verify the asset belongs to the user's organization or is explicitly shared
+    if (asset && request.user && asset.orgId) {
+      const userOrgId = request.user.orgId;
+      
+      if (asset.orgId !== userOrgId) {
+        // Check if asset is explicitly shared with the user
+        const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+          where: { assetId: asset.id, userId: request.user.id }
+        }) || await request.server.prisma.assetGroup.findFirst({
+          where: {
+            assetId: asset.id,
+            group: { members: { some: { userId: request.user.id } } }
+          }
+        });
+
+        // Check if asset is global media (accessible across organizations)
+        const isGlobalMedia = Boolean(asset.globalMedia);
+
+        if (!isExplicitlyShared && !isGlobalMedia) {
+          console.warn(`[IDOR Prevention] User ${request.user.id} (org: ${userOrgId}) attempted to stream asset ${asset.id} belonging to org ${asset.orgId}`);
+          return reply.code(403).send({ success: false, error: 'Access denied to this asset.' });
+        }
+      }
+    }
+    
     if (asset && asset.files.length > 0) {
       const wantOriginal = request.query?.original === 'true' || request.query?.type === 'original';
       const proxy = asset.files.find(f => f.fileClass === 'proxy' && Number(f.sizeBytes || 0) > 0);
@@ -1880,6 +1906,31 @@ module.exports.getMediaFile = async (request, reply) => {
       }
 
       if (fetchedAsset) {
+        // Security: Verify the asset belongs to the user's organization or is explicitly shared
+        if (request.user && fetchedAsset.orgId) {
+          const userOrgId = request.user.orgId;
+          
+          if (fetchedAsset.orgId !== userOrgId) {
+            // Check if asset is explicitly shared with the user
+            const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+              where: { assetId: fetchedAsset.id, userId: request.user.id }
+            }) || await request.server.prisma.assetGroup.findFirst({
+              where: {
+                assetId: fetchedAsset.id,
+                group: { members: { some: { userId: request.user.id } } }
+              }
+            });
+
+            // Check if asset is global media (accessible across organizations)
+            const isGlobalMedia = Boolean(fetchedAsset.globalMedia);
+
+            if (!isExplicitlyShared && !isGlobalMedia) {
+              console.warn(`[IDOR Prevention] User ${request.user.id} (org: ${userOrgId}) attempted to access asset ${fetchedAsset.id} belonging to org ${fetchedAsset.orgId}`);
+              return reply.code(403).send({ success: false, error: 'Access denied to this asset.' });
+            }
+          }
+        }
+
         // Access gate for private assets: user must have direct AssetUser access OR workspace access
         if (fetchedAsset.visibility === 'private' && request.user) {
           const { assertAssetOrWorkspaceAccess } = require('../services/workspace.service');

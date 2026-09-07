@@ -153,7 +153,18 @@ module.exports.saveMediaAnnotations = async (request, reply) => {
         if (data && data.text && data.text.trim().length > 0) {
             await (async () => {
                 try {
-                    const commentText = data.text;
+                    // Security: Escape HTML entities to prevent XSS in email notifications
+                    const escapeHtml = (text) => {
+                        const map = {
+                            '&': '&amp;',
+                            '<': '&lt;',
+                            '>': '&gt;',
+                            '"': '&quot;',
+                            "'": '&#039;'
+                        };
+                        return text.replace(/[&<>"']/g, (char) => map[char]);
+                    };
+                    const commentText = escapeHtml(data.text);
                     const commenter = await request.server.prisma.user.findUnique({ where: { id: userId }, select: { name: true } });
                     const video = await request.server.prisma.asset.findUnique({ 
                         where: { id: mediaId }, 

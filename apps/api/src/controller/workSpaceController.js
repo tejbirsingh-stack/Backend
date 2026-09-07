@@ -1718,6 +1718,27 @@ module.exports.deleteFolder = async (request, reply) => {
             include: { workspace: true }
         }).catch(() => null);
 
+        // Security: Verify the folder belongs to the user's organization
+        if (!targetFolder) {
+            return reply.code(404).send({
+                success: false,
+                error: 'NotFound',
+                message: 'Folder not found.'
+            });
+        }
+
+        const folderOrgId = targetFolder.workspace?.orgId;
+        const userOrgId = liveUser?.orgId || request.user?.orgId;
+
+        if (folderOrgId && userOrgId && folderOrgId !== userOrgId) {
+            console.warn(`[IDOR Prevention] User ${liveUser.id} (org: ${userOrgId}) attempted to delete folder ${id} belonging to org ${folderOrgId}`);
+            return reply.code(403).send({
+                success: false,
+                error: 'Forbidden',
+                message: 'You do not have permission to delete this folder.'
+            });
+        }
+
         if (targetFolder && targetFolder.name && targetFolder.name.trim().toLowerCase() === 'restore') {
             return reply.code(400).send({
                 success: false,
@@ -1844,6 +1865,25 @@ module.exports.deleteFolder = async (request, reply) => {
             }
 
             if (targetFolderIds.length > 0) {
+                // Security: Verify all target folders belong to the user's organization
+                const targetFolders = await prisma.folder.findMany({
+                    where: { id: { in: targetFolderIds } },
+                    include: { workspace: true }
+                }).catch(() => []);
+
+                const unauthorizedFolders = targetFolders.filter(f => 
+                    f.workspace?.orgId && f.workspace.orgId !== userOrgId
+                );
+
+                if (unauthorizedFolders.length > 0) {
+                    console.warn(`[IDOR Prevention] Super Admin ${liveUser.id} attempted to permanently delete folders from another organization: ${unauthorizedFolders.map(f => f.id).join(', ')}`);
+                    return reply.code(403).send({
+                        success: false,
+                        error: 'Forbidden',
+                        message: 'You do not have permission to delete folders from another organization.'
+                    });
+                }
+
                 await prisma.projectSource.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
                 await prisma.folderUser.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
                 await prisma.favorite.deleteMany({ where: { folderId: { in: targetFolderIds } } }).catch(() => null);
@@ -1972,6 +2012,25 @@ module.exports.deleteFolder = async (request, reply) => {
             if (!isWholeFolder && deleteFolderIds && deleteFolderIds.length > 0) {
                 const subfolderIdsToDelete = deleteFolderIds.filter(fId => fId !== id);
                 if (subfolderIdsToDelete.length > 0) {
+                    // Security: Verify all subfolders belong to the user's organization
+                    const subfolders = await prisma.folder.findMany({
+                        where: { id: { in: subfolderIdsToDelete } },
+                        include: { workspace: true }
+                    }).catch(() => []);
+
+                    const unauthorizedFolders = subfolders.filter(f => 
+                        f.workspace?.orgId && f.workspace.orgId !== userOrgId
+                    );
+
+                    if (unauthorizedFolders.length > 0) {
+                        console.warn(`[IDOR Prevention] User ${liveUser.id} attempted to delete subfolders from another organization: ${unauthorizedFolders.map(f => f.id).join(', ')}`);
+                        return reply.code(403).send({
+                            success: false,
+                            error: 'Forbidden',
+                            message: 'You do not have permission to delete some of the specified folders.'
+                        });
+                    }
+
                     await prisma.folder.deleteMany({ where: { id: { in: subfolderIdsToDelete } } }).catch(() => null);
                 }
             }

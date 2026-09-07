@@ -47,12 +47,25 @@ async function verifyGroupAccess(id, request) {
     roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
 
   // 1. SECURITY: Cross-Tenant Organization Isolation Guard
-  if (!isPlatformAdmin && group.orgId && callerOrgId && group.orgId !== callerOrgId) {
-    return {
-      allowed: false,
-      statusCode: 403,
-      message: "Access Denied: You do not have permission to access user groups from another organization."
-    };
+  if (!isPlatformAdmin) {
+    // If group has an orgId, user must have the same orgId
+    if (group.orgId && callerOrgId && group.orgId !== callerOrgId) {
+      console.warn(`[IDOR Prevention] User ${userId} (org: ${callerOrgId}) attempted to access group ${id} belonging to org ${group.orgId}`);
+      return {
+        allowed: false,
+        statusCode: 403,
+        message: "Access Denied: You do not have permission to access user groups from another organization."
+      };
+    }
+    // If group has an orgId but user doesn't, deny access
+    if (group.orgId && !callerOrgId) {
+      console.warn(`[IDOR Prevention] User ${userId} (no org) attempted to access group ${id} belonging to org ${group.orgId}`);
+      return {
+        allowed: false,
+        statusCode: 403,
+        message: "Access Denied: You must be associated with an organization to access this group."
+      };
+    }
   }
 
   // 2. SECURITY: IDOR Deletion & Modification Guard (Super Admin or Group Creator only)
