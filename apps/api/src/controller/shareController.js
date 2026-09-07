@@ -19,7 +19,10 @@ async function b2() { return getB2Storage(B2StorageService); }
 function calculateExpiry(expiresInDays, customExpiresAt) {
   if (customExpiresAt) {
     const d = new Date(customExpiresAt);
-    if (!isNaN(d.getTime())) return d;
+    if (!isNaN(d.getTime())) {
+      d.setUTCHours(23, 59, 59, 999);
+      return d;
+    }
   }
   const days = parseInt(expiresInDays, 10) || 7;
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
@@ -72,11 +75,12 @@ async function createShareLink(req, reply) {
     let finalExpiresInDays = expiresInDays;
     let finalCustomExpiresAt = customExpiresAt;
 
-    if (orgSettings.defaultExpiryDays) {
-      finalExpiresInDays = orgSettings.defaultExpiryDays;
-      finalCustomExpiresAt = undefined; // Force use of days if org setting exists
-    } else if (finalExpiresInDays === undefined && !finalCustomExpiresAt) {
-      finalExpiresInDays = 30; // ultimate fallback
+    if (finalExpiresInDays === undefined && !finalCustomExpiresAt) {
+      if (orgSettings.defaultExpiryDays) {
+        finalExpiresInDays = orgSettings.defaultExpiryDays;
+      } else {
+        finalExpiresInDays = 30; // ultimate fallback
+      }
     }
     const expiresAt = calculateExpiry(finalExpiresInDays, finalCustomExpiresAt);
 
