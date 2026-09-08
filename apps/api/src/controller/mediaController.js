@@ -808,11 +808,11 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       where: { id: filename },
       include: { files: true }
     });
-    
+
     // Security: Verify the asset belongs to the user's organization or is explicitly shared
     if (asset && request.user && asset.orgId) {
       const userOrgId = request.user.orgId;
-      
+
       if (asset.orgId !== userOrgId) {
         // Check if asset is explicitly shared with the user
         const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
@@ -857,6 +857,37 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
     if (file) {
       b2Key = file.filePath;
       assetId = file.assetId;
+
+      // Security: Verify the user has access to this asset
+      if (assetId && request.user) {
+        const asset = await request.server.prisma.asset.findUnique({
+          where: { id: assetId },
+          select: { orgId: true, globalMedia: true, uploadedByUserId: true }
+        });
+
+        if (asset && asset.orgId) {
+          const userOrgId = request.user.orgId;
+          const isOwner = asset.uploadedByUserId === request.user.id;
+          const isGlobalMedia = Boolean(asset.globalMedia);
+
+          // Deny if different org, not owner, and not global media
+          if (asset.orgId !== userOrgId && !isOwner && !isGlobalMedia) {
+            const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+              where: { assetId: asset.id, userId: request.user.id }
+            }) || await request.server.prisma.assetGroup.findFirst({
+              where: {
+                assetId: asset.id,
+                group: { members: { some: { userId: request.user.id } } }
+              }
+            });
+
+            if (!isExplicitlyShared) {
+              console.warn(`[IDOR Prevention] User ${request.user.id} attempted to access asset ${asset.id} via filename`);
+              return reply.code(403).send({ success: false, error: 'Access denied to this asset.' });
+            }
+          }
+        }
+      }
     } else if (filename.match(/_thumb\d+\.jpg$/)) {
       b2Key = filename;
     }
@@ -1909,7 +1940,7 @@ module.exports.getMediaFile = async (request, reply) => {
         // Security: Verify the asset belongs to the user's organization or is explicitly shared
         if (request.user && fetchedAsset.orgId) {
           const userOrgId = request.user.orgId;
-          
+
           if (fetchedAsset.orgId !== userOrgId) {
             // Check if asset is explicitly shared with the user
             const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
