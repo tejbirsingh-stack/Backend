@@ -10,18 +10,18 @@ async function b2() { return getB2Storage(B2StorageService); }
 
 //1. Get organizations
 module.exports.getOrganizations = async (request, reply) => {
-    try{
-      const orgs = await request.server.prisma.organization.findMany({
-        select : {
-          id: true,
-          name: true,
-        }
-      });
-      reply.send(orgs);
-    }catch (err){
-      request.log.error(err);
-      reply.status(500).send({ error: "Failed to fetch organizations" });
-    }
+  try {
+    const orgs = await request.server.prisma.organization.findMany({
+      select: {
+        id: true,
+        name: true,
+      }
+    });
+    reply.send(orgs);
+  } catch (err) {
+    request.log.error(err);
+    reply.status(500).send({ error: "Failed to fetch organizations" });
+  }
 };
 
 
@@ -33,15 +33,11 @@ module.exports.getSingleOrganization = async (request, reply) => {
       return reply.code(400).send({ error: 'Organization ID is required' });
     }
     const org = await request.server.prisma.organization.findUnique({
-      where: { id: orgId }
+      where: { id: orgId },
+      include: { settings: true }
     });
     if (!org) {
       return reply.code(404).send({ error: 'Organization not found' });
-    }
-    if (org.metadata && org.metadata.logoKey) {
-      if ((await b2()).isEnabled()) {
-        org.metadata.logoUrl = await (await b2()).getPresignedUrl(org.metadata.logoKey);
-      }
     }
     return reply.send(org);
   } catch (error) {
@@ -52,17 +48,17 @@ module.exports.getSingleOrganization = async (request, reply) => {
 
 //3. Create organization
 module.exports.createOrganization = async (request, reply) => {
-    reply.send({message: "Organization creation endpoint not yet implemented"});
+  reply.send({ message: "Organization creation endpoint not yet implemented" });
 };
 
 //4. Update Company Info
 module.exports.updateCompanyInfo = async (request, reply) => {
   try {
     const { id, name, website, industry, logoUrl, logoKey } = request.body;
-    
+
     // Fallback to the user's organization if ID not provided
     const targetOrgId = id || request.user?.orgId;
-    
+
     if (!targetOrgId) {
       return reply.code(400).send({ error: "Organization ID is required" });
     }
@@ -78,7 +74,7 @@ module.exports.updateCompanyInfo = async (request, reply) => {
     // Merge existing metadata with new updates
     const existingMetadata = (typeof org.metadata === 'string' ? JSON.parse(org.metadata) : org.metadata) || {};
     const updatedMetadata = { ...existingMetadata };
-    
+
     if (website !== undefined) updatedMetadata.website = website;
     if (industry !== undefined) updatedMetadata.industry = industry;
     if (logoUrl !== undefined) updatedMetadata.logoUrl = logoUrl;
@@ -158,7 +154,7 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
         logoKey: uploadedAsset.key,
         logoUrl: longLivedLogoUrl,
       },
-    }).catch(() => {});
+    }).catch(() => { });
 
     await logSuccess(ACTIVITY_NAME.COMPANY_LOGO_UPLOADED, `User uploaded new company logo for ${org.name}`, request);
     return reply.send({
