@@ -61,7 +61,7 @@ async function platformLogin(request, reply) {
       aud: 'noah-platform-admin',
     };
 
-    const token = await reply.jwtSign(payload, { expiresIn: '1d' });
+    const token = await reply.jwtSign(payload, { expiresIn: '15m' });
     await platformAuthService.createSession(
       admin.id,
       token,

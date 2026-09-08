@@ -46,7 +46,7 @@ const AUTH_OPTIONS = {
   // JWT options
   jwt: {
     accessTokenExpiry: config ? config.JWT_EXPIRES_IN : "15m", // dynamically linked to config
-    refreshTokenExpiry: "7d", // 7 days
+    refreshTokenExpiry: config ? config.REFRESH_TOKEN_EXPIRES_IN : "7d", // 7 days
   },
 
   // Session options
