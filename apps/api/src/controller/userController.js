@@ -525,6 +525,8 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
 
     // 1. Verify Super Admin or Admin role
     let currentUserRole = request.user?.role || "";
+    let currentUserOrgId = request.user?.orgId;
+    
     if (request.user?.id) {
       const liveUser = await request.server.prisma.user.findUnique({
         where: { id: request.user.id },
@@ -532,8 +534,10 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
       });
       if (liveUser && liveUser.roleRelation && liveUser.roleRelation.name) {
         currentUserRole = liveUser.roleRelation.name;
+        currentUserOrgId = liveUser.orgId;
       } else if (liveUser && liveUser.role) {
         currentUserRole = liveUser.role;
+        currentUserOrgId = liveUser.orgId;
       }
     }
     const normalizedRole = currentUserRole.toLowerCase().replace(/[_ -]+/g, "");
@@ -554,6 +558,23 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
       });
     }
 
+    // 2. Fetch target users to verify organization membership
+    const targetUsers = await request.server.prisma.user.findMany({
+      where: { id: { in: userIds } },
+      include: { roleRelation: true }
+    });
+
+    // 3. Verify all target users belong to the same organization as the requesting user
+    // Both Super Admins and regular Admins are restricted to their own organization
+    const crossOrgUsers = targetUsers.filter(u => u.orgId !== currentUserOrgId);
+    if (crossOrgUsers.length > 0) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Access denied. You can only modify users within your own organization.",
+      });
+    }
+
     if (action === 'delete') {
       // Super Admin or Admin can delete users
       if (normalizedRole !== "superadmin" && normalizedRole !== "admin") {
@@ -564,17 +585,13 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
         });
       }
 
-      // Fetch target users to prevent deleting self or other Super Admins
-      const targetUsers = await request.server.prisma.user.findMany({
-        where: { id: { in: userIds } },
-        include: { roleRelation: true }
-      });
-
       const safeUserIdsToDelete = targetUsers
         .filter((u) => {
           if (u.id === request.user.id) return false; // Prevent self deletion
           const rName = (u.roleRelation?.name || u.role || '').toLowerCase().replace(/[_ -]+/g, "");
           if (rName === 'superadmin') return false; // Prevent Super Admin deletion
+          // Verify organization membership (applies to both Super Admins and regular Admins)
+          if (u.orgId !== currentUserOrgId) return false;
           return true;
         })
         .map((u) => u.id);
@@ -597,15 +614,31 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
         message: `Successfully deleted ${safeUserIdsToDelete.length} user(s)`
       });
     } else {
+      // For active/inactive actions, filter by organization membership
+      const safeUserIdsToUpdate = targetUsers
+        .filter((u) => {
+          // Both Super Admins and regular Admins can only modify users in their own organization
+          return u.orgId === currentUserOrgId;
+        })
+        .map((u) => u.id);
+
+      if (safeUserIdsToUpdate.length === 0) {
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: "No valid users to update in your organization.",
+        });
+      }
+
       await request.server.prisma.user.updateMany({
-        where: { id: { in: userIds } },
+        where: { id: { in: safeUserIdsToUpdate } },
         data: { status: action === 'active' ? 'active' : (action === 'inactive' ? 'inactive' : action) }
       });
 
-      logSuccess(ACTIVITY_NAME.USERS_BULK_UPDATED, `Admin updated status of ${userIds.length} user(s) to ${action}`, request);
+      logSuccess(ACTIVITY_NAME.USERS_BULK_UPDATED, `Admin updated status of ${safeUserIdsToUpdate.length} user(s) to ${action}`, request);
       return reply.send({
         success: true,
-        message: `Successfully updated ${userIds.length} user(s)`
+        message: `Successfully updated ${safeUserIdsToUpdate.length} user(s)`
       });
     }
 
