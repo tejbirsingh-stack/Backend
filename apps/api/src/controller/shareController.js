@@ -53,6 +53,7 @@ async function createShareLink(req, reply) {
     expiresInDays,
     expiresAt: customExpiresAt,
     permissions,
+    requirePassword,
   } = req.body || {};
 
   try {
@@ -117,7 +118,9 @@ async function createShareLink(req, reply) {
     let finalPassword = null;
 
     if (visibility !== 'public') {
-      if (password && typeof password === 'string' && password.trim().length > 0) {
+      if (requirePassword === false) {
+        finalPassword = null; // Explicitly disabled
+      } else if (password && typeof password === 'string' && password.trim().length > 0) {
         finalPassword = password.trim();
       } else if (orgSettings.requirePasswordDefault) {
         finalPassword = crypto.randomBytes(4).toString('hex'); // auto-generate if missing and org requires password
@@ -556,10 +559,10 @@ async function validateShareToken(req, reply) {
     // Share link view notification logic with privacy toggle check
     let shouldNotify = true;
     let viewerName = 'Someone';
-    
+
     if (req.user) {
       viewerName = req.user.name || req.user.email || 'A user';
-      const viewerDb = await prisma.user.findUnique({ where: { id: req.user.id }});
+      const viewerDb = await prisma.user.findUnique({ where: { id: req.user.id } });
       if (viewerDb && viewerDb.shareLinkActivityEnabled === false) {
         shouldNotify = false;
       }
@@ -584,17 +587,15 @@ async function validateShareToken(req, reply) {
       }
     }
 
-    // Build a permanent publicly-accessible logo URL via the proxy endpoint
-    // This works even with a private B2 bucket — no presigned URLs needed
-    const reqOrigin = req.headers.origin || process.env.WEBHOOK_HOST || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
-    const publicApiBase = (process.env.WEBHOOK_HOST || process.env.APP_URL || reqOrigin).replace(/\/$/, '');
-    const useProxyUrl = !publicApiBase.includes('localhost');
+    // Build a permanent publicly-accessible logo URL via the proxy endpoint.
+    // Use FRONTEND_URL so the URL is always browser-accessible:
+    //   - On localhost:  http://localhost:3002/api/... (vite proxies /api to backend)
+    //   - On production: https://app.noahcloud.ai/api/...
+    const publicApiBase = (process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3002').replace(/\/$/, '');
 
     let logoUrl = null;
     if (shareLink.orgId) {
-      logoUrl = useProxyUrl
-        ? `${publicApiBase}/api/public/branding/logo/${shareLink.orgId}`
-        : (shareLink.organization?.metadata?.logoUrl || null);
+      logoUrl = `${publicApiBase}/api/public/branding/logo/${shareLink.orgId}`;
     }
 
     let branding = null;
@@ -604,9 +605,7 @@ async function validateShareToken(req, reply) {
       });
       if (dbBranding) {
         // Use proxy URL for logo — works with private B2 bucket (streams image via server)
-        const bLogoUrl = useProxyUrl
-          ? `${publicApiBase}/api/public/branding/logo/${shareLink.orgId}`
-          : (dbBranding.logoUrl || logoUrl || null);
+        const bLogoUrl = `${publicApiBase}/api/public/branding/logo/${shareLink.orgId}`;
 
         // headerImageUrl still uses presigned URL (header images are for guest page background, not email)
         let bHeaderImageUrl = dbBranding.headerImageUrl;
@@ -751,14 +750,29 @@ async function getShareStream(req, reply) {
     }
 
     const isDownload = req.query?.download === 'true';
+    const wantOriginal = req.query?.original === 'true';
+    const isVideoOrAudio = asset.type === 'video' || asset.type === 'audio';
 
+    // Strictly enforce download permissions for external share links
     if (isDownload) {
+      if (!shareLink.permissions?.download && !shareLink.permissions?.downloadProxy) {
+        return reply.code(403).send({ error: 'Download permission denied' });
+      }
+
+      if (wantOriginal && !shareLink.permissions?.download) {
+        return reply.code(403).send({ error: 'Permission to download original file denied' });
+      }
+
+      if (!wantOriginal && !shareLink.permissions?.downloadProxy) {
+        return reply.code(403).send({ error: 'Permission to download proxy file denied' });
+      }
+
       let shouldNotify = true;
       let viewerName = 'Someone';
-      
+
       if (req.user) {
         viewerName = req.user.name || req.user.email || 'A user';
-        const viewerDb = await prisma.user.findUnique({ where: { id: req.user.id }});
+        const viewerDb = await prisma.user.findUnique({ where: { id: req.user.id } });
         if (viewerDb && viewerDb.shareLinkActivityEnabled === false) {
           shouldNotify = false;
         }
@@ -784,7 +798,12 @@ async function getShareStream(req, reply) {
       }
     }
 
-    return await handleMediaRedirectOrServe(req, reply, asset.id, isDownload);
+    // Determine if we should prevent falling back to the original file
+    // If it's a video/audio, and the user does NOT have permission to download the original,
+    // we should enforce strictProxy to ensure they NEVER receive the original uncompressed file.
+    const strictProxy = isVideoOrAudio && !wantOriginal && !shareLink.permissions?.download;
+
+    return await handleMediaRedirectOrServe(req, reply, asset.id, isDownload, strictProxy);
   } catch (error) {
     req.log.error(error);
     return reply.code(500).send({ error: 'Stream failed', message: error.message });

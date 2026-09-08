@@ -798,7 +798,7 @@ async function serveMediaFile(request, reply, filePath, options = {}) {
   return reply.send(fs.createReadStream(targetFilePath));
 }
 
-async function handleMediaRedirectOrServe(request, reply, filename, download = false) {
+async function handleMediaRedirectOrServe(request, reply, filename, download = false, strictProxy = false) {
   let b2Key = null;
   let assetId = null;
 
@@ -841,7 +841,13 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       if (wantOriginal && original) {
         b2Key = original.filePath;
       } else {
-        b2Key = proxy ? proxy.filePath : original?.filePath;
+        if (proxy) {
+          b2Key = proxy.filePath;
+        } else if (!strictProxy) {
+          b2Key = original?.filePath;
+        } else {
+          b2Key = null; // Enforce strict proxy: do not fall back to original
+        }
       }
     }
   } else {
@@ -860,6 +866,10 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
     } else if (filename.match(/_thumb\d+\.jpg$/)) {
       b2Key = filename;
     }
+  }
+
+  if (!b2Key && !filename) {
+    return reply.code(404).send({ error: 'File not found or proxy unavailable' });
   }
 
   let targetExt = path.extname(b2Key || filename || "").toLowerCase().replace(".", "");
@@ -2085,6 +2095,7 @@ module.exports.getMediaFile = async (request, reply) => {
             transcodingStatus: transcodeJob?.status || "completed",
             compressionStatus: transcodeJob?.status || "completed",
             effectivePermissions: effectivePermissions || undefined,
+            orgId: fetchedAsset.orgId || null,
           }
         });
       }
