@@ -2,6 +2,7 @@ const {
   getMediaAssets,
   searchMediaAssets,
   fileStreamPreview,
+  generateSignedStreamUrl,
   getThumbnail,
   downloadFile,
   softDelete,
@@ -63,7 +64,10 @@ module.exports = function (fastify, opts, done) {
   fastify.get("/search", canView, searchMediaAssets);
 
   //4. Stream file for preview/playback
-  fastify.get("/:filename/stream", fileStreamPreview);
+  fastify.get("/:filename/stream", { preHandler: [optionalAuthenticate] }, fileStreamPreview);
+
+  // 4c. Generate signed URL for streaming (requires authentication)
+  fastify.get("/:id/signed-stream", { preHandler: [authenticate] }, generateSignedStreamUrl);
 
   // 4b. Stream thumbnail image directly by asset ID
   fastify.get("/:id/thumbnail", getThumbnail);

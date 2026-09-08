@@ -12,6 +12,7 @@ const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../
 const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
+const { generateSignedUrl, verifySignedUrl } = require('../utils/signedUrlUtils');
 
 const { Queue } = require("bullmq");
 const Redis = require("ioredis");
@@ -1286,6 +1287,10 @@ module.exports.fileStreamPreview = async (request, reply) => {
   try {
     const { filename } = request.params;
 
+    // Check for signed URL parameters (expires and signature)
+    const { expires, signature } = request.query;
+    const hasSignedUrl = expires && signature;
+
     // Validate Stream Token if provided in query parameters (e.g. ?token=... or ?streamToken=...)
     const token = request.query?.token || request.query?.streamToken;
     if (token) {
@@ -1300,11 +1305,97 @@ module.exports.fileStreamPreview = async (request, reply) => {
       }
     }
 
+    // Verify signed URL if provided
+    if (hasSignedUrl && !request.user) {
+      const isValid = verifySignedUrl(filename, expires, signature);
+      if (!isValid) {
+        return reply.code(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Invalid or expired signed URL",
+        });
+      }
+      // Signed URL is valid, allow access without user auth
+    } else if (!request.user && !hasSignedUrl && !token) {
+      // No authentication method provided
+      return reply.code(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
+    }
+
     return await handleMediaRedirectOrServe(request, reply, filename, false);
   } catch (error) {
     return reply.code(500).send({
       success: false,
       error: "Failed to stream file",
+      message: error.message,
+    });
+  }
+};
+
+//4c. Generate signed URL for media streaming (requires authentication)
+module.exports.generateSignedStreamUrl = async (request, reply) => {
+  try {
+    const { id } = request.params;
+
+    if (!request.user) {
+      return reply.code(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
+    }
+
+    // Verify user has access to this asset
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id },
+      select: { orgId: true, globalMedia: true }
+    });
+
+    if (!asset) {
+      return reply.code(404).send({
+        success: false,
+        error: "Asset not found",
+      });
+    }
+
+    // Check access
+    if (asset.orgId && asset.orgId !== request.user.orgId) {
+      const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+        where: { assetId: id, userId: request.user.id }
+      }) || await request.server.prisma.assetGroup.findFirst({
+        where: {
+          assetId: id,
+          group: { members: { some: { userId: request.user.id } } }
+        }
+      });
+
+      const isGlobalMedia = Boolean(asset.globalMedia);
+
+      if (!isExplicitlyShared && !isGlobalMedia) {
+        return reply.code(403).send({
+          success: false,
+          error: "Access denied",
+          message: "You do not have access to this asset",
+        });
+      }
+    }
+
+    // Generate signed URL (expires in 5 minutes by default)
+    const expiresInMinutes = parseInt(request.query?.expiresInMinutes) || 5;
+    const signedUrl = generateSignedUrl(id, expiresInMinutes);
+
+    return reply.send({
+      success: true,
+      signedUrl,
+      expiresAt: Math.floor(Date.now() / 1000) + (expiresInMinutes * 60),
+    });
+  } catch (error) {
+    return reply.code(500).send({
+      success: false,
+      error: "Failed to generate signed URL",
       message: error.message,
     });
   }
