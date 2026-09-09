@@ -13,6 +13,7 @@ const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
 const { resolveOrgBranding } = require('../services/branding.service');
 const { getHubspotConfig } = require('../services/hubspotConfig');
 const { getOauthConfig } = require('../services/oauthConfig');
+const { checkPasswordResetRateLimit, getClientIp } = require('../utils/passwordResetRateLimiter');
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -1283,6 +1284,38 @@ module.exports.forgotPassword = async (request, reply) => {
     }
 
     const cleanEmail = email.trim().toLowerCase();
+    const clientIp = getClientIp(request);
+    const redisClient = request.server?.redis;
+
+    // Abuse protection & rate limiting: enforce per-email, cooldown, and per-IP limits
+    const rateLimitResult = await checkPasswordResetRateLimit({
+      email: cleanEmail,
+      ip: clientIp,
+      redisClient,
+    });
+
+    if (!rateLimitResult.allowed) {
+      if (rateLimitResult.retryAfter) {
+        reply.header('Retry-After', String(rateLimitResult.retryAfter));
+        reply.header('X-RateLimit-Reset', String(Math.floor(Date.now() / 1000) + rateLimitResult.retryAfter));
+      }
+      logError("FORGOT_PASSWORD_RATE_LIMITED", `Password reset rate limit exceeded: ${rateLimitResult.reason}`, request, {
+        email: cleanEmail,
+        ip: clientIp,
+        reason: rateLimitResult.reason,
+        retryAfter: rateLimitResult.retryAfter,
+      });
+      return reply.status(rateLimitResult.statusCode || 429).send({
+        statusCode: rateLimitResult.statusCode || 429,
+        error: "Too Many Requests",
+        message: rateLimitResult.message,
+        retryAfter: rateLimitResult.retryAfter,
+      });
+    }
+
+    if (rateLimitResult.remaining !== undefined) {
+      reply.header('X-RateLimit-Remaining', String(rateLimitResult.remaining));
+    }
 
     // Find the user by email in user table
     const user = await authService.findUserByEmail(cleanEmail);

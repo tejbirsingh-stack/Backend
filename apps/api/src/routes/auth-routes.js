@@ -49,7 +49,7 @@ async function routes(fastify, options) {
   //8. Forgot password route
   if (authController.forgotPassword) {
     fastify.post("/forgot-password", {
-      config: { rateLimit: { max: 10, timeWindow: "15 minutes" } }
+      config: { rateLimit: { max: 10, timeWindow: 15 * 60 * 1000 } }
     }, authController.forgotPassword);
   }
 
