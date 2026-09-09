@@ -275,8 +275,41 @@ module.exports.login = async (request, reply) => {
     // Find the user
     const user = await authService.findUserByEmail(normalizedEmail);
 
-    // Check if user exists and password is valid
-    if (!user || !(await authService.verifyPassword(user.passwordHash, password))) {
+    // Check if account is temporarily locked due to excessive failed attempts
+    if (user && user.lockoutUntil && new Date(user.lockoutUntil) > new Date()) {
+      const retryAfterSecs = Math.ceil((new Date(user.lockoutUntil).getTime() - Date.now()) / 1000);
+      const retryMinutes = Math.max(1, Math.ceil(retryAfterSecs / 60));
+      return reply.status(423).send({
+        success: false,
+        error: "Locked",
+        message: `Account temporarily locked due to too many failed login attempts. Try again in ${retryMinutes} minute(s).`,
+        retryAfter: retryAfterSecs
+      });
+    }
+
+    // Check if user exists
+    if (!user) {
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid email or password",
+      });
+    }
+
+    // Verify password and record failure if invalid
+    const isPasswordValid = await authService.verifyPassword(user.passwordHash, password);
+    if (!isPasswordValid) {
+      const updatedUser = await authService.recordLoginFailure(user);
+      if (updatedUser.lockoutUntil && new Date(updatedUser.lockoutUntil) > new Date()) {
+        const retryAfterSecs = Math.ceil((new Date(updatedUser.lockoutUntil).getTime() - Date.now()) / 1000);
+        const retryMinutes = Math.max(1, Math.ceil(retryAfterSecs / 60));
+        return reply.status(423).send({
+          success: false,
+          error: "Locked",
+          message: `Account temporarily locked due to too many failed login attempts. Try again in ${retryMinutes} minute(s).`,
+          retryAfter: retryAfterSecs
+        });
+      }
       return reply.status(401).send({
         success: false,
         error: "Unauthorized",
@@ -422,12 +455,14 @@ module.exports.login = async (request, reply) => {
       token
     );
 
-    // Update last login and activity timestamps
+    // Update last login, activity timestamps, and reset failed login counter
     await request.server.prisma.user.update({
       where: { id: user.id },
       data: {
         lastLoginAt: new Date(),
         lastActiveAt: new Date(),
+        failedLoginAttempts: 0,
+        lockoutUntil: null,
       },
     });
 
@@ -875,21 +910,22 @@ module.exports.registerRole = async (request, reply) => {
       });
     }
 
-    // SECURITY: Privilege Escalation Guard (Prevent non-Super Admin from assigning Super Admin role)
     const normalizedTargetRole = (roleObj.name || "").toLowerCase().replace(/[_ -]+/g, "");
-    if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
-      if (normalizedRole !== "superadmin" && normalizedRole !== "platformadmin") {
+
+    // SECURITY: Disallow assigning Platform Admin role
+    if (normalizedTargetRole === "platformadmin" || normalizedTargetRole === "platform_admin") {
+      if (normalizedRole !== "platformadmin") {
         return reply.status(403).send({
           success: false,
           error: "Forbidden",
-          message: "Access denied. Only Super Admins can assign the Super Admin role.",
+          message: "Access denied. Cannot assign Platform Admin role.",
         });
       }
     }
 
-    // SECURITY: Role Hierarchy Guard (Admin can only invite Editor and Viewer, not Admin)
+    // SECURITY: Role Hierarchy Guard (Admin can only invite Editor and Viewer, not Admin or Super Admin)
     if (normalizedRole === "admin") {
-      const allowedRolesForAdmin = ["editor", "viewer"];
+      const allowedRolesForAdmin = ["editor", "viewer", "collaborator"];
       if (!allowedRolesForAdmin.includes(normalizedTargetRole)) {
         console.warn(`[Privilege Escalation Prevention] Admin ${request.user.id} attempted to assign role ${roleObj.name} to ${normalizedEmail}`);
         return reply.status(403).send({
@@ -900,13 +936,24 @@ module.exports.registerRole = async (request, reply) => {
       }
     }
 
-    // SECURITY: Super Admin cannot invite other Super Admins (already handled above, but explicit check)
-    if (normalizedRole === "superadmin" && normalizedTargetRole === "superadmin") {
-      return reply.status(403).send({
-        success: false,
-        error: "Forbidden",
-        message: "Access denied. Super Admins cannot invite other Super Admins.",
-      });
+    // SECURITY: Super Admin cannot invite other Super Admins
+    if (normalizedRole === "superadmin") {
+      if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Super Admins cannot invite other Super Admins.",
+        });
+      }
+
+      const allowedRolesForSuperAdmin = ["admin", "editor", "viewer", "collaborator"];
+      if (!allowedRolesForSuperAdmin.includes(normalizedTargetRole)) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Super Admins can only invite Admin, Editor, and Viewer users.",
+        });
+      }
     }
 
     // 6. Save ONLY email, roleId, role name, and orgId to the database

@@ -179,6 +179,8 @@ class AuthService {
         avatarUrl: true,
         shareLinkActivityEnabled: true,
         preferences: true,
+        failedLoginAttempts: true,
+        lockoutUntil: true,
         organization: {
           select: {
             id: true,
@@ -607,6 +609,34 @@ class AuthService {
     });
 
     return verificationToken.userId;
+  }
+
+  // Record a failed login attempt and apply temporary lockout after threshold
+  async recordLoginFailure(user) {
+    const lockoutExpired = user.lockoutUntil && new Date(user.lockoutUntil) <= new Date();
+    const currentAttempts = lockoutExpired ? 0 : (user.failedLoginAttempts || 0);
+    const attempts = currentAttempts + 1;
+    const data = { failedLoginAttempts: attempts };
+    if (attempts >= 5) {
+      data.lockoutUntil = new Date(Date.now() + 15 * 60 * 1000);
+    } else if (lockoutExpired) {
+      data.lockoutUntil = null;
+    }
+    return prisma.user.update({
+      where: { id: user.id },
+      data,
+    });
+  }
+
+  // Reset failed login attempts and clear lockout on successful login
+  async recordLoginSuccess(userId) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: {
+        failedLoginAttempts: 0,
+        lockoutUntil: null,
+      },
+    });
   }
 
   // Health check method to verify auth service functionality
