@@ -9,6 +9,8 @@ async function routes(fastify, options) {
   if (authController.sendSignupOtp) fastify.post("/send-signup-otp", authController.sendSignupOtp);
   if (authController.verifySignupOtp) fastify.post("/verify-signup-otp", authController.verifySignupOtp);
   if (authController.completeSignup) fastify.post("/complete-signup", authController.completeSignup);
+  if (authController.googleSignupInit) fastify.post("/google-signup-init", authController.googleSignupInit);
+  if (authController.microsoftSignupInit) fastify.post("/microsoft-signup-init", authController.microsoftSignupInit);
 
   //1. Login route
   if (authController.login) {
