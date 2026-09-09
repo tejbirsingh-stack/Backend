@@ -261,7 +261,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                 ).catch(err => console.error('Failed to create in-app notification:', err));
 
                 if (sendInviteEmail) {
-                    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+                    const frontendUrl = request.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
                     const appUrl = `${frontendUrl}`;
                     if (isGuest) {
                         const orgNameObj = await prisma.organization.findUnique({ where: { id: orgId }, select: { name: true } });

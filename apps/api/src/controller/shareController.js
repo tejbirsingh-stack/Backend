@@ -653,6 +653,7 @@ async function validateShareToken(req, reply) {
     }
 
     const originalFile = asset?.files?.find(f => f.fileClass === 'original');
+    const proxyFile = asset?.files?.find(f => f.fileClass === 'proxy');
     const techSpecs = asset?.metadata?.technicalSpecs || {};
     const customProps = asset?.metadata?.customProperties || {};
     const width = techSpecs.width || customProps.width;
@@ -660,7 +661,14 @@ async function validateShareToken(req, reply) {
     const resTier = (width && height) ? (Math.max(width, height) >= 3840 ? '4K' : Math.max(width, height) >= 2560 ? '2K' : Math.max(width, height) >= 1920 ? '1080p' : Math.max(width, height) >= 1280 ? '720p' : 'SD') : undefined;
     const fpsVal = techSpecs.fps || customProps.fps;
     const durationVal = techSpecs.durationSeconds || techSpecs.duration || customProps.durationSeconds || customProps.duration;
-    const fileSizeVal = Number(originalFile?.sizeBytes || asset?.fileSize || 0);
+
+    let fileSizeVal = Number(originalFile?.sizeBytes || asset?.fileSize || 0);
+    let finalMimeType = originalFile?.mimeType;
+
+    if (asset?.type === 'video' && proxyFile && Number(proxyFile.sizeBytes) > 0) {
+      fileSizeVal = Number(proxyFile.sizeBytes);
+      finalMimeType = proxyFile.mimeType || finalMimeType;
+    }
 
     // Only expose the custom link name for public link-mode shares.
     // Private links and email-mode invites do not surface the name to external viewers.
@@ -686,7 +694,7 @@ async function validateShareToken(req, reply) {
         title: asset ? (asset.originalName || asset.title) : 'Shared Asset',
         fileType: asset ? (asset.type || asset.fileType || 'video') : 'video',
         type: asset ? (asset.type || 'video') : 'video',
-        mimeType: asset ? asset.mimeType : undefined,
+        mimeType: finalMimeType || (asset ? asset.mimeType : undefined),
         fileSize: fileSizeVal,
         file_size: fileSizeVal,
         resolution_tier: resTier,
