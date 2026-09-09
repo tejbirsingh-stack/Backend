@@ -2340,6 +2340,257 @@ module.exports.verifySignupOtp = async (request, reply) => {
 };
 
 // Complete Signup Handler (Saves to DB & Syncs to HubSpot)
+
+// Google Signup Initialization (creates pending user to align with email flow)
+module.exports.googleSignupInit = async (request, reply) => {
+  try {
+    const { idToken } = request.body || {};
+    if (!idToken) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Google idToken is required",
+      });
+    }
+
+    const { googleClientId } = await getOauthConfig();
+    const googleClient = new OAuth2Client(googleClientId);
+
+    let email, name;
+
+    // Verify token
+    try {
+      if (idToken.startsWith('eyJ') || idToken.split('.').length === 3) {
+        try {
+          const ticket = await googleClient.verifyIdToken({
+            idToken: idToken,
+            audience: googleClientId,
+          });
+          const payload = ticket.getPayload();
+          email = payload.email;
+          name = payload.name;
+        } catch (jwtErr) {
+          console.warn("verifyIdToken failed, falling back to userinfo API:", jwtErr.message);
+        }
+      }
+
+      if (!email) {
+        const googleResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${idToken}` }
+        });
+        if (!googleResponse.ok) {
+          throw new Error("INVALID_TOKEN: Failed to verify token with Google");
+        }
+        const payload = await googleResponse.json();
+        email = payload?.email;
+        name = payload?.name;
+      }
+
+      if (!email) {
+        throw new Error("INVALID_TOKEN: Could not extract email from Google token");
+      }
+    } catch (authError) {
+      console.error("Google Token Verification Error:", authError);
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired Google token",
+        details: authError.message
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email already registered with password or active status
+    const existingUser = await authService.findUserByEmail(normalizedEmail);
+    if (existingUser && (existingUser.passwordHash || existingUser.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    let targetOrgId = null;
+
+    if (existingUser) {
+      await request.server.prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          emailVerified: true,
+          failedLoginAttempts: 0,
+        },
+      });
+      targetOrgId = existingUser.orgId;
+    } else {
+      // Create a new organization for pending registration
+      const derivedOrgName = formatDomainToOrgName(normalizedEmail);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
+      const pendingOrg = await request.server.prisma.organization.create({
+        data: {
+          name: derivedOrgName,
+          slug: `pending-${Date.now()}`,
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: false,
+        },
+        include: { currentPlan: true },
+      });
+      await request.server.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: name || normalizedEmail.split('@')[0],
+          emailVerified: true,
+          failedLoginAttempts: 0,
+          status: "pending_signup",
+          orgId: pendingOrg.id,
+        },
+      });
+      targetOrgId = pendingOrg.id;
+    }
+
+    return reply.send({
+      success: true,
+      message: "SSO Signup initialized successfully",
+      email: normalizedEmail,
+      name: name,
+    });
+  } catch (error) {
+    console.error("SSO Signup Init Error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "An unexpected error occurred during signup initialization",
+    });
+  }
+};
+
+
+// Microsoft Signup Initialization (creates pending user to align with email flow)
+module.exports.microsoftSignupInit = async (request, reply) => {
+  try {
+    const { idToken } = request.body || {};
+    if (!idToken) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Microsoft idToken is required",
+      });
+    }
+
+    const { microsoftClientId: clientId } = await getOauthConfig();
+    const jwksClient = require('jwks-rsa');
+    const jwt = require('jsonwebtoken');
+
+    const client = jwksClient({
+      jwksUri: "https://login.microsoftonline.com/common/discovery/v2.0/keys",
+    });
+
+    function getKey(header, callback) {
+      client.getSigningKey(header.kid, function (err, key) {
+        if (err) {
+          callback(err, null);
+        } else {
+          const signingKey = key.publicKey || key.rsaPublicKey;
+          callback(null, signingKey);
+        }
+      });
+    }
+
+    let decodedPayload;
+    try {
+      decodedPayload = await new Promise((resolve, reject) => {
+        jwt.verify(
+          idToken,
+          getKey,
+          { audience: clientId },
+          (err, decoded) => {
+            if (err) reject(err);
+            resolve(decoded);
+          }
+        );
+      });
+    } catch (authError) {
+      console.error("Microsoft Token Verification Error:", authError);
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired Microsoft token",
+        details: authError.message
+      });
+    }
+
+    const email = (decodedPayload.preferred_username || decodedPayload.email || decodedPayload.upn).toLowerCase().trim();
+    const name = decodedPayload.name || email.split("@")[0];
+
+    const normalizedEmail = email;
+
+    // Check if email already registered with password or active status
+    const existingUser = await authService.findUserByEmail(normalizedEmail);
+    if (existingUser && (existingUser.passwordHash || existingUser.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    let targetOrgId = null;
+
+    if (existingUser) {
+      await request.server.prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          emailVerified: true,
+          failedLoginAttempts: 0,
+        },
+      });
+      targetOrgId = existingUser.orgId;
+    } else {
+      // Create a new organization for pending registration
+      const derivedOrgName = formatDomainToOrgName(normalizedEmail);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
+      const pendingOrg = await request.server.prisma.organization.create({
+        data: {
+          name: derivedOrgName,
+          slug: `pending-${Date.now()}`,
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: false,
+        },
+        include: { currentPlan: true },
+      });
+      await request.server.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: name,
+          emailVerified: true,
+          failedLoginAttempts: 0,
+          status: "pending_signup",
+          orgId: pendingOrg.id,
+        },
+      });
+      targetOrgId = pendingOrg.id;
+    }
+
+    return reply.send({
+      success: true,
+      message: "SSO Signup initialized successfully",
+      email: normalizedEmail,
+      name: name,
+    });
+  } catch (error) {
+    console.error("SSO Signup Init Error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "An unexpected error occurred during signup initialization",
+    });
+  }
+};
+
 module.exports.completeSignup = async (request, reply) => {
   try {
     const {
