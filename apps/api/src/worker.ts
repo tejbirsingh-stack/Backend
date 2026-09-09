@@ -23,24 +23,36 @@ const redisConnection = new Redis({
   port: parseInt(process.env.REDIS_PORT || '6379', 10),
   password: process.env.REDIS_PASSWORD || undefined,
   maxRetriesPerRequest: null, // Required by BullMQ
+  tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
+});
+
+redisConnection.on('error', (err) => {
+  process.stdout.write(`[Worker] ✗ Redis error: ${err.message}\n`);
+});
+redisConnection.on('reconnecting', () => {
+  process.stdout.write(`[Worker] ⚠ Redis lost connection — reconnecting...\n`);
 });
 
 // @ts-ignore
 const prisma = require('./utils/prisma.js');
 
-console.log(' Noah Media Compression Worker is starting...');
+process.stdout.write(`[Worker] Noah Media Compression Worker started\n`);
 
 // 2. Define the unified job processor function
 const processCompressionJob = async (job: Job) => {
   const { assetId, key, preset } = job.data;
-  console.log(`[Job ${job.id}] Submitting compression job to Coconut for newAsset: ${assetId}, key: ${key}`);
+  process.stdout.write(`[Worker] ▶ Job ${job.id} received — assetId=${assetId}\n`);
 
   // Update database status to "processing" (New Architecture)
   if (assetId) {
-    await prisma.transcodeJob.updateMany({
-      where: { assetId: assetId, provider: "coconut" },
-      data: { status: 'processing' }
-    });
+    try {
+      await prisma.transcodeJob.updateMany({
+        where: { assetId: assetId, provider: "coconut" },
+        data: { status: 'processing' }
+      });
+    } catch (dbErr: any) {
+      process.stdout.write(`[Worker] ⚠ Job ${job.id} — Failed to set DB status to processing: ${dbErr.message}\n`);
+    }
   }
 
   try {
@@ -77,12 +89,12 @@ const processCompressionJob = async (job: Job) => {
       ? `${parts.join('/')}/${proxyFilename}`
       : proxyFilename;
 
-
     // Persist the deterministic compressed key in the Asset record
     await prisma.asset.update({
       where: { id: assetId },
       data: { compressedKey: compressedKey }
-    }).catch((err: any) => console.error(`[Job ${job.id}] Failed to save compressedKey:`, err.message));
+    }).catch((err: any) => process.stdout.write(`[Worker] ⚠ Job ${job.id} — Failed to save compressedKey: ${err.message}\n`));
+
     const outputUrl = await _b2.getPresignedPutUrl(compressedKey, 86400);
 
     let outputs: any = {};
@@ -152,28 +164,33 @@ const processCompressionJob = async (job: Job) => {
     }
 
     const jobData = await response.json();
-    console.log(`[Job ${job.id}] Successfully submitted to Coconut. Coconut Job ID: ${jobData.id}. Worker is now free!`);
+    process.stdout.write(`[Worker] ✓ Job ${job.id} submitted to Coconut (CoconutJobId=${jobData.id})\n`);
 
     if (assetId && jobData.id) {
       await prisma.transcodeJob.updateMany({
         where: { assetId: assetId, provider: "coconut" },
         data: { jobId: jobData.id.toString() }
-      }).catch((err: any) => console.error(`[Job ${job.id}] Failed to save Job ID to db:`, err.message));
+      }).catch((err: any) => process.stdout.write(`[Worker] ⚠ Job ${job.id} — Failed to save Coconut Job ID to DB: ${err.message}\n`));
     }
 
   } catch (error: any) {
-    console.error(`[Job ${job.id}] Error submitting to Coconut:`, error.message);
+    process.stdout.write(
+      `[Worker] ✗ Job ${job.id} FAILED\n` +
+      `  assetId=${assetId}\n` +
+      `  error=${error.message}\n` +
+      `  stack=${error.stack || 'n/a'}\n`
+    );
 
     if (assetId) {
       await prisma.transcodeJob.updateMany({
         where: { assetId: assetId, provider: "coconut" },
         data: { status: 'failed' }
-      }).catch((dbErr: any) => console.error('Failed to write failure status to transcode job:', dbErr));
+      }).catch((dbErr: any) => process.stdout.write(`[Worker] ⚠ Failed to write failure status to transcode job: ${dbErr.message}\n`));
 
       await prisma.asset.update({
         where: { id: assetId },
         data: { status: 'failed' }
-      }).catch((dbErr: any) => console.error('Failed to write failure status to asset:', dbErr));
+      }).catch((dbErr: any) => process.stdout.write(`[Worker] ⚠ Failed to write failure status to asset: ${dbErr.message}\n`));
     }
 
     throw error;
@@ -192,13 +209,17 @@ const heavyWorker = new Worker('compression-jobs-heavy', processCompressionJob, 
   concurrency: 1 // Can only process 1 massive video at a time to prevent crashing
 });
 
-// Attach event listeners
+// Attach event listeners for errors / failures
 [fastWorker, heavyWorker].forEach(worker => {
   worker.on('failed', (job, err) => {
-    console.error(`❌ Job ${job?.id} failed on queue ${worker.name}:`, err.message);
+    process.stdout.write(`[Worker] ✗ Job ${job?.id} failed on queue ${worker.name}: ${err.message}\n`);
   });
 
-  worker.on('completed', (job) => {
-    console.log(`✅ Job ${job.id} completed successfully on queue ${worker.name}`);
+  worker.on('error', (err) => {
+    process.stdout.write(`[Worker] ✗ Worker error on queue ${worker.name}: ${err.message}\n`);
+  });
+
+  worker.on('stalled', (jobId) => {
+    process.stdout.write(`[Worker] ⚠ Job ${jobId} stalled on queue ${worker.name} — will be retried\n`);
   });
 });

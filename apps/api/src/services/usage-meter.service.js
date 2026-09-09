@@ -80,12 +80,24 @@ async function recordStorageDelta(txOrClient, { orgId, storageSystemId, deltaByt
   const client = txOrClient || prisma;
   const delta = BigInt(deltaBytes);
 
-  // 1. Atomic SQL update to update storage_used_bytes (clamp at 0)
-  await client.$executeRaw`
-    UPDATE organizations 
-    SET storage_used_bytes = GREATEST(0, storage_used_bytes + ${delta})
-    WHERE id = ${orgId}::uuid
-  `;
+  // 1. Atomic SQL update to update storageUsedBytes (clamp at 0)
+  try {
+    await client.$executeRaw`
+      UPDATE organizations 
+      SET "storageUsedBytes" = GREATEST(0, "storageUsedBytes" + ${delta})
+      WHERE id = ${orgId}::uuid
+    `;
+  } catch (err) {
+    try {
+      await client.$executeRaw`
+        UPDATE organizations 
+        SET storage_used_bytes = GREATEST(0, storage_used_bytes + ${delta})
+        WHERE id = ${orgId}::uuid
+      `;
+    } catch (fallbackErr) {
+      console.warn('[UsageMeter] Failed to update org storage quota:', fallbackErr.message);
+    }
+  }
 
   // 2. Resolve storageSystemId if not provided
   let systemId = storageSystemId;

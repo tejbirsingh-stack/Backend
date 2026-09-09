@@ -3607,10 +3607,10 @@ module.exports.initiateResumableUpload = async (request, reply) => {
 //13.  Upload an individual raw binary chunk
 module.exports.uploadChunk = async (request, reply) => {
   const { sessionId } = request.query;
-
   const partNumber = parseInt(request.query.partNumber, 10);
 
   if (!sessionId || isNaN(partNumber)) {
+    process.stdout.write(`[ChunkUpload] ✗ Missing or invalid params: sessionId=${sessionId} partNumber=${request.query.partNumber}\n`);
     return reply.status(400).send({ message: "sessionId and valid partNumber query parameters are required" });
   }
 
@@ -3621,6 +3621,7 @@ module.exports.uploadChunk = async (request, reply) => {
 
     const sessionRaw = await redisClient.get(`upload:session:${sessionId}`);
     if (!sessionRaw) {
+      process.stdout.write(`[ChunkUpload] ✗ Session not found or expired in Redis: ${sessionId}\n`);
       return reply.status(404).send({ message: "Upload session not found or expired" });
     }
     const session = JSON.parse(sessionRaw);
@@ -3638,6 +3639,7 @@ module.exports.uploadChunk = async (request, reply) => {
     }
 
     if (chunkBuffer.length === 0) {
+      process.stdout.write(`[ChunkUpload] ✗ Empty chunk body received for part=${partNumber} sessionId=${sessionId}\n`);
       return reply.status(400).send({ message: "Empty chunk payload received" });
     }
 
@@ -3654,7 +3656,13 @@ module.exports.uploadChunk = async (request, reply) => {
     return { success: true, partNumber, etag: partResult.ETag };
 
   } catch (error) {
-    console.error(`Failed to upload chunk ${partNumber}:`, error);
+    process.stdout.write(
+      `[ChunkUpload] ✗ FAILED part=${partNumber} sessionId=${sessionId}\n` +
+      `  status=${error.statusCode || error.status || 500}\n` +
+      `  code=${error.code || 'n/a'}\n` +
+      `  message=${error.message}\n` +
+      `  stack=${error.stack || 'n/a'}\n`
+    );
     return reply.status(error.statusCode || 500).send({
       success: false,
       error: error.statusCode === 403 ? "Forbidden" : "InternalServerError",
@@ -4287,10 +4295,11 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
             return Number(sDuration) >= Number(durationSeconds) - 2 && Number(sDuration) <= Number(durationSeconds) + 2;
           }).map(s => s.id);
 
+          const baseKey = asset.type !== 'audio' ? (compressedKey || originalFile?.filePath) : null;
+
           if (asset.type === 'audio') {
             duplicateOf.push(...suspectIds);
           } else {
-            const baseKey = compressedKey || originalFile?.filePath;
 
             if (baseKey) {
               for (let i = 1; i <= 5; i++) {
