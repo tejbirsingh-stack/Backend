@@ -113,6 +113,11 @@ async function createShareLink(req, reply) {
       watermark: permissions?.watermark !== undefined ? Boolean(permissions.watermark) : defaultWatermark,
     };
 
+    if (visibility === 'public' && mode === 'link') {
+      finalPermissions.download = false;
+      finalPermissions.downloadProxy = false;
+    }
+
     // 3. Password requirement handling (Public links never require passwords; passwords are only for private shares)
     let passwordHash = null;
     let finalPassword = null;
@@ -311,6 +316,9 @@ async function updateShareLink(req, reply) {
     if (!existingLink) return reply.code(404).send({ error: 'Share link not found' });
 
     let finalPermissions = permissions;
+    const updatedVisibility = visibility !== undefined ? visibility : existingLink.visibility;
+    const isPublicLinkMode = updatedVisibility === 'public' && existingLink.mode === 'link';
+
     if (permissions) {
       const { ensureDefaultOrganizationSettings } = require('../services/organization.service');
       const orgSettings = await ensureDefaultOrganizationSettings(prisma, existingLink.orgId);
@@ -328,6 +336,13 @@ async function updateShareLink(req, reply) {
       if (orgSettings.lockShowCompanyWatermark && orgSettings.showCompanyWatermarkDefault !== undefined) {
         finalPermissions.watermark = orgSettings.showCompanyWatermarkDefault;
       }
+    } else if (isPublicLinkMode && existingLink.permissions && (existingLink.permissions.download || existingLink.permissions.downloadProxy)) {
+      finalPermissions = { ...(existingLink.permissions || {}) };
+    }
+
+    if (isPublicLinkMode && finalPermissions) {
+      finalPermissions.download = false;
+      finalPermissions.downloadProxy = false;
     }
 
     const updated = await prisma.shareLink.update({
@@ -651,10 +666,16 @@ async function validateShareToken(req, reply) {
     // Private links and email-mode invites do not surface the name to external viewers.
     const isPublicLinkMode = shareLink.visibility === 'public' && shareLink.mode === 'link';
 
+    const finalPermissions = { ...(shareLink.permissions || {}) };
+    if (isPublicLinkMode) {
+      finalPermissions.download = false;
+      finalPermissions.downloadProxy = false;
+    }
+
     return reply.send({
       valid: true,
       requiresPassword: Boolean(shareLink.passwordHash),
-      permissions: shareLink.permissions,
+      permissions: finalPermissions,
       expiresAt: shareLink.expiresAt,
       visibility: shareLink.visibility,
       mode: shareLink.mode,
@@ -752,18 +773,24 @@ async function getShareStream(req, reply) {
     const isDownload = req.query?.download === 'true';
     const wantOriginal = req.query?.original === 'true';
     const isVideoOrAudio = asset.type === 'video' || asset.type === 'audio';
+    const isPublicLinkMode = shareLink.visibility === 'public' && shareLink.mode === 'link';
+    const effectivePermissions = { ...(shareLink.permissions || {}) };
+    if (isPublicLinkMode) {
+      effectivePermissions.download = false;
+      effectivePermissions.downloadProxy = false;
+    }
 
     // Strictly enforce download permissions for external share links
     if (isDownload) {
-      if (!shareLink.permissions?.download && !shareLink.permissions?.downloadProxy) {
+      if (!effectivePermissions.download && !effectivePermissions.downloadProxy) {
         return reply.code(403).send({ error: 'Download permission denied' });
       }
 
-      if (wantOriginal && !shareLink.permissions?.download) {
+      if (wantOriginal && !effectivePermissions.download) {
         return reply.code(403).send({ error: 'Permission to download original file denied' });
       }
 
-      if (!wantOriginal && !shareLink.permissions?.downloadProxy) {
+      if (!wantOriginal && !effectivePermissions.downloadProxy) {
         return reply.code(403).send({ error: 'Permission to download proxy file denied' });
       }
 
@@ -798,10 +825,14 @@ async function getShareStream(req, reply) {
       }
     }
 
+    if (wantOriginal && !effectivePermissions.download) {
+      return reply.code(403).send({ error: 'Permission to access original file denied' });
+    }
+
     // Determine if we should prevent falling back to the original file
     // If it's a video/audio, and the user does NOT have permission to download the original,
     // we should enforce strictProxy to ensure they NEVER receive the original uncompressed file.
-    const strictProxy = isVideoOrAudio && !wantOriginal && !shareLink.permissions?.download;
+    const strictProxy = isVideoOrAudio && !wantOriginal && !effectivePermissions.download;
 
     return await handleMediaRedirectOrServe(req, reply, asset.id, isDownload, strictProxy);
   } catch (error) {
