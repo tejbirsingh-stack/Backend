@@ -11,7 +11,11 @@ async function routes(fastify, options) {
   if (authController.completeSignup) fastify.post("/complete-signup", authController.completeSignup);
 
   //1. Login route
-  if (authController.login) fastify.post("/login", authController.login);
+  if (authController.login) {
+    fastify.post("/login", {
+      config: { rateLimit: { max: 20, timeWindow: "15 minutes" } }
+    }, authController.login);
+  }
 
   //2. Register route
   if (authController.register) fastify.post("/register", authController.register);
@@ -45,7 +49,7 @@ async function routes(fastify, options) {
   //8. Forgot password route
   if (authController.forgotPassword) {
     fastify.post("/forgot-password", {
-      config: { rateLimit: { max: 10, timeWindow: "15 minutes" } }
+      config: { rateLimit: { max: 10, timeWindow: 15 * 60 * 1000 } }
     }, authController.forgotPassword);
   }
 

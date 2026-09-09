@@ -232,7 +232,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                 }
 
                 const isGuest = invitedUser.orgId !== orgId;
-                
+
                 // If the workspace is public (not restricted), we strictly forbid inviting members
                 if (!isRestricted && !isGuest) {
                     continue;
@@ -247,7 +247,7 @@ module.exports.storeWorkplace = async (request, reply) => {
                         memberType: actualMemberType,
                         accessLevelId: aLevelId
                     }
-                }).catch(() => {});
+                }).catch(() => { });
 
                 // ALWAYS send in-app notification
                 createNotification(
@@ -1871,7 +1871,7 @@ module.exports.deleteFolder = async (request, reply) => {
                     include: { workspace: true }
                 }).catch(() => []);
 
-                const unauthorizedFolders = targetFolders.filter(f => 
+                const unauthorizedFolders = targetFolders.filter(f =>
                     f.workspace?.orgId && f.workspace.orgId !== userOrgId
                 );
 
@@ -2018,7 +2018,7 @@ module.exports.deleteFolder = async (request, reply) => {
                         include: { workspace: true }
                     }).catch(() => []);
 
-                    const unauthorizedFolders = subfolders.filter(f => 
+                    const unauthorizedFolders = subfolders.filter(f =>
                         f.workspace?.orgId && f.workspace.orgId !== userOrgId
                     );
 
@@ -2816,11 +2816,14 @@ module.exports.moveFolder = async (request, reply) => {
 module.exports.updateProject = async (request, reply) => {
     try {
         const { id } = request.params;
-        const { name, workspaceId, visibility, status, color } = request.body;
+        const { name, workspaceId, visibility, status, color } = request.body || {};
 
-        const requiresFullAccess = (workspaceId !== undefined || visibility !== undefined || status !== undefined);
-        const requiredAccessLevel = requiresFullAccess ? 'Full Access' : 'Can edit';
-        await verifyProjectAccess(id, request.user.id, requiredAccessLevel);
+        if (!id) {
+            return reply.code(400).send({
+                success: false,
+                message: 'Project ID is required.'
+            });
+        }
 
         if (name === undefined && workspaceId === undefined && visibility === undefined && status === undefined && color === undefined) {
             return reply.code(400).send({
@@ -2845,16 +2848,133 @@ module.exports.updateProject = async (request, reply) => {
             }
         }
 
+        // 1. Independently fetch and validate the target project
         const projectToUpdate = await prisma.project.findUnique({
             where: { id },
-            select: { workspaceId: true }
+            include: {
+                workspace: true,
+                folder: {
+                    include: { workspace: true }
+                },
+                users: {
+                    include: { accessLevelObj: true }
+                },
+                groups: {
+                    include: { accessLevelObj: true }
+                }
+            }
         });
-        if (!projectToUpdate) {
+
+        if (!projectToUpdate || projectToUpdate.status === 'deleted' || projectToUpdate.status === 'trash') {
             return reply.code(404).send({ success: false, message: 'Project not found.' });
         }
 
-        const activeWorkspaceId = workspaceId || projectToUpdate.workspaceId;
+        // 2. Fetch live requesting user to check organization & role hierarchy
+        const liveUser = await prisma.user.findUnique({
+            where: { id: request.user.id },
+            include: { roleRelation: true }
+        });
+        const userOrgId = liveUser?.orgId || request.user?.orgId;
+        const userRoleName = (liveUser?.roleRelation?.name || liveUser?.role || request.user?.role || '').toLowerCase().replace(/[_ -]+/g, '');
+        const isPlatformAdmin = userRoleName === 'platformadmin';
 
+        // Multi-tenant check: project must belong to caller's organization
+        const projectOrgId = projectToUpdate.workspace?.orgId || projectToUpdate.folder?.workspace?.orgId;
+        if (!isPlatformAdmin && ((projectOrgId && userOrgId && projectOrgId !== userOrgId) || (projectOrgId && !userOrgId))) {
+            console.warn(`[IDOR Prevention] User ${request.user.id} (org: ${userOrgId}) attempted to update project ${id} belonging to org ${projectOrgId}`);
+            return reply.code(403).send({
+                success: false,
+                message: 'Access denied: You are not authorized to modify projects outside of your organization.'
+            });
+        }
+
+        // 3. Verify user ownership or explicit modification permissions on the project
+        const isProjectOwner = projectToUpdate.createdById === request.user.id || projectToUpdate.createdByUserId === request.user.id;
+
+        const directUser = projectToUpdate.users?.find(u => u.userId === request.user.id);
+        const directAccessLevel = directUser?.accessLevelObj?.name || directUser?.accessLevel;
+        const hasDirectModPerm = directUser && (
+            directUser.memberType === 'Owner' ||
+            directUser.memberType === 'Admin' ||
+            directAccessLevel === 'Full Access' ||
+            directAccessLevel === 'Can edit'
+        );
+
+        const userGroupMemberships = await prisma.userGroupMember.findMany({
+            where: { userId: request.user.id },
+            select: { groupId: true }
+        });
+        const userGroupIds = new Set(userGroupMemberships.map(ug => ug.groupId));
+        const hasGroupModPerm = projectToUpdate.groups?.some(pg => {
+            if (!userGroupIds.has(pg.groupId)) return false;
+            const lvl = pg.accessLevelObj?.name || pg.accessLevel;
+            return lvl === 'Full Access' || lvl === 'Can edit';
+        });
+
+        // Strict authorization: Only platform admin, project owner, or users with explicit permissions can modify
+        const isAuthorizedToModify = isPlatformAdmin || isProjectOwner || hasDirectModPerm || hasGroupModPerm;
+        if (!isAuthorizedToModify) {
+            console.warn(`[IDOR Prevention] User ${request.user.id} attempted to modify project ${id} without ownership or explicit permissions`);
+            return reply.code(403).send({
+                success: false,
+                message: 'Access denied: You can only update projects that you own or have explicit modification permissions for.'
+            });
+        }
+
+        // 4. Independently validate target workspace if workspaceId is provided
+        if (workspaceId !== undefined && workspaceId) {
+            const targetWorkspace = await prisma.workspace.findUnique({
+                where: { id: workspaceId }
+            });
+            if (!targetWorkspace || targetWorkspace.status === 'deleted') {
+                return reply.code(404).send({
+                    success: false,
+                    message: 'Target workspace not found.'
+                });
+            }
+
+            if (!isPlatformAdmin && ((targetWorkspace.orgId && userOrgId && targetWorkspace.orgId !== userOrgId) || (targetWorkspace.orgId && !userOrgId))) {
+                return reply.code(403).send({
+                    success: false,
+                    message: 'Access denied: Target workspace belongs to a different organization.'
+                });
+            }
+
+            if (!isPlatformAdmin) {
+                const targetWsMember = await prisma.workspaceUser.findFirst({
+                    where: { workspaceId: targetWorkspace.id, userId: request.user.id },
+                    include: { accessLevelRef: true }
+                });
+                if (!targetWsMember) {
+                    return reply.code(403).send({
+                        success: false,
+                        message: 'Access denied: You are not authorized to move projects into the target workspace.'
+                    });
+                }
+
+                const targetAccess = targetWsMember.accessLevelRef?.name || targetWsMember.accessLevel || targetWsMember.role;
+                if (targetAccess === 'Viewer' || targetAccess === 'Can view' || targetWsMember.role === 'VIEWER') {
+                    return reply.code(403).send({
+                        success: false,
+                        message: 'Access denied: You have view-only access in the target workspace.'
+                    });
+                }
+            }
+
+            // Moving a project between different workspaces requires admin or owner permissions on the project
+            if (projectToUpdate.workspaceId && projectToUpdate.workspaceId !== workspaceId) {
+                const canMove = isPlatformAdmin || isProjectOwner || (directUser && (directUser.memberType === 'Owner' || directUser.memberType === 'Admin' || directAccessLevel === 'Full Access'));
+                if (!canMove) {
+                    return reply.code(403).send({
+                        success: false,
+                        message: 'Access denied: Only project owners, workspace admins, or organization admins can move projects to a different workspace.'
+                    });
+                }
+            }
+        }
+
+        // 5. Check duplicate project name in target/active workspace
+        const activeWorkspaceId = (workspaceId !== undefined && workspaceId) ? workspaceId : projectToUpdate.workspaceId;
         if (name !== undefined) {
             const existingProject = await prisma.project.findFirst({
                 where: {
@@ -2872,8 +2992,9 @@ module.exports.updateProject = async (request, reply) => {
             }
         }
 
+        // 6. Perform the update
         const dataToUpdate = {};
-        if (name !== undefined) dataToUpdate.name = name;
+        if (name !== undefined) dataToUpdate.name = name.trim();
         if (workspaceId !== undefined && workspaceId) {
             dataToUpdate.workspaceId = workspaceId;
             dataToUpdate.ownerType = 'WORKSPACE';

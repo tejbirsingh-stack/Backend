@@ -409,6 +409,16 @@ module.exports.updateUserAdmin = async (request, reply) => {
     }
 
     const previousRoleName = targetUser.roleRelation?.name || targetUser.role || "";
+    const normalizedPreviousRole = previousRoleName.toLowerCase().replace(/[_ -]+/g, "");
+
+    // SECURITY: Role Hierarchy Guard - Admin cannot modify Super Admin users
+    if (normalizedRole === "admin" && (normalizedPreviousRole === "superadmin" || normalizedPreviousRole === "super_admin")) {
+      return reply.status(403).send({
+        success: false,
+        error: "Forbidden",
+        message: "Access denied. Admins cannot modify Super Admin users.",
+      });
+    }
 
     const dataToUpdate = {
       status: "active"
@@ -431,27 +441,75 @@ module.exports.updateUserAdmin = async (request, reply) => {
     }
 
     if (roleId) {
-      // Find role by ID or Name
-      const targetRole = await request.server.prisma.role.findFirst({
-        where: {
-          OR: [
-            { id: roleId },
-            { name: roleId }
-          ]
-        }
-      });
+      // Find role by ID (validating UUID format) or Name
+      let targetRole = null;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (uuidRegex.test(roleId)) {
+        targetRole = await request.server.prisma.role.findUnique({
+          where: { id: roleId },
+        });
+      }
+      if (!targetRole) {
+        targetRole = await request.server.prisma.role.findFirst({
+          where: {
+            OR: [
+              { name: roleId },
+              { name: { equals: roleId, mode: "insensitive" } }
+            ]
+          }
+        });
+      }
       if (!targetRole) {
         return reply.status(400).send({ success: false, error: "Bad Request", message: "Role not found" });
       }
 
-      // SECURITY: Privilege Escalation Guard (Prevent non-Super Admin from assigning Super Admin role)
       const normalizedTargetRole = (targetRole.name || "").toLowerCase().replace(/[_ -]+/g, "");
-      if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
-        if (normalizedRole !== "superadmin" && normalizedRole !== "platformadmin") {
+
+      // SECURITY: Disallow assigning Platform Admin role
+      if (normalizedTargetRole === "platformadmin" || normalizedTargetRole === "platform_admin") {
+        if (normalizedRole !== "platformadmin") {
           return reply.status(403).send({
             success: false,
             error: "Forbidden",
-            message: "Access denied. Only Super Admins can assign the Super Admin role.",
+            message: "Access denied. Cannot assign Platform Admin role.",
+          });
+        }
+      }
+
+      // SECURITY: Privilege Escalation Guard & Role Hierarchy Enforcement
+      // 1. Admin can only assign Editor and Viewer (and Collaborator) roles.
+      // If an Admin modifies roleId to assign Admin, Super Admin, etc., reject the request.
+      if (normalizedRole === "admin") {
+        const allowedRolesForAdmin = ["editor", "viewer", "collaborator"];
+        if (!allowedRolesForAdmin.includes(normalizedTargetRole)) {
+          console.warn(`[Privilege Escalation Prevention] Admin ${request.user?.id} attempted to assign role ${targetRole.name} to user ${id}`);
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Access denied. Admins can only assign Editor and Viewer roles.",
+          });
+        }
+      }
+
+      // 2. Super Admin can only assign Admin, Editor, and Viewer (and Collaborator) roles.
+      // Super Admin cannot assign the Super Admin role.
+      if (normalizedRole === "superadmin") {
+        if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
+          console.warn(`[Privilege Escalation Prevention] Super Admin ${request.user?.id} attempted to assign Super Admin role to user ${id}`);
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Access denied. Super Admins cannot assign the Super Admin role.",
+          });
+        }
+
+        const allowedRolesForSuperAdmin = ["admin", "editor", "viewer", "collaborator"];
+        if (!allowedRolesForSuperAdmin.includes(normalizedTargetRole)) {
+          console.warn(`[Privilege Escalation Prevention] Super Admin ${request.user?.id} attempted to assign role ${targetRole.name} to user ${id}`);
+          return reply.status(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Access denied. Super Admins can only assign Admin, Editor, and Viewer roles.",
           });
         }
       }
@@ -614,11 +672,17 @@ module.exports.bulkUpdateUsersAdmin = async (request, reply) => {
         message: `Successfully deleted ${safeUserIdsToDelete.length} user(s)`
       });
     } else {
-      // For active/inactive actions, filter by organization membership
+      // For active/inactive actions, filter by organization membership and role hierarchy
       const safeUserIdsToUpdate = targetUsers
         .filter((u) => {
           // Both Super Admins and regular Admins can only modify users in their own organization
-          return u.orgId === currentUserOrgId;
+          if (u.orgId !== currentUserOrgId) return false;
+          // Admin cannot modify Super Admin status
+          if (normalizedRole === 'admin') {
+            const rName = (u.roleRelation?.name || u.role || '').toLowerCase().replace(/[_ -]+/g, "");
+            if (rName === 'superadmin' || rName === 'super_admin') return false;
+          }
+          return true;
         })
         .map((u) => u.id);
 
