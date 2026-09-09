@@ -102,6 +102,11 @@ async function fetchFromSecretsManager() {
  * @returns {Promise<{keyId: string, applicationKey: string, bucketName: string, endpoint: string, region: string}>}
  */
 async function getB2Config() {
+  try { require('dotenv').config(); } catch (_) {}
+  if (process.env.B2_FORCE_ENV === 'true' || process.env.USE_LOCAL_B2 === 'true') {
+    return configFromEnv();
+  }
+
   // Return cached value if still valid
   if (_cachedConfig && Date.now() < _cacheExpiresAt) {
     return _cachedConfig;
@@ -128,8 +133,17 @@ async function getB2Config() {
  * @returns {Promise<InstanceType<B2StorageService>>}
  */
 async function getB2Storage(B2StorageService) {
+  const isForceEnv = process.env.B2_FORCE_ENV === 'true' || process.env.USE_LOCAL_B2 === 'true';
+  const testBucket = process.env.B2_BUCKET_NAME || 'noah-backend-test';
+
   if (_b2StorageInstance) {
-    return _b2StorageInstance;
+    if (isForceEnv && _b2StorageInstance.bucket !== testBucket) {
+      _b2StorageInstance = null;
+    } else if (!isForceEnv && _b2StorageInstance.bucket === testBucket) {
+      _b2StorageInstance = null;
+    } else {
+      return _b2StorageInstance;
+    }
   }
 
   // Deduplicate concurrent first-time calls

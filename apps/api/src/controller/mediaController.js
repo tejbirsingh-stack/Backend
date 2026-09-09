@@ -3609,6 +3609,8 @@ module.exports.uploadChunk = async (request, reply) => {
   const { sessionId } = request.query;
   const partNumber = parseInt(request.query.partNumber, 10);
 
+  process.stdout.write(`[ChunkUpload] ▶ Received part=${partNumber} sessionId=${sessionId}\n`);
+
   if (!sessionId || isNaN(partNumber)) {
     process.stdout.write(`[ChunkUpload] ✗ Missing or invalid params: sessionId=${sessionId} partNumber=${request.query.partNumber}\n`);
     return reply.status(400).send({ message: "sessionId and valid partNumber query parameters are required" });
