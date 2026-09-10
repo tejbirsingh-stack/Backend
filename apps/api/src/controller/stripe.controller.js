@@ -15,7 +15,7 @@ function getFrontendUrl(req) {
       try {
         const parsed = new URL(referer);
         return `${parsed.protocol}//${parsed.host}`;
-      } catch (e) {}
+      } catch (e) { }
     }
   }
   const url = process.env.FRONTEND_URL || (process.env.NODE_ENV === 'production' ? 'https://qa.noahcloud.ai' : 'http://localhost:3002');
@@ -218,19 +218,19 @@ class StripeController {
           await prisma.plan.updateMany({
             where: { id: matchingPlan.id },
             data: isYearly ? { yearlyPriceId: checkoutPriceId } : { monthlyPriceId: checkoutPriceId },
-          }).catch(() => {});
+          }).catch(() => { });
         }
       }
 
       const baseUrl = getFrontendUrl(request);
       const { successUrl, cancelUrl } = request.body || {};
-      
-      const finalSuccessUrl = successUrl 
-        ? `${baseUrl}${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}` 
+
+      const finalSuccessUrl = successUrl
+        ? `${baseUrl}${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`
         : `${baseUrl}/home/settings/accounts/plan?success=true&session_id={CHECKOUT_SESSION_ID}`;
-        
-      const finalCancelUrl = cancelUrl 
-        ? `${baseUrl}${cancelUrl}` 
+
+      const finalCancelUrl = cancelUrl
+        ? `${baseUrl}${cancelUrl}`
         : `${baseUrl}/home/settings/accounts/plan?canceled=true`;
 
       const session = await stripeService.createCheckoutSession(
@@ -631,11 +631,11 @@ class StripeController {
       const isDowngradeScheduled = org.metadata?.isDowngradeScheduled === true;
       const scheduledDowngrade = isDowngradeScheduled
         ? {
-            planId: org.metadata?.scheduledPlanId || 'basic',
-            planName: org.metadata?.scheduledPlanName || 'Basic Plan',
-            billingCycle: org.metadata?.scheduledBillingCycle || 'monthly',
-            effectiveDate: org.planExpiresAt || org.metadata?.expiresAt,
-          }
+          planId: org.metadata?.scheduledPlanId || 'basic',
+          planName: org.metadata?.scheduledPlanName || 'Basic Plan',
+          billingCycle: org.metadata?.scheduledBillingCycle || 'monthly',
+          effectiveDate: org.planExpiresAt || org.metadata?.expiresAt,
+        }
         : null;
 
       return reply.send({ success: true, subscriptions, scheduledDowngrade });
@@ -910,11 +910,12 @@ class StripeController {
    * Stripe Webhook Handler
    */
   async handleWebhook(request, reply) {
+    console.log('webhook runs start')
     const signature = request.headers['stripe-signature'];
 
     let event;
     try {
-      event = stripeService.constructWebhookEvent(request.rawBody, signature);
+      event = await stripeService.constructWebhookEvent(request.rawBody, signature);
     } catch (err) {
       request.log.error(`Webhook signature verification failed: ${err.message}`);
 
@@ -973,13 +974,13 @@ class StripeController {
                     orgId: org.id,
                     stripeCustomerId: customerId,
                     stripeSessionId: session.id,
-                    stripePaymentIntentId: session.payment_intent 
-                      ? String(session.payment_intent) 
-                      : (fullSession?.invoice?.payment_intent 
-                          ? String(fullSession.invoice.payment_intent) 
-                          : (fullSession?.subscription?.latest_invoice?.payment_intent 
-                              ? String(fullSession.subscription.latest_invoice.payment_intent) 
-                              : null)),
+                    stripePaymentIntentId: session.payment_intent
+                      ? String(session.payment_intent)
+                      : (fullSession?.invoice?.payment_intent
+                        ? String(fullSession.invoice.payment_intent)
+                        : (fullSession?.subscription?.latest_invoice?.payment_intent
+                          ? String(fullSession.subscription.latest_invoice.payment_intent)
+                          : null)),
                     stripeSubscriptionId: String(session.subscription || ''),
                     eventType: 'webhook_checkout_completed',
                     status: 'SUCCESS',
@@ -1061,7 +1062,7 @@ class StripeController {
           break;
         }
       }
-
+      console.log('webhook got success response')
       return reply.send({ received: true });
     } catch (err) {
       request.log.error(`Error processing webhook: ${err.message}`);
@@ -1101,7 +1102,7 @@ class StripeController {
           where: { key: { in: ['TEST_STRIPE_PUBLISHABLE_KEY', 'STRIPE_PUBLISHABLE_KEY'] } },
         });
         if (setting?.value) publishableKey = setting.value;
-      } catch (e) {}
+      } catch (e) { }
       if (!publishableKey) {
         const config = await getStripeConfig();
         publishableKey = config.publishableKey || process.env.TEST_STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
@@ -1352,24 +1353,24 @@ class StripeController {
 
       if (invoiceId && invoiceId !== 'latest' && invoiceId !== 'null' && invoiceId !== 'undefined') {
         stripeInvoice = await stripeService.retrieveInvoice(invoiceId).catch(() => null);
-        
+
         // Security: Verify the invoice belongs to the authenticated user's organization
         if (stripeInvoice) {
           const invoiceCustomerId = typeof stripeInvoice.customer === 'object' ? stripeInvoice.customer?.id : stripeInvoice.customer;
           const invoiceOrgId = stripeInvoice.metadata?.orgId;
-          
+
           // Check 1: If org has stripeCustomerId, invoice must belong to that customer
           if (org?.stripeCustomerId && invoiceCustomerId && invoiceCustomerId !== org.stripeCustomerId) {
             console.warn(`[IDOR Prevention] User ${orgId} attempted to access invoice ${invoiceId} belonging to customer ${invoiceCustomerId}`);
             return reply.code(403).send({ error: 'Unauthorized access to invoice' });
           }
-          
+
           // Check 2: If invoice has orgId in metadata, it must match the requesting org
           if (invoiceOrgId && invoiceOrgId !== orgId) {
             console.warn(`[IDOR Prevention] User ${orgId} attempted to access invoice ${invoiceId} belonging to org ${invoiceOrgId}`);
             return reply.code(403).send({ error: 'Unauthorized access to invoice' });
           }
-          
+
           // Check 3: If org has no stripeCustomerId and invoice has no orgId metadata, deny access
           // (can't verify ownership)
           if (!org?.stripeCustomerId && !invoiceOrgId && invoiceCustomerId) {

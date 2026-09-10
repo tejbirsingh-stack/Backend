@@ -1,5 +1,4 @@
 const Stripe = require('stripe');
-const prisma = require('../utils/prisma');
 const { getStripeConfig } = require('./stripeConfig');
 
 let cachedSecretKey = null;
@@ -7,15 +6,12 @@ let cachedStripeInstance = null;
 
 async function getStripe() {
   try {
-    let key = '';
-    const setting = await prisma.systemSetting.findFirst({
-      where: { key: { in: ['TEST_STRIPE_SECRET_KEY', 'STRIPE_SECRET_KEY'] } }
-    });
-    if (setting?.value) key = setting.value;
-    if (!key) {
-      const config = await getStripeConfig();
-      key = config.secretKey;
-    }
+    const config = await getStripeConfig();
+    // console.log('config', config);
+    const key = config.secretKey;
+    const keySource = key === process.env.STRIPE_SECRET_KEY ? '.ENV' : 'AWS_SECRETS_MANAGER';
+
+    // console.log(`[Stripe] Using secret key from: ${keySource} | prefix: ${key ? key.substring(0, 20) + '...' : 'EMPTY!'}`);
 
     if (cachedStripeInstance && cachedSecretKey === key) {
       return cachedStripeInstance;
@@ -24,8 +20,8 @@ async function getStripe() {
     cachedStripeInstance = new Stripe(key, { apiVersion: '2023-10-16' });
     return cachedStripeInstance;
   } catch (err) {
-    const config = await getStripeConfig().catch(() => ({ secretKey: '' }));
-    const fallbackKey = config.secretKey || process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+    const fallbackKey = process.env.STRIPE_SECRET_KEY || process.env.TEST_STRIPE_SECRET_KEY || '';
+    console.error('[Stripe] Failed to load config, using .env fallback:', err.message);
     return new Stripe(fallbackKey, { apiVersion: '2023-10-16' });
   }
 }
@@ -192,7 +188,7 @@ class StripeService {
       // Helper to find or create price
       const findOrCreatePrice = async (cents, interval, existingPriceId) => {
         if (cents <= 0) return null; // free tier, no price needed
-        
+
         if (existingPriceId) {
           try {
             const existing = await stripe.prices.retrieve(existingPriceId);
@@ -205,7 +201,7 @@ class StripeService {
               return existing.id; // Still valid, reuse
             }
             // Archive the old price because it no longer matches
-            await stripe.prices.update(existingPriceId, { active: false }).catch(() => {});
+            await stripe.prices.update(existingPriceId, { active: false }).catch(() => { });
           } catch (e) {
             // Ignore retrieve/update errors and just create a new one
           }
@@ -404,10 +400,10 @@ class StripeService {
   async cancelSubscriptionAtPeriodEnd(subscriptionId) {
     try {
       const stripe = await getStripe();
-      
+
       // First retrieve the Stripe subscription to check if it has a schedule attached
       const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-      
+
       // If it is managed by a schedule (e.g. for a pending downgrade), we must release the schedule 
       // before we are allowed to modify the cancelation behavior of the underlying subscription directly.
       if (subscription.schedule) {
@@ -501,26 +497,12 @@ class StripeService {
   async constructWebhookEvent(payload, signature) {
     try {
       const stripe = await getStripe();
-      let webhookSecret = '';
-      const isQA = process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'qa' || process.env.WEBHOOK_HOST?.includes('qa.noahcloud.ai');
-      const preferredKeys = isQA
-        ? ['QA_STRIPE_WEBHOOK_SECRET', 'LOCAL_STRIPE_WEBHOOK_SECRET', 'STRIPE_WEBHOOK_SECRET']
-        : ['LOCAL_STRIPE_WEBHOOK_SECRET', 'QA_STRIPE_WEBHOOK_SECRET', 'STRIPE_WEBHOOK_SECRET'];
+      const config = await getStripeConfig();
+      const webhookSecret = config.webhookSecret;
 
-      try {
-        for (const key of preferredKeys) {
-          const setting = await prisma.systemSetting.findUnique({ where: { key } });
-          if (setting?.value) {
-            webhookSecret = setting.value;
-            break;
-          }
-        }
-      } catch (e) { }
+      // Debug log — helps verify which secret is being used
+      // console.log('[Stripe Webhook] Using secret prefix:', webhookSecret ? webhookSecret.substring(0, 14) + '...' : 'EMPTY - webhook will fail!');
 
-      if (!webhookSecret) {
-        const config = await getStripeConfig();
-        webhookSecret = config.webhookSecret || config.qaWebhookSecret || config.localWebhookSecret;
-      }
       return stripe.webhooks.constructEvent(payload, signature, webhookSecret);
     } catch (error) {
       console.error('[StripeService] Webhook signature verification failed:', error.message);

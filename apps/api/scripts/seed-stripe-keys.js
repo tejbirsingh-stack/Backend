@@ -21,8 +21,6 @@ async function main() {
   const stripeConfig = await getStripeConfig();
   const pubKey = stripeConfig.publishableKey || process.env.TEST_STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY;
   const secKey = stripeConfig.secretKey || process.env.TEST_STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
-  const qaWebhookSecret = stripeConfig.qaWebhookSecret || process.env.QA_STRIPE_WEBHOOK_SECRET;
-  const localWebhookSecret = stripeConfig.localWebhookSecret || process.env.LOCAL_STRIPE_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
 
   console.log('Seeding Stripe System Settings to database...');
 
@@ -49,23 +47,7 @@ async function main() {
     console.log(`[DB SystemSetting] Saved TEST_STRIPE_SECRET_KEY (${setting.value.slice(0, 12)}...)`);
   }
 
-  if (qaWebhookSecret) {
-    const setting = await prisma.systemSetting.upsert({
-      where: { key: 'QA_STRIPE_WEBHOOK_SECRET' },
-      create: { key: 'QA_STRIPE_WEBHOOK_SECRET', value: qaWebhookSecret },
-      update: { value: qaWebhookSecret },
-    });
-    console.log(`[DB SystemSetting] Saved QA_STRIPE_WEBHOOK_SECRET (${setting.value.slice(0, 12)}...)`);
-  }
-
-  if (localWebhookSecret) {
-    const setting = await prisma.systemSetting.upsert({
-      where: { key: 'LOCAL_STRIPE_WEBHOOK_SECRET' },
-      create: { key: 'LOCAL_STRIPE_WEBHOOK_SECRET', value: localWebhookSecret },
-      update: { value: localWebhookSecret },
-    });
-    console.log(`[DB SystemSetting] Saved LOCAL_STRIPE_WEBHOOK_SECRET (${setting.value.slice(0, 12)}...)`);
-  }
+ 
 
   // Sync Plan Stripe Price IDs into Plan records
   const priceIds = stripeConfig.priceIds || {};
