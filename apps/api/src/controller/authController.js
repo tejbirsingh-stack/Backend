@@ -13,6 +13,7 @@ const { ACCESS_LEVEL, MEMBER_TYPES } = require("../lib/rolesPermissions");
 const { resolveOrgBranding } = require('../services/branding.service');
 const { getHubspotConfig } = require('../services/hubspotConfig');
 const { getOauthConfig } = require('../services/oauthConfig');
+const { checkPasswordResetRateLimit, getClientIp } = require('../utils/passwordResetRateLimiter');
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -275,8 +276,41 @@ module.exports.login = async (request, reply) => {
     // Find the user
     const user = await authService.findUserByEmail(normalizedEmail);
 
-    // Check if user exists and password is valid
-    if (!user || !(await authService.verifyPassword(user.passwordHash, password))) {
+    // Check if account is temporarily locked due to excessive failed attempts
+    if (user && user.lockoutUntil && new Date(user.lockoutUntil) > new Date()) {
+      const retryAfterSecs = Math.ceil((new Date(user.lockoutUntil).getTime() - Date.now()) / 1000);
+      const retryMinutes = Math.max(1, Math.ceil(retryAfterSecs / 60));
+      return reply.status(423).send({
+        success: false,
+        error: "Locked",
+        message: `Account temporarily locked due to too many failed login attempts. Try again in ${retryMinutes} minute(s).`,
+        retryAfter: retryAfterSecs
+      });
+    }
+
+    // Check if user exists
+    if (!user) {
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid email or password",
+      });
+    }
+
+    // Verify password and record failure if invalid
+    const isPasswordValid = await authService.verifyPassword(user.passwordHash, password);
+    if (!isPasswordValid) {
+      const updatedUser = await authService.recordLoginFailure(user);
+      if (updatedUser.lockoutUntil && new Date(updatedUser.lockoutUntil) > new Date()) {
+        const retryAfterSecs = Math.ceil((new Date(updatedUser.lockoutUntil).getTime() - Date.now()) / 1000);
+        const retryMinutes = Math.max(1, Math.ceil(retryAfterSecs / 60));
+        return reply.status(423).send({
+          success: false,
+          error: "Locked",
+          message: `Account temporarily locked due to too many failed login attempts. Try again in ${retryMinutes} minute(s).`,
+          retryAfter: retryAfterSecs
+        });
+      }
       return reply.status(401).send({
         success: false,
         error: "Unauthorized",
@@ -422,12 +456,14 @@ module.exports.login = async (request, reply) => {
       token
     );
 
-    // Update last login and activity timestamps
+    // Update last login, activity timestamps, and reset failed login counter
     await request.server.prisma.user.update({
       where: { id: user.id },
       data: {
         lastLoginAt: new Date(),
         lastActiveAt: new Date(),
+        failedLoginAttempts: 0,
+        lockoutUntil: null,
       },
     });
 
@@ -875,21 +911,22 @@ module.exports.registerRole = async (request, reply) => {
       });
     }
 
-    // SECURITY: Privilege Escalation Guard (Prevent non-Super Admin from assigning Super Admin role)
     const normalizedTargetRole = (roleObj.name || "").toLowerCase().replace(/[_ -]+/g, "");
-    if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
-      if (normalizedRole !== "superadmin" && normalizedRole !== "platformadmin") {
+
+    // SECURITY: Disallow assigning Platform Admin role
+    if (normalizedTargetRole === "platformadmin" || normalizedTargetRole === "platform_admin") {
+      if (normalizedRole !== "platformadmin") {
         return reply.status(403).send({
           success: false,
           error: "Forbidden",
-          message: "Access denied. Only Super Admins can assign the Super Admin role.",
+          message: "Access denied. Cannot assign Platform Admin role.",
         });
       }
     }
 
-    // SECURITY: Role Hierarchy Guard (Admin can only invite Editor and Viewer, not Admin)
+    // SECURITY: Role Hierarchy Guard (Admin can only invite Editor and Viewer, not Admin or Super Admin)
     if (normalizedRole === "admin") {
-      const allowedRolesForAdmin = ["editor", "viewer"];
+      const allowedRolesForAdmin = ["editor", "viewer", "collaborator"];
       if (!allowedRolesForAdmin.includes(normalizedTargetRole)) {
         console.warn(`[Privilege Escalation Prevention] Admin ${request.user.id} attempted to assign role ${roleObj.name} to ${normalizedEmail}`);
         return reply.status(403).send({
@@ -900,13 +937,24 @@ module.exports.registerRole = async (request, reply) => {
       }
     }
 
-    // SECURITY: Super Admin cannot invite other Super Admins (already handled above, but explicit check)
-    if (normalizedRole === "superadmin" && normalizedTargetRole === "superadmin") {
-      return reply.status(403).send({
-        success: false,
-        error: "Forbidden",
-        message: "Access denied. Super Admins cannot invite other Super Admins.",
-      });
+    // SECURITY: Super Admin cannot invite other Super Admins
+    if (normalizedRole === "superadmin") {
+      if (normalizedTargetRole === "superadmin" || normalizedTargetRole === "super_admin") {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Super Admins cannot invite other Super Admins.",
+        });
+      }
+
+      const allowedRolesForSuperAdmin = ["admin", "editor", "viewer", "collaborator"];
+      if (!allowedRolesForSuperAdmin.includes(normalizedTargetRole)) {
+        return reply.status(403).send({
+          success: false,
+          error: "Forbidden",
+          message: "Access denied. Super Admins can only invite Admin, Editor, and Viewer users.",
+        });
+      }
     }
 
     // 6. Save ONLY email, roleId, role name, and orgId to the database
@@ -1236,6 +1284,38 @@ module.exports.forgotPassword = async (request, reply) => {
     }
 
     const cleanEmail = email.trim().toLowerCase();
+    const clientIp = getClientIp(request);
+    const redisClient = request.server?.redis;
+
+    // Abuse protection & rate limiting: enforce per-email, cooldown, and per-IP limits
+    const rateLimitResult = await checkPasswordResetRateLimit({
+      email: cleanEmail,
+      ip: clientIp,
+      redisClient,
+    });
+
+    if (!rateLimitResult.allowed) {
+      if (rateLimitResult.retryAfter) {
+        reply.header('Retry-After', String(rateLimitResult.retryAfter));
+        reply.header('X-RateLimit-Reset', String(Math.floor(Date.now() / 1000) + rateLimitResult.retryAfter));
+      }
+      logError("FORGOT_PASSWORD_RATE_LIMITED", `Password reset rate limit exceeded: ${rateLimitResult.reason}`, request, {
+        email: cleanEmail,
+        ip: clientIp,
+        reason: rateLimitResult.reason,
+        retryAfter: rateLimitResult.retryAfter,
+      });
+      return reply.status(rateLimitResult.statusCode || 429).send({
+        statusCode: rateLimitResult.statusCode || 429,
+        error: "Too Many Requests",
+        message: rateLimitResult.message,
+        retryAfter: rateLimitResult.retryAfter,
+      });
+    }
+
+    if (rateLimitResult.remaining !== undefined) {
+      reply.header('X-RateLimit-Remaining', String(rateLimitResult.remaining));
+    }
 
     // Find the user by email in user table
     const user = await authService.findUserByEmail(cleanEmail);
@@ -2340,6 +2420,257 @@ module.exports.verifySignupOtp = async (request, reply) => {
 };
 
 // Complete Signup Handler (Saves to DB & Syncs to HubSpot)
+
+// Google Signup Initialization (creates pending user to align with email flow)
+module.exports.googleSignupInit = async (request, reply) => {
+  try {
+    const { idToken } = request.body || {};
+    if (!idToken) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Google idToken is required",
+      });
+    }
+
+    const { googleClientId } = await getOauthConfig();
+    const googleClient = new OAuth2Client(googleClientId);
+
+    let email, name;
+
+    // Verify token
+    try {
+      if (idToken.startsWith('eyJ') || idToken.split('.').length === 3) {
+        try {
+          const ticket = await googleClient.verifyIdToken({
+            idToken: idToken,
+            audience: googleClientId,
+          });
+          const payload = ticket.getPayload();
+          email = payload.email;
+          name = payload.name;
+        } catch (jwtErr) {
+          console.warn("verifyIdToken failed, falling back to userinfo API:", jwtErr.message);
+        }
+      }
+
+      if (!email) {
+        const googleResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${idToken}` }
+        });
+        if (!googleResponse.ok) {
+          throw new Error("INVALID_TOKEN: Failed to verify token with Google");
+        }
+        const payload = await googleResponse.json();
+        email = payload?.email;
+        name = payload?.name;
+      }
+
+      if (!email) {
+        throw new Error("INVALID_TOKEN: Could not extract email from Google token");
+      }
+    } catch (authError) {
+      console.error("Google Token Verification Error:", authError);
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired Google token",
+        details: authError.message
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email already registered with password or active status
+    const existingUser = await authService.findUserByEmail(normalizedEmail);
+    if (existingUser && (existingUser.passwordHash || existingUser.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    let targetOrgId = null;
+
+    if (existingUser) {
+      await request.server.prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          emailVerified: true,
+          failedLoginAttempts: 0,
+        },
+      });
+      targetOrgId = existingUser.orgId;
+    } else {
+      // Create a new organization for pending registration
+      const derivedOrgName = formatDomainToOrgName(normalizedEmail);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
+      const pendingOrg = await request.server.prisma.organization.create({
+        data: {
+          name: derivedOrgName,
+          slug: `pending-${Date.now()}`,
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: false,
+        },
+        include: { currentPlan: true },
+      });
+      await request.server.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: name || normalizedEmail.split('@')[0],
+          emailVerified: true,
+          failedLoginAttempts: 0,
+          status: "pending_signup",
+          orgId: pendingOrg.id,
+        },
+      });
+      targetOrgId = pendingOrg.id;
+    }
+
+    return reply.send({
+      success: true,
+      message: "SSO Signup initialized successfully",
+      email: normalizedEmail,
+      name: name,
+    });
+  } catch (error) {
+    console.error("SSO Signup Init Error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "An unexpected error occurred during signup initialization",
+    });
+  }
+};
+
+
+// Microsoft Signup Initialization (creates pending user to align with email flow)
+module.exports.microsoftSignupInit = async (request, reply) => {
+  try {
+    const { idToken } = request.body || {};
+    if (!idToken) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: "Microsoft idToken is required",
+      });
+    }
+
+    const { microsoftClientId: clientId } = await getOauthConfig();
+    const jwksClient = require('jwks-rsa');
+    const jwt = require('jsonwebtoken');
+
+    const client = jwksClient({
+      jwksUri: "https://login.microsoftonline.com/common/discovery/v2.0/keys",
+    });
+
+    function getKey(header, callback) {
+      client.getSigningKey(header.kid, function (err, key) {
+        if (err) {
+          callback(err, null);
+        } else {
+          const signingKey = key.publicKey || key.rsaPublicKey;
+          callback(null, signingKey);
+        }
+      });
+    }
+
+    let decodedPayload;
+    try {
+      decodedPayload = await new Promise((resolve, reject) => {
+        jwt.verify(
+          idToken,
+          getKey,
+          { audience: clientId },
+          (err, decoded) => {
+            if (err) reject(err);
+            resolve(decoded);
+          }
+        );
+      });
+    } catch (authError) {
+      console.error("Microsoft Token Verification Error:", authError);
+      return reply.status(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Invalid or expired Microsoft token",
+        details: authError.message
+      });
+    }
+
+    const email = (decodedPayload.preferred_username || decodedPayload.email || decodedPayload.upn).toLowerCase().trim();
+    const name = decodedPayload.name || email.split("@")[0];
+
+    const normalizedEmail = email;
+
+    // Check if email already registered with password or active status
+    const existingUser = await authService.findUserByEmail(normalizedEmail);
+    if (existingUser && (existingUser.passwordHash || existingUser.status === "active")) {
+      return reply.status(409).send({
+        success: false,
+        error: "Conflict",
+        message: "Email ID is already registered with this email",
+      });
+    }
+
+    let targetOrgId = null;
+
+    if (existingUser) {
+      await request.server.prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          emailVerified: true,
+          failedLoginAttempts: 0,
+        },
+      });
+      targetOrgId = existingUser.orgId;
+    } else {
+      // Create a new organization for pending registration
+      const derivedOrgName = formatDomainToOrgName(normalizedEmail);
+      const freePlan = await request.server.prisma.plan.findFirst({
+        where: { name: { equals: 'free', mode: 'insensitive' } }
+      });
+      const pendingOrg = await request.server.prisma.organization.create({
+        data: {
+          name: derivedOrgName,
+          slug: `pending-${Date.now()}`,
+          currentPlanId: freePlan ? freePlan.id : null,
+          isFreeTrialUsed: false,
+        },
+        include: { currentPlan: true },
+      });
+      await request.server.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: name,
+          emailVerified: true,
+          failedLoginAttempts: 0,
+          status: "pending_signup",
+          orgId: pendingOrg.id,
+        },
+      });
+      targetOrgId = pendingOrg.id;
+    }
+
+    return reply.send({
+      success: true,
+      message: "SSO Signup initialized successfully",
+      email: normalizedEmail,
+      name: name,
+    });
+  } catch (error) {
+    console.error("SSO Signup Init Error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "An unexpected error occurred during signup initialization",
+    });
+  }
+};
+
 module.exports.completeSignup = async (request, reply) => {
   try {
     const {

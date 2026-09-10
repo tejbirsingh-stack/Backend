@@ -70,7 +70,8 @@ const ACTOR_TYPE = {
 
 const ACTIVITY_TYPE = {
     INFO: 'INFO',
-    ERROR: 'ERROR'
+    ERROR: 'ERROR',
+    WARNING: 'WARNING'
 };
 
 const ACTIVITY_NAME = {
@@ -172,7 +173,7 @@ async function errorToString(error) {
 async function resolveRoleName(userDetail) {
     if (!userDetail) return null;
     let rawRole = userDetail.role || userDetail.userRole || userDetail.roleRelation?.name || null;
-    
+
     if (!rawRole && userDetail.id && prisma) {
         try {
             const dbUser = await prisma.user.findUnique({

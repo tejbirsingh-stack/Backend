@@ -804,6 +804,7 @@ async function serveMediaFile(request, reply, filePath, options = {}) {
 async function handleMediaRedirectOrServe(request, reply, filename, download = false, strictProxy = false) {
   let b2Key = null;
   let assetId = null;
+  let originalName = null;
 
   if (filename && filename.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
     assetId = filename;
@@ -811,6 +812,11 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       where: { id: filename },
       include: { files: true }
     });
+
+    if (asset) {
+      const originalFile = asset.files.find(f => f.fileClass === 'original');
+      originalName = originalFile ? originalFile.fileName : asset.title;
+    }
 
     // Security: Verify the asset belongs to the user's organization or is explicitly shared
     if (asset && request.user && asset.orgId) {
@@ -836,7 +842,7 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
         }
       }
     }
-    
+
     if (asset && asset.files.length > 0) {
       const wantOriginal = request.query?.original === 'true' || request.query?.type === 'original';
       const proxy = asset.files.find(f => f.fileClass === 'proxy' && Number(f.sizeBytes || 0) > 0);
@@ -897,6 +903,7 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
           }
         }
       }
+      originalName = file.fileName;
     } else if (filename.match(/_thumb\d+\.jpg$/)) {
       b2Key = filename;
     }
@@ -918,7 +925,13 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       const mediaStream = await (await b2()).getB2MediaStream(b2Key, rangeHeader);
 
       const mimeType = inferMimeType(path.basename(b2Key || filename)) || mediaStream.contentType || 'application/octet-stream';
-      const name = filename.replace(/^\d+-/, "");
+
+      let name = filename.replace(/^\d+-/, "");
+      if (originalName) {
+        const ext = path.extname(originalName);
+        const baseNameWithoutExt = ext ? originalName.slice(0, -ext.length) : originalName;
+        name = targetExt ? `${baseNameWithoutExt}.${targetExt}` : originalName;
+      }
 
       reply.header("Accept-Ranges", "bytes");
       reply.header(
@@ -4922,7 +4935,7 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       ).catch(err => console.error('Failed to create in-app notification:', err));
 
       if (sendInviteEmail && targetUser.email) {
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+        const frontendUrl = request.headers.origin || process.env.APP_URL || process.env.FRONTEND_URL || 'http://localhost:3002';
         const appUrl = `${frontendUrl}/media/${assetId}`;
         const targetOrgId = asset.orgId || request.user?.orgId;
         const orgBranding = targetOrgId ? await resolveOrgBranding(request.server.prisma, targetOrgId, { forEmail: true }) : null;

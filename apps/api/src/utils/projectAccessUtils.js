@@ -22,7 +22,12 @@ async function verifyProjectAccess(projectId, userId, requiredLevel, localPrisma
 
   const project = await localPrisma.project.findUnique({
     where: { id: projectId },
-    include: { workspace: true }
+    include: {
+      workspace: true,
+      folder: {
+        include: { workspace: true }
+      }
+    }
   });
 
   if (!project) {
@@ -38,6 +43,16 @@ async function verifyProjectAccess(projectId, userId, requiredLevel, localPrisma
   }).catch(() => null);
 
   const roleName = (requestingUser?.roleRelation?.name || requestingUser?.role || requestingUser?.systemRole || '').trim().toLowerCase();
+  const isPlatformAdmin = roleName === 'platform admin' || roleName === 'platformadmin';
+
+  // Cross-tenant protection: Project must belong to the requesting user's organization
+  const projectOrgId = project.workspace?.orgId || project.folder?.workspace?.orgId;
+  const userOrgId = requestingUser?.orgId;
+  if (!isPlatformAdmin && ((projectOrgId && userOrgId && projectOrgId !== userOrgId) || (projectOrgId && !userOrgId))) {
+    const err = new Error('Access Denied: Project belongs to another organization.');
+    err.statusCode = 403;
+    throw err;
+  }
 
   if (roleName === 'super admin' || roleName === 'superadmin' || roleName === 'admin' || requestingUser?.systemRole === 'SUPER_ADMIN' || requestingUser?.systemRole === 'ADMIN') {
     return true;
