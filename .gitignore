@@ -91,3 +91,6 @@ frontend/
 
 # Secrets and Keys
 *.pem
+
+# CI/CD Buildspec
+buildspec.yml

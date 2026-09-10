@@ -233,6 +233,8 @@ server {
     listen 80;
     server_name _;
     
+    server_tokens off;
+    
     location / {
         proxy_pass http://localhost:3002;
         proxy_http_version 1.1;
