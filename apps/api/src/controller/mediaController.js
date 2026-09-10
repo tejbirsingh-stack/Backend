@@ -1320,7 +1320,11 @@ module.exports.fileStreamPreview = async (request, reply) => {
     const token = request.query?.token || request.query?.streamToken;
     if (token) {
       try {
-        request.server.jwt.verify(token);
+        const decoded = request.server.jwt.verify(token);
+        // Set request.user from the decoded token so downstream IDOR checks work
+        if (decoded && !request.user) {
+          request.user = decoded;
+        }
       } catch (tokenErr) {
         return reply.code(401).send({
           success: false,
