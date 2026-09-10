@@ -27,13 +27,7 @@ async function platformLogin(request, reply) {
       });
     }
 
-    if (admin.lockoutUntil && new Date(admin.lockoutUntil) > new Date()) {
-      return reply.status(423).send({
-        error: 'Locked',
-        message: 'Account temporarily locked. Try again later.',
-        statusCode: 423,
-      });
-    }
+    // Check lockout disabled for testing phase
 
     if (admin.status !== 'active') {
       return reply.status(403).send({

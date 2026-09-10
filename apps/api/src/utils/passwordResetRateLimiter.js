@@ -119,6 +119,9 @@ function getClientIp(request) {
  * @returns {Promise<{ allowed: boolean, retryAfter?: number, message?: string, reason?: string, remaining?: number }>}
  */
 async function checkPasswordResetRateLimit({ email, ip, redisClient }) {
+  // Rate limiting disabled for testing phase
+  return { allowed: true, remaining: 999 };
+
   const normalizedEmail = (email || '').trim().toLowerCase();
   const safeIp = (ip || '127.0.0.1').trim();
 

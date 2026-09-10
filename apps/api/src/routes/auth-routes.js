@@ -12,12 +12,10 @@ async function routes(fastify, options) {
   if (authController.googleSignupInit) fastify.post("/google-signup-init", authController.googleSignupInit);
   if (authController.microsoftSignupInit) fastify.post("/microsoft-signup-init", authController.microsoftSignupInit);
 
-  //1. Login route
-  const loginRateLimitMax = parseInt(process.env.AUTH_LOGIN_RATE_LIMIT_MAX || (process.env.NODE_ENV === 'production' ? '100' : '300'), 10);
-  const loginRateLimitWindow = process.env.AUTH_LOGIN_RATE_LIMIT_WINDOW || "15 minutes";
+  //1. Login route (rate limit disabled for testing phase)
   if (authController.login) {
     fastify.post("/login", {
-      config: { rateLimit: { max: loginRateLimitMax, timeWindow: loginRateLimitWindow } }
+      config: { rateLimit: false }
     }, authController.login);
   }
 
@@ -50,10 +48,10 @@ async function routes(fastify, options) {
   //7. Get current user info (requires authentication)
   if (authController.getMe) fastify.get("/me", { preHandler: authenticate }, authController.getMe);
 
-  //8. Forgot password route
+  //8. Forgot password route (rate limit disabled for testing phase)
   if (authController.forgotPassword) {
     fastify.post("/forgot-password", {
-      config: { rateLimit: { max: 10, timeWindow: 15 * 60 * 1000 } }
+      config: { rateLimit: false }
     }, authController.forgotPassword);
   }
 
@@ -62,10 +60,10 @@ async function routes(fastify, options) {
     fastify.get("/validate-reset-token", authController.validateResetToken);
   }
 
-  //9. Reset password route
+  //9. Reset password route (rate limit disabled for testing phase)
   if (authController.resetPassword) {
     fastify.post("/reset-password", {
-      config: { rateLimit: { max: 10, timeWindow: "15 minutes" } }
+      config: { rateLimit: false }
     }, authController.resetPassword);
   }
 

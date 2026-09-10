@@ -277,16 +277,7 @@ module.exports.login = async (request, reply) => {
     const user = await authService.findUserByEmail(normalizedEmail);
 
     // Check if account is temporarily locked due to excessive failed attempts
-    if (user && user.lockoutUntil && new Date(user.lockoutUntil) > new Date()) {
-      const retryAfterSecs = Math.ceil((new Date(user.lockoutUntil).getTime() - Date.now()) / 1000);
-      const retryMinutes = Math.max(1, Math.ceil(retryAfterSecs / 60));
-      return reply.status(423).send({
-        success: false,
-        error: "Locked",
-        message: `Account temporarily locked due to too many failed login attempts. Try again in ${retryMinutes} minute(s).`,
-        retryAfter: retryAfterSecs
-      });
-    }
+    // (Disabled for testing phase)
 
     // Check if user exists
     if (!user) {
@@ -297,20 +288,9 @@ module.exports.login = async (request, reply) => {
       });
     }
 
-    // Verify password and record failure if invalid
+    // Verify password (account lockout disabled for testing phase)
     const isPasswordValid = await authService.verifyPassword(user.passwordHash, password);
     if (!isPasswordValid) {
-      const updatedUser = await authService.recordLoginFailure(user);
-      if (updatedUser.lockoutUntil && new Date(updatedUser.lockoutUntil) > new Date()) {
-        const retryAfterSecs = Math.ceil((new Date(updatedUser.lockoutUntil).getTime() - Date.now()) / 1000);
-        const retryMinutes = Math.max(1, Math.ceil(retryAfterSecs / 60));
-        return reply.status(423).send({
-          success: false,
-          error: "Locked",
-          message: `Account temporarily locked due to too many failed login attempts. Try again in ${retryMinutes} minute(s).`,
-          retryAfter: retryAfterSecs
-        });
-      }
       return reply.status(401).send({
         success: false,
         error: "Unauthorized",
