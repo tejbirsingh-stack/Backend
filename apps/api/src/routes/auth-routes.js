@@ -13,9 +13,11 @@ async function routes(fastify, options) {
   if (authController.microsoftSignupInit) fastify.post("/microsoft-signup-init", authController.microsoftSignupInit);
 
   //1. Login route
+  const loginRateLimitMax = parseInt(process.env.AUTH_LOGIN_RATE_LIMIT_MAX || (process.env.NODE_ENV === 'production' ? '100' : '300'), 10);
+  const loginRateLimitWindow = process.env.AUTH_LOGIN_RATE_LIMIT_WINDOW || "15 minutes";
   if (authController.login) {
     fastify.post("/login", {
-      config: { rateLimit: { max: 20, timeWindow: "15 minutes" } }
+      config: { rateLimit: { max: loginRateLimitMax, timeWindow: loginRateLimitWindow } }
     }, authController.login);
   }
 

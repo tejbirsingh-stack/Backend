@@ -150,8 +150,19 @@ async function setupServer() {
     timeWindow: config.RATE_LIMIT_WINDOW_MS,
     redis: redis,
     keyGenerator: (request: any) => {
-      const xForwardedFor = request.headers['x-forwarded-for'];
-      return (Array.isArray(xForwardedFor) ? xForwardedFor[0] : xForwardedFor) || request.ip;
+      const cfIp = request.headers?.['cf-connecting-ip'];
+      if (cfIp) return (Array.isArray(cfIp) ? cfIp[0] : String(cfIp)).trim();
+
+      const xRealIp = request.headers?.['x-real-ip'];
+      if (xRealIp) return (Array.isArray(xRealIp) ? xRealIp[0] : String(xRealIp)).trim();
+
+      const xForwardedFor = request.headers?.['x-forwarded-for'];
+      if (xForwardedFor) {
+        const raw = Array.isArray(xForwardedFor) ? xForwardedFor[0] : String(xForwardedFor);
+        const clientIp = raw.split(',')[0].trim();
+        if (clientIp) return clientIp;
+      }
+      return request.ip || '127.0.0.1';
     },
     errorResponseBuilder: (request: any, context: any) => {
       const retryAfter = Math.round(context.ttl / 1000);
