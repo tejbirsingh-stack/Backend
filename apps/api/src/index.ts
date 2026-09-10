@@ -85,25 +85,34 @@ const fastify = Fastify({
 // @ts-ignore
 const prisma = require('./utils/prisma.js');
 
-// Initialize Redis connection with Sentinel support
-// const redis = new Redis({
-//   sentinels: [
-//     { host: config.REDIS_SENTINEL_HOST, port: config.REDIS_SENTINEL_PORT }
-//   ],
-//   name: config.REDIS_SENTINEL_SERVICE_NAME,
-//   password: config.REDIS_PASSWORD,
-//   retryDelayOnFailover: 100,
-//   enableOfflineQueue: false,
-//   maxRetriesPerRequest: 3,
-//   lazyConnect: true
-// });
-const redis = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD || undefined,
-  enableOfflineQueue: true,
-  maxRetriesPerRequest: 3,
-  lazyConnect: false
+// Initialize Redis — prefer REDIS_URL (used on UAT/Production), fall back to individual vars
+// enableOfflineQueue: false ensures commands fail-fast instead of hanging the request indefinitely
+// when Redis is temporarily unreachable (which would cause 504 Gateway Time-out).
+const redisUrl = process.env.REDIS_URL;
+const redisTls = process.env.REDIS_TLS === 'true';
+const redis = redisUrl
+  ? new Redis(redisUrl, {
+      maxRetriesPerRequest: 3,
+      enableOfflineQueue: false,
+      connectTimeout: 5000,
+      tls: redisTls ? {} : undefined,
+    })
+  : new Redis({
+      host: process.env.REDIS_HOST || 'localhost',
+      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+      password: process.env.REDIS_PASSWORD || undefined,
+      maxRetriesPerRequest: 3,
+      enableOfflineQueue: false,
+      connectTimeout: 5000,
+      tls: redisTls ? {} : undefined,
+    });
+
+redis.on('error', (err: Error) => {
+  // Log Redis errors to pino (visible in CloudWatch / container logs) without crashing.
+  fastify.log.warn({ err: err.message }, '[Redis] Connection error');
+});
+redis.on('connect', () => {
+  fastify.log.info('[Redis] Connected successfully');
 });
 
 // Add global context
@@ -149,6 +158,9 @@ async function setupServer() {
     max: config.RATE_LIMIT_MAX_REQUESTS,
     timeWindow: config.RATE_LIMIT_WINDOW_MS,
     redis: redis,
+    // skipOnError: true — if Redis is unreachable, allow the request through instead of
+    // blocking indefinitely and causing a 504 Gateway Time-out at the load balancer.
+    skipOnError: true,
     keyGenerator: (request: any) => {
       const cfIp = request.headers?.['cf-connecting-ip'];
       if (cfIp) return (Array.isArray(cfIp) ? cfIp[0] : String(cfIp)).trim();
