@@ -842,6 +842,7 @@ async function getShareStream(req, reply) {
     // we should enforce strictProxy to ensure they NEVER receive the original uncompressed file.
     const strictProxy = isVideoOrAudio && !wantOriginal && !effectivePermissions.download;
 
+    req.isShareStream = true;
     return await handleMediaRedirectOrServe(req, reply, asset.id, isDownload, strictProxy);
   } catch (error) {
     req.log.error(error);

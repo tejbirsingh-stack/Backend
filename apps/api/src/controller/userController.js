@@ -2,6 +2,7 @@
 const { roles, logSuccess, logError, ACTIVITY_NAME, ACTIVITY_TYPE } = require('../lib');
 const { autoAssignNewAdminToWorkspaces } = require('../services/workspace.service');
 const path = require('path');
+const { Readable } = require('stream');
 const B2StorageService = require("../b2-storage.cjs");
 const { getB2Storage } = require('../services/b2Config');
 
@@ -199,7 +200,15 @@ module.exports.updateProfile = async (request, reply) => {
     }
 
     let updateData = {};
-    if (name !== undefined) updateData.name = name;
+    if (name !== undefined) {
+      if (typeof name !== 'string' || !name.trim()) {
+        return reply.code(400).send({
+          error: "Validation Error",
+          message: "Full name cannot be empty"
+        });
+      }
+      updateData.name = name.trim();
+    }
     if (timezone !== undefined) updateData.timezone = timezone;
     if (shareLinkActivityEnabled !== undefined) updateData.shareLinkActivityEnabled = shareLinkActivityEnabled;
 
@@ -236,13 +245,55 @@ module.exports.updateProfile = async (request, reply) => {
 
 module.exports.uploadProfilePhoto = async (request, reply) => {
   try {
-    const data = await request.file();
+    const data = await request.file({
+      limits: {
+        fileSize: 5 * 1024 * 1024 // 5MB limit
+      }
+    });
     if (!data) {
       return reply.code(400).send({ error: "No file uploaded" });
     }
 
     if (!request.user || !request.user.id) {
+      if (data.file) data.file.resume();
       return reply.code(401).send({ error: "Unauthorized" });
+    }
+
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/jpg'];
+    const allowedExtensions = ['.jpg', '.jpeg', '.png'];
+    const ext = path.extname(data.filename || '').toLowerCase();
+    const mimetype = (data.mimetype || '').toLowerCase();
+
+    if (!allowedMimeTypes.includes(mimetype) || !allowedExtensions.includes(ext)) {
+      if (data.file) data.file.resume();
+      return reply.code(400).send({
+        error: "Invalid file type",
+        message: "Only PNG and JPG files are allowed as profile photo"
+      });
+    }
+
+    // Read buffer to inspect magic bytes and size
+    const buffer = await data.toBuffer();
+    if (data.file?.truncated || buffer.length > 5 * 1024 * 1024) {
+      return reply.code(400).send({
+        error: "File too large",
+        message: "Profile photo must be less than 5MB"
+      });
+    }
+
+    // Verify magic bytes (PNG: 89 50 4E 47 0D 0A 1A 0A, JPEG: FF D8 FF)
+    const isPng = buffer.length >= 8 &&
+      buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 &&
+      buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A;
+
+    const isJpeg = buffer.length >= 3 &&
+      buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+
+    if (!isPng && !isJpeg) {
+      return reply.code(400).send({
+        error: "Invalid file content",
+        message: "The uploaded file is not a valid PNG or JPG image"
+      });
     }
 
     const userId = request.user.id;
@@ -267,17 +318,18 @@ module.exports.uploadProfilePhoto = async (request, reply) => {
     const sanitizedEmail = user.email.toLowerCase().replace(/[^a-z0-9]+/g, '_');
     const folderName = `${sanitizedEmail}_${userId}`;
 
-    const ext = path.extname(data.filename) || '.png';
-    const uniqueFilename = `profile_${Date.now()}${ext}`;
+    const finalExt = isPng ? '.png' : (ext === '.jpeg' ? '.jpeg' : '.jpg');
+    const finalMime = isPng ? 'image/png' : 'image/jpeg';
+    const uniqueFilename = `profile_${Date.now()}${finalExt}`;
 
     // Path: noah-uploads / [organization name] / Profile Photo / [Username_emailid_uniqueid] / [filename]
     const b2Key = `noah-uploads/${sanitizedOrgName}/Profile Photo/${folderName}/${uniqueFilename}`;
 
     // Upload to B2
     const uploadedAsset = await (await b2()).uploadStream(
-      data.file,
+      Readable.from(buffer),
       b2Key,
-      data.mimetype,
+      finalMime,
       { type: 'profile_photo', userId: userId }
     );
 

@@ -73,7 +73,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get("/:id/thumbnail", getThumbnail);
 
   //5. Download file
-  fastify.get("/:filename/download", { preHandler: [optionalAuthenticate] }, downloadFile);
+  fastify.get("/:filename/download", { preHandler: [authenticate] }, downloadFile);
 
   //6. List soft-deleted files (Trash)
   fastify.get("/trash", canTrash, softDelete);
@@ -85,8 +85,8 @@ module.exports = function (fastify, opts, done) {
   fastify.delete("/:filename/permanent", canDelete, deletePermanently);
   fastify.post("/:filename/permanent-delete", canDelete, deletePermanently);
 
-  //9. GET /api/media/:filename — file bytes for players (optionally authenticated for permission resolution)
-  fastify.get("/:filename", { preHandler: [optionalAuthenticate] }, getMediaFile);
+  //9. GET /api/media/:filename — file metadata / bytes (requires authentication)
+  fastify.get("/:filename", { preHandler: [authenticate] }, getMediaFile);
 
   //9.1 POST and PATCH /api/media/:filename/tags — update asset tags
   fastify.post("/:filename/tags", canTags, updateAssetTags);
