@@ -1,10 +1,7 @@
 const { Queue } = require('bullmq');
-const Redis = require('ioredis');
+const { createRedisClient } = require('../../utils/redis');
 
-const queueRedisConnection = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD || undefined,
+const queueRedisConnection = createRedisClient({
   maxRetriesPerRequest: null,
 });
 

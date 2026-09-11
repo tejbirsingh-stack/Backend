@@ -14,21 +14,17 @@ const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 const { generateSignedUrl, verifySignedUrl } = require('../utils/signedUrlUtils');
+const { validateUploadMetadata, validateMagicBytes } = require('../utils/fileValidator');
 
 const { Queue } = require("bullmq");
-const Redis = require("ioredis");
+const { createRedisClient } = require("../utils/redis");
 
 const { imageHash } = require('image-hash');
 const { promisify } = require('util');
 const imageHashAsync = promisify(imageHash);
 
-// Initialize Redis connection for the Queue
-const queueRedisConnection = new Redis({
-  host: process.env.REDIS_HOST || "localhost",
-  port: parseInt(process.env.REDIS_PORT || "6379", 10),
-  password: process.env.REDIS_PASSWORD || undefined,
-  tls: process.env.REDIS_TLS === "true" ? {} : undefined,
-});
+// Initialize Redis connection for the Queue (supports REDIS_URL and fallback)
+const queueRedisConnection = createRedisClient({ maxRetriesPerRequest: null });
 
 // Initialize the BullMQ queue
 const compressionQueue = new Queue("compression-jobs", {
@@ -40,14 +36,8 @@ const heavyCompressionQueue = new Queue("compression-jobs-heavy", {
   connection: queueRedisConnection,
 });
 
-// Dedicated Redis Client for resumable upload sessions *****
-const redisClient = new Redis({
-  host: process.env.REDIS_HOST || "localhost",
-  port: parseInt(process.env.REDIS_PORT || "6379", 10),
-  password: process.env.REDIS_PASSWORD || undefined,
-  tls: process.env.REDIS_TLS === "true" ? {} : undefined,
-});
-// *****
+// Dedicated Redis Client for resumable upload sessions
+const redisClient = createRedisClient();
 
 const B2StorageService = require("../b2-storage.cjs");
 const { assertQuotaAvailable, recordStorageDelta } = require("../services/usage-meter.service");
@@ -974,6 +964,10 @@ async function handleMediaRedirectOrServe(request, reply, filename, download = f
       }
 
       reply.header("Accept-Ranges", "bytes");
+      reply.header("X-Content-Type-Options", "nosniff");
+      if (mimeType === 'image/svg+xml' || mimeType.includes('html') || mimeType === 'application/pdf') {
+        reply.header("Content-Security-Policy", "default-src 'none'; sandbox");
+      }
       reply.header(
         "Content-Disposition",
         download ? `attachment; filename="${name}"` : "inline"
@@ -2491,6 +2485,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
         const safeFileName = (part.filename || 'untitled').replace(/[^a-zA-Z0-9.-]/g, '_');
         const filename = `${uniqueId}-raw-${safeFileName}`;
 
+        // Security: Validate file name and declared MIME type (CWE-434 mitigation)
+        const metadataCheck = validateUploadMetadata(part.filename, part.mimetype);
+        if (!metadataCheck.valid) {
+          return reply.code(400).send({
+            success: false,
+            error: "Bad Request",
+            message: metadataCheck.error || "File type is not permitted"
+          });
+        }
+
         let actualMimeType = part.mimetype;
         if (!actualMimeType || actualMimeType === 'application/octet-stream') {
           actualMimeType = inferMimeType(part.filename);
@@ -2516,15 +2520,32 @@ module.exports.uploadMediaFile = async (request, reply) => {
 
         console.log(`Streaming directly to B2: ${b2Key}`);
 
+        const { Transform } = require('stream');
         let size = 0;
-        part.file.on('data', (chunk) => {
-          size += chunk.length;
+        let isFirstChunk = true;
+        let magicByteError = null;
+
+        const validatorTransform = new Transform({
+          transform(chunk, encoding, callback) {
+            size += chunk.length;
+            if (isFirstChunk) {
+              isFirstChunk = false;
+              const magicCheck = validateMagicBytes(chunk, part.filename);
+              if (!magicCheck.valid) {
+                magicByteError = magicCheck.error || "File content does not match permitted file signature";
+                return callback(new Error(`VALIDATION_FAILED: ${magicByteError}`));
+              }
+            }
+            callback(null, chunk);
+          }
         });
+
+        const uploadStreamInput = part.file.pipe(validatorTransform);
 
         let b2Result;
         try {
           b2Result = await (await b2()).uploadStream(
-            part.file,
+            uploadStreamInput,
             b2Key,
             part.mimetype,
             {
@@ -2536,6 +2557,13 @@ module.exports.uploadMediaFile = async (request, reply) => {
             }
           );
         } catch (err) {
+          if (magicByteError || (err.message && err.message.includes('VALIDATION_FAILED'))) {
+            return reply.code(400).send({
+              success: false,
+              error: "Bad Request",
+              message: magicByteError || "File content does not match permitted file signature"
+            });
+          }
           console.error("Direct B2 stream failed:", err);
           throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
         }
@@ -2687,11 +2715,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
             const heavyThreshold = 300 * 1024 * 1024;
             const queueToUse = size >= heavyThreshold ? heavyCompressionQueue : compressionQueue;
 
+            const originCandidate = request.headers.origin || (request.headers.host ? `${request.protocol || 'https'}://${request.headers.host}` : undefined);
+            const dynamicWebhookHost = (originCandidate && !originCandidate.includes('localhost') && !originCandidate.includes('127.0.0.1'))
+              ? originCandidate
+              : undefined;
             await queueToUse.add("compress", {
               assetId: newAsset.id, // For new webhook
               key: b2Key,
               preset: "medium", // Default to balanced H.264
               fileSizeBytes: size, // Used by worker to decide 1080p cap for large files
+              webhookHost: dynamicWebhookHost,
             });
             console.log(`[Queue] Added video compression job for asset ${newAsset.id} to ${size >= heavyThreshold ? 'heavy' : 'standard'} queue (${Math.round(size / 1024 / 1024)}MB)`);
           } catch (queueErr) {
@@ -3615,6 +3648,16 @@ module.exports.initiateResumableUpload = async (request, reply) => {
     return reply.status(400).send({ message: "fileName, fileSize, and mimeType are required" });
   }
 
+  // Security: Enforce strict file extension and MIME type allowlists (CWE-434 mitigation)
+  const validation = validateUploadMetadata(fileName, mimeType);
+  if (!validation.valid) {
+    return reply.status(400).send({
+      success: false,
+      error: "Bad Request",
+      message: validation.error || "File type is not permitted"
+    });
+  }
+
   if (title && title.length > 255) {
     return reply.status(400).send({ message: "Title cannot exceed 255 characters" });
   }
@@ -3758,6 +3801,19 @@ module.exports.uploadChunk = async (request, reply) => {
     if (chunkBuffer.length === 0) {
       process.stdout.write(`[ChunkUpload] ✗ Empty chunk body received for part=${partNumber} sessionId=${sessionId}\n`);
       return reply.status(400).send({ message: "Empty chunk payload received" });
+    }
+
+    // Security: Verify magic bytes on the first chunk of the file (CWE-434 mitigation)
+    if (partNumber === 1) {
+      const magicValidation = validateMagicBytes(chunkBuffer, session.fileName || session.key);
+      if (!magicValidation.valid) {
+        process.stdout.write(`[ChunkUpload] ✗ File signature validation failed for part=1 sessionId=${sessionId}: ${magicValidation.error}\n`);
+        return reply.status(400).send({
+          success: false,
+          error: "Bad Request",
+          message: magicValidation.error || "File content signature verification failed"
+        });
+      }
     }
 
     // Upload chunk to B2
@@ -4153,11 +4209,16 @@ module.exports.completeResumableUpload = async (request, reply) => {
         // 300MB threshold for heavy queue — prevents large videos competing with smaller ones
         const heavyThreshold = BigInt(300 * 1024 * 1024);
         const queueToUse = (isVideo && BigInt(session.fileSize) >= heavyThreshold) ? heavyCompressionQueue : compressionQueue;
+        const originCandidate = request.headers.origin || (request.headers.host ? `${request.protocol || 'https'}://${request.headers.host}` : undefined);
+        const dynamicWebhookHost = (originCandidate && !originCandidate.includes('localhost') && !originCandidate.includes('127.0.0.1'))
+          ? originCandidate
+          : undefined;
         await queueToUse.add("compress", {
           assetId: newAsset.id,
           key: session.key,
           preset: "medium",
           fileSizeBytes: Number(session.fileSize), // Used by worker to decide 1080p cap
+          webhookHost: dynamicWebhookHost,
         });
         console.log(`[Queue] Added ${isAudio ? 'audio' : 'video'} compression job for asset ${newAsset.id} to ${(isVideo && BigInt(session.fileSize) >= heavyThreshold) ? 'heavy' : 'fast'} queue (${Math.round(Number(session.fileSize) / 1024 / 1024)}MB)`);
       } catch (queueErr) {
@@ -4886,7 +4947,14 @@ module.exports.retryTranscode = async (request, reply) => {
       };
     }
 
-    const webhookHost = process.env.WEBHOOK_HOST || 'https://qa.noahcloud.ai';
+    const originHost = request.headers.origin || (request.headers.host ? `${request.protocol || 'https'}://${request.headers.host}` : null);
+    const webhookHost = (
+      process.env.WEBHOOK_HOST ||
+      originHost ||
+      process.env.APP_URL ||
+      process.env.FRONTEND_URL ||
+      'http://localhost:3000'
+    ).replace(/\/$/, '');
     const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?newAssetId=${id}&compressedKey=${encodeURIComponent(compressedKey)}`;
 
     // Call Coconut synchronously — errors surface immediately in the browser

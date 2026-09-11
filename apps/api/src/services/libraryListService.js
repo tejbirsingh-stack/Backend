@@ -3,6 +3,27 @@ const { encodeCursor, decodeCursor, fingerprint } = require('../utils/libraryCur
 const { getPendingOrDeletedFolderIds } = require('../controller/workSpaceController');
 const { resolveUserAssetPermissionsBatch } = require('../lib/rbac-policy');
 
+const AI_INSIGHT_STEP_KEYS = ['people_scenes', 'asr', 'highlights'];
+
+function aiJobStepsCompleted(steps) {
+  if (!steps || typeof steps !== 'object' || Array.isArray(steps)) return false;
+  return AI_INSIGHT_STEP_KEYS.some((key) => steps[key] === 'completed');
+}
+
+function computeHasAiInsights({ aiTagList, userSummary, aiSummary, asset }) {
+  if (userSummary || aiSummary || aiTagList.length > 0) return true;
+  const counts = asset._count || {};
+  if (
+    (counts.aiAssetPersonAppearances || 0) > 0 ||
+    (counts.aiSceneInsights || 0) > 0 ||
+    (counts.aiTranscriptSegments || 0) > 0
+  ) {
+    return true;
+  }
+  const job = Array.isArray(asset.aiAnalysisJobs) ? asset.aiAnalysisJobs[0] : null;
+  return aiJobStepsCompleted(job?.steps);
+}
+
 async function listItems(prisma, params) {
   const {
     workspaceId,
@@ -399,6 +420,17 @@ async function listItems(prisma, params) {
         metadata: true,
         sources: true,
         aiHighlight: { select: { summary: true, tags: true } },
+        aiAnalysisJobs: {
+          take: 1,
+          select: { status: true, steps: true },
+        },
+        _count: {
+          select: {
+            aiAssetPersonAppearances: true,
+            aiSceneInsights: true,
+            aiTranscriptSegments: true,
+          },
+        },
         assetTags: { include: { tag: true } },
         ...(view === 'shared' ? {
           shareLinks: {
@@ -475,6 +507,13 @@ async function listItems(prisma, params) {
         (typeof a.aiHighlight?.summary === 'string' && a.aiHighlight.summary.trim()) ||
         '';
 
+      const hasAiInsights = computeHasAiInsights({
+        aiTagList,
+        userSummary,
+        aiSummary,
+        asset: a,
+      });
+
       return {
         id: a.id,
         title: a.title,
@@ -488,6 +527,7 @@ async function listItems(prisma, params) {
         tags: dbTags,
         aiTags: aiTagList,
         summary: userSummary || aiSummary || undefined,
+        hasAiInsights,
         status: a.status,
         visibility: a.visibility,
         workspaceId: a.workspaceId || workspaceId,
