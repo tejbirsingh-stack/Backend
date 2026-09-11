@@ -1,5 +1,6 @@
 const prisma = require('../utils/prisma');
 const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/audit-log');
+const { resolveUserAssetPermissionsBatch } = require('../lib/rbac-policy');
 
 module.exports.toggleFavorite = async (request, reply) => {
     try {
@@ -93,9 +94,16 @@ module.exports.getFavorites = async (request, reply) => {
             }
         });
 
+        const favoriteAssets = favorites.map(f => f.asset).filter(Boolean);
+        const assetPermissions = await resolveUserAssetPermissionsBatch(prisma, request.user, favoriteAssets);
+        const data = favorites.map(f => f.asset
+            ? { ...f, asset: { ...f.asset, canDelete: (assetPermissions.get(f.asset.id) || []).includes('manage_trash') } }
+            : f
+        );
+
         return reply.code(200).send({
             success: true,
-            data: favorites
+            data
         });
     } catch (error) {
         console.error(error);

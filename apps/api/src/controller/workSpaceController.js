@@ -5,7 +5,7 @@ const { logSuccess, ACTIVITY_NAME, logError, buildItemPath } = require('../lib/a
 const emailService = require('../services/email-service');
 const { getAncestors } = require('../services/tagHierarchy');
 const { autoAssignAdminsToWorkspace, autoAssignAdminsToProject, assertWorkspaceAccess } = require('../services/workspace.service');
-const { isOrgWideRole, resolveUserWorkspacePermissions } = require('../lib/rbac-policy');
+const { isOrgWideRole, resolveUserWorkspacePermissions, resolveUserAssetPermissionsBatch } = require('../lib/rbac-policy');
 const { verifyProjectAccess } = require('../utils/projectAccessUtils');
 const { createNotification, notifyRole } = require('./notificationController');
 const { ACCESS_LEVEL, MEMBER_TYPES, VISIBILITY } = require('../lib/rolesPermissions');
@@ -2286,6 +2286,12 @@ module.exports.findProjectData = async (request, reply) => {
             if (project) {
                 effectivePermissions = await resolveUserProjectPermissions(prisma, request.user, project);
             }
+
+            const assetPermissions = await resolveUserAssetPermissionsBatch(prisma, request.user, assets);
+            assets = assets.map(a => ({
+                ...a,
+                canDelete: (assetPermissions.get(a.id) || []).includes('manage_trash'),
+            }));
         }
 
         return reply.code(200).send({

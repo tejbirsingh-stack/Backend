@@ -1,6 +1,7 @@
 const { Prisma } = require('@prisma/client');
 const { encodeCursor, decodeCursor, fingerprint } = require('../utils/libraryCursor');
 const { getPendingOrDeletedFolderIds } = require('../controller/workSpaceController');
+const { resolveUserAssetPermissionsBatch } = require('../lib/rbac-policy');
 
 async function listItems(prisma, params) {
   const {
@@ -422,11 +423,14 @@ async function listItems(prisma, params) {
     }) : []
   ]);
 
-  const folderAssetCounts = folderIds.length > 0 ? await prisma.asset.groupBy({
-    by: ['ownerId'],
-    where: { ownerType: 'FOLDER', ownerId: { in: folderIds }, deletedAt: null },
-    _count: { _all: true }
-  }) : [];
+  const [folderAssetCounts, assetPermissions] = await Promise.all([
+    folderIds.length > 0 ? prisma.asset.groupBy({
+      by: ['ownerId'],
+      where: { ownerType: 'FOLDER', ownerId: { in: folderIds }, deletedAt: null },
+      _count: { _all: true }
+    }) : [],
+    resolveUserAssetPermissionsBatch(prisma, params.user, assets),
+  ]);
 
   // Map to frontend DTO shape
   const mappedItems = rawResults.map(raw => {
@@ -493,6 +497,7 @@ async function listItems(prisma, params) {
         parentFolderId: a.ownerType === 'FOLDER' ? a.ownerId : null,
         linkedProjectIds: a.sources ? a.sources.map(ps => ps.projectId) : [],
         isSharedByMe: a.uploadedByUserId === params.userId,
+        canDelete: (assetPermissions.get(a.id) || []).includes('manage_trash'),
         ...(a.shareLinks ? (() => {
           const nowTs = Date.now();
           const active = a.shareLinks.filter(sl => new Date(sl.expiresAt).getTime() > nowTs);

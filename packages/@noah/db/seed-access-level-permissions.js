@@ -13,6 +13,7 @@ const ACCESS_LEVEL_PERMISSIONS_MAP = {
     'manage_users_permissions',
     'manage_root_folders',
     'upload_media',
+    'manage_trash',
     'edit_metadata_tags',
     'timeline_annotations',
     'view_search_media',
@@ -20,6 +21,7 @@ const ACCESS_LEVEL_PERMISSIONS_MAP = {
   ],
   [ACCESS_LEVEL_IDS.CAN_EDIT]: [
     'upload_media',
+    'manage_trash',
     'edit_metadata_tags',
     'timeline_annotations',
     'view_search_media',

@@ -6,6 +6,7 @@ module.exports.listLibraryItems = async (request, reply) => {
       ...request.query,
       workspaceId: request.query.workspaceId,
       userId: request.user?.id,
+      user: request.user,
       view: request.query.view || 'all',
       pageSize: request.query.pageSize ? parseInt(request.query.pageSize, 10) : 48,
     };

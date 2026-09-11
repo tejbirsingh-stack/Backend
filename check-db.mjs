@@ -15,3 +15,4 @@ async function main() {
     console.log("Assets pending Super Admin review:", pendingSuper);
 }
 main().catch(console.error).finally(() => prisma.$disconnect());
+ 

@@ -262,6 +262,102 @@ async function resolveUserAssetPermissions(prisma, user, asset, projectContext =
   return [...new Set([...explicitPerms, ...contextualPerms])];
 }
 
+async function getAccessLevelPermissionMap(prisma, accessLevelIds) {
+  const ids = [...new Set(accessLevelIds.filter(Boolean))];
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.accessLevelPermission.findMany({
+    where: { accessLevelId: { in: ids } },
+    include: { permission: true }
+  });
+  const map = new Map();
+  for (const row of rows) {
+    if (!map.has(row.accessLevelId)) map.set(row.accessLevelId, []);
+    map.get(row.accessLevelId).push(row.permission.slug);
+  }
+  return map;
+}
+
+/**
+ * Batch equivalent of resolveUserAssetPermissions (workspace context only).
+ * Resolves permissions for many assets with a fixed number of queries instead of
+ * several per asset. Returns Map<assetId, string[]>.
+ * Assets must carry: id, visibility, globalMedia, orgId, workspaceId.
+ */
+async function resolveUserAssetPermissionsBatch(prisma, user, assets) {
+  const result = new Map();
+  if (!user || !Array.isArray(assets) || assets.length === 0) return result;
+
+  const READ_ONLY = ['view_search_media', 'download_stream_media'];
+  const rolePerms = user.permissions && user.permissions.length > 0
+    ? user.permissions
+    : await getRolePermissions(prisma, user.roleId);
+  const orgWide = isOrgWideRole(user.role || user.roleId);
+
+  const pending = [];
+  for (const asset of assets) {
+    if (asset.globalMedia) { result.set(asset.id, READ_ONLY); continue; }
+    const isOwnOrg = !asset.orgId || !user.orgId || asset.orgId === user.orgId;
+    if (orgWide && isOwnOrg) { result.set(asset.id, rolePerms); continue; }
+    pending.push(asset);
+  }
+  if (pending.length === 0) return result;
+
+  const isPrivate = (v) => v === 'private' || v === 'PRIVATE';
+  const assetIds = pending.map(a => a.id);
+  const workspaceIds = [...new Set(pending.filter(a => !isPrivate(a.visibility)).map(a => a.workspaceId).filter(Boolean))];
+
+  const [assetUsers, assetGroups, workspaces, wsUsers, wsGroups] = await Promise.all([
+    prisma.assetUser.findMany({
+      where: { assetId: { in: assetIds }, userId: user.id },
+      select: { assetId: true, accessLevelId: true }
+    }),
+    prisma.assetGroup.findMany({
+      where: { assetId: { in: assetIds }, group: { members: { some: { userId: user.id } } } },
+      select: { assetId: true, accessLevelId: true }
+    }),
+    workspaceIds.length ? prisma.workspace.findMany({ where: { id: { in: workspaceIds } } }) : [],
+    workspaceIds.length ? prisma.workspaceUser.findMany({
+      where: { workspaceId: { in: workspaceIds }, userId: user.id },
+      select: { workspaceId: true, accessLevelId: true }
+    }) : [],
+    workspaceIds.length ? prisma.workspaceGroup.findMany({
+      where: { workspaceId: { in: workspaceIds }, group: { members: { some: { userId: user.id } } } },
+      select: { workspaceId: true, accessLevelId: true }
+    }) : [],
+  ]);
+
+  const levelPerms = await getAccessLevelPermissionMap(
+    prisma,
+    [...assetUsers, ...assetGroups, ...wsUsers, ...wsGroups].map(r => r.accessLevelId)
+  );
+  const workspaceById = new Map(workspaces.map(w => [w.id, w]));
+  const collect = (rows, key, id) =>
+    rows.filter(r => r[key] === id).flatMap(r => levelPerms.get(r.accessLevelId) || []);
+
+  for (const asset of pending) {
+    const explicit = [...collect(assetUsers, 'assetId', asset.id), ...collect(assetGroups, 'assetId', asset.id)];
+    if (isPrivate(asset.visibility)) {
+      result.set(asset.id, [...new Set(explicit)]);
+      continue;
+    }
+
+    let contextual;
+    const ws = asset.workspaceId ? workspaceById.get(asset.workspaceId) : null;
+    if (!ws) {
+      contextual = rolePerms;
+    } else {
+      const wsOwnOrg = !ws.orgId || !user.orgId || ws.orgId === user.orgId;
+      if (wsOwnOrg && (orgWide || !isPrivate(ws.visibility))) {
+        contextual = rolePerms;
+      } else {
+        contextual = [...collect(wsUsers, 'workspaceId', ws.id), ...collect(wsGroups, 'workspaceId', ws.id)];
+      }
+    }
+    result.set(asset.id, [...new Set([...explicit, ...contextual])]);
+  }
+  return result;
+}
+
 module.exports = {
   ROLE_IDS,
   roleHasPermission,
@@ -269,5 +365,6 @@ module.exports = {
   resolveUserWorkspacePermissions,
   resolveUserProjectPermissions,
   resolveUserAssetPermissions,
+  resolveUserAssetPermissionsBatch,
   getRolePermissions,
 };

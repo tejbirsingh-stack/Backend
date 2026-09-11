@@ -8,7 +8,7 @@ const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/a
 const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
-const { resolveUserAssetPermissions } = require("../lib/rbac-policy");
+const { resolveUserAssetPermissions, resolveUserAssetPermissionsBatch } = require("../lib/rbac-policy");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
 const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
@@ -2892,40 +2892,17 @@ module.exports.deleteMediaFile = async (request, reply) => {
           });
         }
 
-        // SECURITY: IDOR Deletion Authorization & Ownership Check
-        const isOriginalOwner = assetToUpdate.uploadedByUserId === userId;
-
-        // Check if asset is linked to any project
-        const projectSource = await request.server.prisma.projectSource.findFirst({
-          where: { assetId: assetToUpdate.id }
-        });
-
-        if (projectSource) {
-          try {
-            const level = await verifyProjectAccess(projectSource.projectId, request.user.id, 'Can edit', request.server.prisma);
-            if (level === 'Full Access' || (level === 'Can edit' && isOriginalOwner)) {
-              userRole = 'editor';
-            } else {
-              return reply.code(403).send({ success: false, error: "Forbidden", message: "Access Denied: You do not have permission to delete this project asset." });
-            }
-          } catch (e) {
-            return reply.code(403).send({ success: false, error: "Forbidden", message: "Access Denied: You do not have permission to delete this project asset." });
-          }
-        } else if (!isSuperAdminOrAdmin && !isOriginalOwner) {
-          // Asset has no project link and requester is NOT Super Admin/Admin and NOT the original uploader/owner
-          const userPermissions = await resolveUserAssetPermissions(request.server.prisma, request.user, assetToUpdate);
-
-          if (!userPermissions.includes('delete_media')) {
-            return reply.code(403).send({
-              success: false,
-              error: "Forbidden",
-              message: "Access Denied: You do not have permission to delete this file."
-            });
-          }
-          
-          // If they passed the explicit permission check (like an Editor or custom access level),
-          // ensure they are routed through the Editor soft-delete flow.
-          userRole = 'editor';
+        // Move-to-trash is gated purely by the `manage_trash` permission, resolved for this
+        // asset's context (asset access level → workspace access level → role). Uploader
+        // and role name are deliberately not consulted here; Admin/Super Admin pass via
+        // their role permissions like everyone else.
+        const userPermissions = await resolveUserAssetPermissions(request.server.prisma, request.user, assetToUpdate);
+        if (!userPermissions.includes('manage_trash')) {
+          return reply.code(403).send({
+            success: false,
+            error: "Forbidden",
+            message: "Access Denied: You do not have permission to move this file to Trash."
+          });
         }
 
         const reason = request.body?.reason || request.body?.deletionReason || null;
@@ -5280,6 +5257,8 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
       return "document";
     };
 
+    const assetPermissions = await resolveUserAssetPermissionsBatch(request.server.prisma, request.user, dbAssets);
+
     const transformedAssets = dbAssets.map((asset) => {
       const originalFile = asset.files.find(f => f.fileClass === 'original');
       const proxyFile = asset.files.find(f => f.fileClass === 'proxy');
@@ -5347,6 +5326,9 @@ module.exports.getSharedMediaAssets = async (request, reply) => {
         },
         transcodingStatus: transcodeJob?.status || null,
         uploadedByUserId: asset.uploadedByUserId,
+        visibility: asset.visibility,
+        globalMedia: Boolean(asset.globalMedia),
+        canDelete: (assetPermissions.get(asset.id) || []).includes('manage_trash'),
       };
     });
 
