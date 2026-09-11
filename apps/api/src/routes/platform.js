@@ -164,7 +164,7 @@ module.exports = function platformRoutes(fastify, _opts, done) {
   fastify.delete('/default-content/:id', { preHandler: requirePlatformAdmin }, deleteDefaultContent);
 
   // Global Security Settings
-  fastify.get('/security', getGlobalSecuritySettings);
+  fastify.get('/security', { preHandler: requirePlatformAdmin }, getGlobalSecuritySettings);
   fastify.put('/security', { preHandler: requirePlatformAdmin }, updateGlobalSecuritySettings);
 
   // Dashboard Notification
