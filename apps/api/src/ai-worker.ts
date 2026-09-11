@@ -18,10 +18,10 @@ const { getB2Storage } = require('./services/b2Config');
 /** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
 async function b2(): Promise<InstanceType<typeof B2StorageService>> { return getB2Storage(B2StorageService); }
 
-const redisConnection = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: Number.parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD || undefined,
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { createRedisClient } = require('./utils/redis');
+
+const redisConnection = createRedisClient({
   maxRetriesPerRequest: null,
 });
 

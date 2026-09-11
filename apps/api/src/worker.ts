@@ -12,21 +12,20 @@ import './ai-worker.js';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { getB2Storage } = require('./services/b2Config');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { getCoconutConfig } = require('./services/coconutConfig');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { createRedisClient } = require('./utils/redis');
 
 /** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
 async function b2(): Promise<InstanceType<typeof B2StorageService>> { return getB2Storage(B2StorageService); }
 
-// 1. Initialize DB and Cache connections (reusing config)
-const redisConnection = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  password: process.env.REDIS_PASSWORD || undefined,
+// 1. Initialize DB and Cache connections (reusing config, supports REDIS_URL)
+const redisConnection = createRedisClient({
   maxRetriesPerRequest: null, // Required by BullMQ
-  tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
 });
 
-redisConnection.on('error', (err) => {
+redisConnection.on('error', (err: any) => {
   process.stdout.write(`[Worker] ✗ Redis error: ${err.message}\n`);
 });
 redisConnection.on('reconnecting', () => {
@@ -137,7 +136,13 @@ const processCompressionJob = async (job: Job) => {
     }
 
     // Pass the webhook URL so Coconut tells us when it's done
-    const webhookHost = process.env.WEBHOOK_HOST || 'https://qa.noahcloud.ai';
+    const webhookHost = (
+      process.env.WEBHOOK_HOST ||
+      job.data?.webhookHost ||
+      process.env.APP_URL ||
+      process.env.FRONTEND_URL ||
+      'http://localhost:3000'
+    ).replace(/\/$/, '');
     const webhookUrl = `${webhookHost}/api/media/webhooks/coconut?newAssetId=${assetId}&compressedKey=${encodeURIComponent(compressedKey)}`;
 
     // Send API request to Coconut v2 using standard fetch to avoid SDK silent errors
