@@ -8,6 +8,7 @@ const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/a
 const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
+const { resolveUserAssetPermissions } = require("../lib/rbac-policy");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
 const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
@@ -2912,34 +2913,19 @@ module.exports.deleteMediaFile = async (request, reply) => {
           }
         } else if (!isSuperAdminOrAdmin && !isOriginalOwner) {
           // Asset has no project link and requester is NOT Super Admin/Admin and NOT the original uploader/owner
-          let isAuthorizedWorkspaceMember = false;
-          if (assetToUpdate.workspaceId) {
-            const wsUser = await request.server.prisma.workspaceUser.findFirst({
-              where: { workspaceId: assetToUpdate.workspaceId, userId }
-            });
-            if (wsUser && (wsUser.role === 'ADMIN' || wsUser.role === 'OWNER' || wsUser.role === 'SUPER_ADMIN')) {
-              isAuthorizedWorkspaceMember = true;
-            }
-          }
+          const userPermissions = await resolveUserAssetPermissions(request.server.prisma, request.user, assetToUpdate);
 
-          if (!isAuthorizedWorkspaceMember) {
-            const assetUser = await request.server.prisma.assetUser.findUnique({
-              where: { assetId_userId: { assetId: assetToUpdate.id, userId } },
-              include: { accessLevel: true }
-            }).catch(() => null);
-
-            if (assetUser && (assetUser.accessLevel?.name === 'Full Access' || assetUser.accessLevel?.name === 'Can edit')) {
-              isAuthorizedWorkspaceMember = true;
-            }
-          }
-
-          if (!isAuthorizedWorkspaceMember) {
+          if (!userPermissions.includes('delete_media')) {
             return reply.code(403).send({
               success: false,
               error: "Forbidden",
               message: "Access Denied: You do not have permission to delete this file."
             });
           }
+          
+          // If they passed the explicit permission check (like an Editor or custom access level),
+          // ensure they are routed through the Editor soft-delete flow.
+          userRole = 'editor';
         }
 
         const reason = request.body?.reason || request.body?.deletionReason || null;
