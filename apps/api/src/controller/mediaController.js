@@ -1880,9 +1880,12 @@ module.exports.restoreSoftDelete = async (request, reply) => {
             });
           }
 
-          // SECURITY: IDOR Restoration Authorization & Ownership Check
-          const isOriginalOwner = asset.uploadedByUserId === userId;
-          if (!isSuperAdminOrAdmin && !isOriginalOwner) {
+          // Restore is an "undo" of a trash action that already passed the full
+          // manage_trash permission check. Only the user who trashed the file
+          // (matching what the trash list shows them) or an Admin/Super Admin
+          // safety net may restore it. Uploader is intentionally not consulted.
+          const isDeleter = Boolean(asset.deletedByUserId) && asset.deletedByUserId === userId;
+          if (!isSuperAdminOrAdmin && !isDeleter) {
             return reply.code(403).send({
               success: false,
               error: "Forbidden",
