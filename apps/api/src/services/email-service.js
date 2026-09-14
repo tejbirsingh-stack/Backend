@@ -110,13 +110,18 @@ class EmailService {
   }
 
   // Send Share Invite (Media asset review link)
-  async sendShareInvite(to, { assetTitle, shareUrl, expiresAt, permissions, hasPassword, password, senderName, orgLogoUrl, orgName }) {
+  async sendShareInvite(to, { assetTitle, shareUrl, expiresAt, permissions, hasPassword, password, senderName, orgLogoUrl, orgName, accessLevel }) {
     const subject = `${senderName || "Someone"} shared "${assetTitle || "a file"}" with you on Noah`;
-    const allowedActions = [];
-    if (permissions?.view) allowedActions.push("View");
-    if (permissions?.comment) allowedActions.push("Comment & Annotate");
-    if (permissions?.download || permissions?.downloadProxy) allowedActions.push("Download");
-    const actionsText = allowedActions.join(", ") || "View";
+    let actionsText = "";
+    if (accessLevel) {
+      actionsText = accessLevel;
+    } else {
+      const allowedActions = [];
+      if (permissions?.view) allowedActions.push("View");
+      if (permissions?.comment) allowedActions.push("Comment & Annotate");
+      if (permissions?.download || permissions?.downloadProxy) allowedActions.push("Download");
+      actionsText = allowedActions.join(", ") || "View";
+    }
     const formattedExpiry = expiresAt ? new Date(expiresAt).toLocaleString() : "N/A";
     const passwordNoteText = password
       ? `\n\nAccess Password: ${password}`
@@ -136,6 +141,7 @@ class EmailService {
       senderName,
       orgLogoUrl,
       orgName,
+      accessLevel,
     });
 
     return this.sendEmail({ to, subject, text, html });

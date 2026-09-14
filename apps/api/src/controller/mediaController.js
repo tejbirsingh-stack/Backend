@@ -5063,17 +5063,41 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
     }
 
-    let aLevelId = accessLevel;
-    if (aLevelId) {
-      const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
-      if (!foundLevel) {
-        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
-        aLevelId = fallbackLevel ? fallbackLevel.id : null;
+    let resolvedAccessLevel = null;
+    if (accessLevel && typeof accessLevel === 'string') {
+      const trimmed = accessLevel.trim();
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
+      if (isUuid) {
+        resolvedAccessLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: trimmed } }).catch(() => null);
       }
-    } else {
-      const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
-      aLevelId = fallbackLevel ? fallbackLevel.id : null;
+      if (!resolvedAccessLevel) {
+        const upperSnake = trimmed.toUpperCase().replace(/\s+/g, '_');
+        resolvedAccessLevel = await request.server.prisma.accessLevel.findFirst({
+          where: {
+            OR: [
+              { name: trimmed },
+              { title: trimmed },
+              { name: upperSnake },
+              { title: { equals: trimmed, mode: 'insensitive' } },
+              { name: { equals: upperSnake, mode: 'insensitive' } }
+            ]
+          }
+        }).catch(() => null);
+      }
     }
+
+    if (!resolvedAccessLevel) {
+      resolvedAccessLevel = await request.server.prisma.accessLevel.findFirst({
+        where: {
+          OR: [
+            { name: 'FULL_ACCESS' },
+            { title: 'Full Access' }
+          ]
+        }
+      }).catch(() => null);
+    }
+
+    const aLevelId = resolvedAccessLevel ? resolvedAccessLevel.id : null;
 
     const override = await request.server.prisma.assetUser.upsert({
       where: {
@@ -5113,6 +5137,10 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
         const targetOrgId = asset.orgId || request.user?.orgId;
         const orgBranding = targetOrgId ? await resolveOrgBranding(request.server.prisma, targetOrgId, { forEmail: true }) : null;
 
+        const isFullAccess = resolvedAccessLevel?.name === 'FULL_ACCESS' || resolvedAccessLevel?.title?.toLowerCase() === 'full access';
+        const isCanEdit = resolvedAccessLevel?.name === 'CAN_EDIT' || resolvedAccessLevel?.title?.toLowerCase() === 'can edit';
+        const accessLevelTitle = resolvedAccessLevel?.title || (isFullAccess ? 'Full Access' : isCanEdit ? 'Can Edit' : 'Can View');
+
         // Just sending the standard share invite email as they were granted direct access
         await emailService.sendShareInvite(targetUser.email, {
           assetTitle: asset.title,
@@ -5120,10 +5148,11 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
           senderName: inviterName,
           orgLogoUrl: orgBranding?.logoUrl || null,
           orgName: orgBranding?.accountName || null,
+          accessLevel: accessLevelTitle,
           permissions: {
             view: true,
-            comment: accessLevel === 'Can edit' || accessLevel === 'Full Access',
-            download: accessLevel === 'Full Access'
+            comment: isCanEdit || isFullAccess,
+            download: isFullAccess
           }
         }).catch(err => {
           console.error("Failed to send asset invite email", err);
@@ -5193,17 +5222,41 @@ module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
     }
 
-    let aLevelId = accessLevel;
-    if (aLevelId) {
-      const foundLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: aLevelId } }).catch(() => null);
-      if (!foundLevel) {
-        const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: accessLevel } });
-        aLevelId = fallbackLevel ? fallbackLevel.id : null;
+    let resolvedGroupAccessLevel = null;
+    if (accessLevel && typeof accessLevel === 'string') {
+      const trimmed = accessLevel.trim();
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
+      if (isUuid) {
+        resolvedGroupAccessLevel = await request.server.prisma.accessLevel.findUnique({ where: { id: trimmed } }).catch(() => null);
       }
-    } else {
-      const fallbackLevel = await request.server.prisma.accessLevel.findFirst({ where: { name: 'Full Access' } });
-      aLevelId = fallbackLevel ? fallbackLevel.id : null;
+      if (!resolvedGroupAccessLevel) {
+        const upperSnake = trimmed.toUpperCase().replace(/\s+/g, '_');
+        resolvedGroupAccessLevel = await request.server.prisma.accessLevel.findFirst({
+          where: {
+            OR: [
+              { name: trimmed },
+              { title: trimmed },
+              { name: upperSnake },
+              { title: { equals: trimmed, mode: 'insensitive' } },
+              { name: { equals: upperSnake, mode: 'insensitive' } }
+            ]
+          }
+        }).catch(() => null);
+      }
     }
+
+    if (!resolvedGroupAccessLevel) {
+      resolvedGroupAccessLevel = await request.server.prisma.accessLevel.findFirst({
+        where: {
+          OR: [
+            { name: 'FULL_ACCESS' },
+            { title: 'Full Access' }
+          ]
+        }
+      }).catch(() => null);
+    }
+
+    const aLevelId = resolvedGroupAccessLevel ? resolvedGroupAccessLevel.id : null;
 
     const override = await request.server.prisma.assetGroup.upsert({
       where: {

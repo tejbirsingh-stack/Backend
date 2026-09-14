@@ -738,7 +738,7 @@ async function unlockShareToken(req, reply) {
 
     const match = await argon2.verify(shareLink.passwordHash, password.trim());
     if (!match) {
-      return reply.code(401).send({ error: 'Incorrect password' });
+      return reply.code(401).send({ error: 'Incorrect password',message : 'Incorrect password. Please try again.' });
     }
 
     // Sign a short-lived share session token

@@ -3,12 +3,17 @@ const { wrapEmailLayout } = require('../layouts/emailLayout');
 /**
  * Secure Share Invite Template Builder
  */
-function renderShareInviteHtml({ assetTitle, shareUrl, expiresAt, permissions, hasPassword, password, senderName, orgLogoUrl = null, orgName = null }) {
-  const allowedActions = [];
-  if (permissions?.view) allowedActions.push('View');
-  if (permissions?.comment) allowedActions.push('Comment & Annotate');
-  if (permissions?.download || permissions?.downloadProxy) allowedActions.push('Download');
-  const actionsText = allowedActions.join(', ') || 'View';
+function renderShareInviteHtml({ assetTitle, shareUrl, expiresAt, permissions, hasPassword, password, senderName, orgLogoUrl = null, orgName = null, accessLevel = null }) {
+  let actionsText = '';
+  if (accessLevel) {
+    actionsText = accessLevel;
+  } else {
+    const allowedActions = [];
+    if (permissions?.view) allowedActions.push('View');
+    if (permissions?.comment) allowedActions.push('Comment & Annotate');
+    if (permissions?.download || permissions?.downloadProxy) allowedActions.push('Download');
+    actionsText = allowedActions.join(', ') || 'View';
+  }
 
   const formattedExpiry = expiresAt ? new Date(expiresAt).toLocaleString() : 'N/A';
 
