@@ -12,7 +12,7 @@ const client = new SecretsManagerClient({
 });
 
 async function run() {
-  const secretId = process.env.AWS_UAT_SECRET_ID || "noah/uat/app-config-all";
+  const secretId = process.env.AWS_APP_SECRET_ID;
 
   console.log("==============================================");
   console.log(" AWS Secrets Manager – UAT App Config Check");
