@@ -1,5 +1,6 @@
 // Organizations Controller
 const path = require('path');
+const { Readable } = require('stream');
 const B2StorageService = require("../b2-storage.cjs");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { logSuccess, logError, ACTIVITY_NAME } = require('../lib');
@@ -71,6 +72,17 @@ module.exports.updateCompanyInfo = async (request, reply) => {
       return reply.code(404).send({ error: "Organization not found" });
     }
 
+    if (website !== undefined && website !== null && String(website).trim() !== "") {
+      const trimmedWebsite = String(website).trim();
+      if (trimmedWebsite.length > 255 || /\s/.test(trimmedWebsite)) {
+        return reply.code(400).send({ error: "Please enter a valid website URL without spaces (up to 255 characters)" });
+      }
+      const urlPattern = /^(https?:\/\/)?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(:\d{1,5})?(\/.*)?$/i;
+      if (!urlPattern.test(trimmedWebsite)) {
+        return reply.code(400).send({ error: "Please enter a valid website URL (e.g. https://example.com or example.com)" });
+      }
+    }
+
     // Merge existing metadata with new updates
     const existingMetadata = (typeof org.metadata === 'string' ? JSON.parse(org.metadata) : org.metadata) || {};
     const updatedMetadata = { ...existingMetadata };
@@ -103,9 +115,52 @@ module.exports.updateCompanyInfo = async (request, reply) => {
 //5. Upload Company Logo
 module.exports.uploadCompanyLogo = async (request, reply) => {
   try {
-    const data = await request.file();
+    const data = await request.file({
+      limits: {
+        fileSize: 5 * 1024 * 1024 // 5MB limit
+      }
+    });
     if (!data) {
       return reply.code(400).send({ error: "No file uploaded" });
+    }
+
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/svg+xml'];
+    const allowedExtensions = ['.jpg', '.jpeg', '.png', '.svg'];
+    const ext = path.extname(data.filename || '').toLowerCase();
+    const mimetype = (data.mimetype || '').toLowerCase();
+
+    if (!allowedMimeTypes.includes(mimetype) || !allowedExtensions.includes(ext)) {
+      if (data.file) data.file.resume();
+      return reply.code(400).send({
+        error: "Invalid file type",
+        message: "Only PNG, JPG, and SVG files are allowed as company photo"
+      });
+    }
+
+    const buffer = await data.toBuffer();
+    if (data.file?.truncated || buffer.length > 5 * 1024 * 1024) {
+      return reply.code(400).send({
+        error: "File too large",
+        message: "Company photo must be less than 5MB"
+      });
+    }
+
+    // Verify content (PNG, JPEG, SVG)
+    const isPng = buffer.length >= 8 &&
+      buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47 &&
+      buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A;
+
+    const isJpeg = buffer.length >= 3 &&
+      buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+
+    const bufferPrefix = buffer.slice(0, 100).toString('utf8').toLowerCase();
+    const isSvg = ext === '.svg' || mimetype === 'image/svg+xml' || bufferPrefix.includes('<svg') || bufferPrefix.includes('<?xml');
+
+    if (!isPng && !isJpeg && !isSvg) {
+      return reply.code(400).send({
+        error: "Invalid file content",
+        message: "The uploaded file is not a valid PNG, JPG, or SVG image"
+      });
     }
 
     // Determine target organization
@@ -125,15 +180,16 @@ module.exports.uploadCompanyLogo = async (request, reply) => {
 
     // Sanitize organization name for B2 key
     const sanitizedOrgName = org.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    const ext = path.extname(data.filename) || '.png';
-    const uniqueFilename = `logo_${Date.now()}${ext}`;
+    const finalExt = isPng ? '.png' : (isJpeg ? (ext === '.jpeg' ? '.jpeg' : '.jpg') : '.svg');
+    const finalMime = isPng ? 'image/png' : (isJpeg ? 'image/jpeg' : 'image/svg+xml');
+    const uniqueFilename = `logo_${Date.now()}${finalExt}`;
     const b2Key = `noah-uploads/${sanitizedOrgName}/logo/${uniqueFilename}`;
 
     // Upload to B2
     const uploadedAsset = await (await b2()).uploadStream(
-      data.file,
+      Readable.from(buffer),
       b2Key,
-      data.mimetype,
+      finalMime,
       { type: 'company_logo', orgId: targetOrgId }
     );
 
