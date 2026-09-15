@@ -70,7 +70,7 @@ module.exports = function (fastify, opts, done) {
   fastify.get("/:id/signed-stream", { preHandler: [authenticate] }, generateSignedStreamUrl);
 
   // 4b. Stream thumbnail image directly by asset ID
-  fastify.get("/:id/thumbnail", getThumbnail);
+  fastify.get("/:id/thumbnail", { preHandler: [authenticate] }, getThumbnail);
 
   //5. Download file
   fastify.get("/:filename/download", { preHandler: [authenticate] }, downloadFile);

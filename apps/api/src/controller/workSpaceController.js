@@ -713,12 +713,20 @@ module.exports.createFolder = async (request, reply) => {
                 where: {
                     id: targetParentId,
                 },
+                include: { workspace: true }
             });
 
             if (!parentFolder) {
                 return reply.code(404).send({
                     success: false,
                     message: 'Parent folder not found.',
+                });
+            }
+
+            if (parentFolder.workspace?.orgId !== orgId) {
+                return reply.code(403).send({
+                    success: false,
+                    message: 'Forbidden: Unauthorized parent folder access.',
                 });
             }
 
@@ -1016,8 +1024,31 @@ module.exports.updateProjectMemberAccess = async (request, reply) => {
 module.exports.createProject = async (request, reply) => {
     try {
         const { workspaceId } = request.params;
-        const { name, folderId, defaultTagIds, visibility = 'public', inviteEmails = [], inviteGroupIds = [], inviteAccess = 'Full Access', inviteMemberType = MEMBER_TYPES.MEMBER, sendInviteEmail = false } = request.body;
-        const { orgId, id: userId } = request.user;
+        const { name, folderId, defaultTagIds, visibility = 'public', inviteEmails = [], inviteGroupIds = [], inviteAccess = 'Full Access', inviteMemberType = MEMBER_TYPES.MEMBER, sendInviteEmail = false } = request.body || {};
+        const { orgId, id: userId } = request.user || {};
+
+        if (!orgId || !userId) {
+            return reply.code(401).send({ success: false, message: 'Unauthorized' });
+        }
+
+        if (!workspaceId) {
+            return reply.code(400).send({ success: false, message: 'Workspace ID is required.' });
+        }
+
+        // 1. Verify workspace exists and belongs to the user's scope
+        const workspace = await prisma.workspace.findUnique({
+            where: { id: workspaceId },
+            select: { id: true, orgId: true, status: true }
+        });
+
+        if (!workspace || workspace.status === 'deleted' || workspace.status === 'trash') {
+            return reply.code(404).send({ success: false, message: 'Workspace not found.' });
+        }
+
+        const hasWorkspaceAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasWorkspaceAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden: No access to this workspace.' });
+        }
 
         if (!name) {
             return reply.code(400).send({
@@ -1073,7 +1104,38 @@ module.exports.createProject = async (request, reply) => {
         let finalOwnerType = folderId ? 'FOLDER' : 'WORKSPACE';
         let resolvedFolderName = null;
 
-        if (!folderId) {
+        if (folderId) {
+            // Validate that the provided folder exists, belongs to the specified workspace, and is within user's org
+            const targetFolder = await prisma.folder.findUnique({
+                where: { id: folderId },
+                include: { workspace: true }
+            });
+
+            if (!targetFolder) {
+                return reply.code(404).send({
+                    success: false,
+                    message: 'Folder not found.'
+                });
+            }
+
+            // Verify folder belongs to the specified workspace
+            if (targetFolder.workspaceId !== workspaceId) {
+                return reply.code(403).send({
+                    success: false,
+                    message: 'Forbidden: Folder does not belong to the specified workspace.'
+                });
+            }
+
+            // Verify folder belongs to the user's organization
+            if (targetFolder.workspace?.orgId !== orgId) {
+                return reply.code(403).send({
+                    success: false,
+                    message: 'Forbidden: Unauthorized folder access.'
+                });
+            }
+
+            resolvedFolderName = targetFolder.name;
+        } else {
             // Determine year and month folders
             const tzSetting = await prisma.systemTimezone.findFirst({
                 where: { type: 'workspace', enabled: true }
@@ -3677,23 +3739,94 @@ module.exports.restoreProject = async (request, reply) => {
 
 module.exports.searchGuestUsers = async (request, reply) => {
     try {
-        const { q = '' } = request.query;
-        const { orgId } = request.user;
+        const { q = '', workspaceId } = request.query || {};
+        const { orgId, id: userId } = request.user || {};
 
-        if (!q || q.trim().length < 2) {
+        if (!orgId || !userId) {
+            return reply.code(401).send({ success: false, message: 'Unauthorized' });
+        }
+
+        if (!q || typeof q !== 'string') {
             return reply.code(200).send({ success: true, data: [] });
         }
 
-        const normalized = q.trim().toLowerCase();
+        // Sanitize search query: strip SQL wildcards (% and _) and escape characters
+        const sanitized = q.replace(/[%_\\]/g, '').trim();
 
-        // Search users from OTHER organizations (not the current user's org)
+        if (sanitized.length < 2) {
+            return reply.code(200).send({ success: true, data: [] });
+        }
+
+        const normalized = sanitized.toLowerCase();
+
+        // Scope validation:
+        // If workspaceId is provided, ensure caller has access to the workspace
+        let targetWorkspaceIds = [];
+        if (workspaceId) {
+            const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+            if (!hasAccess) {
+                return reply.code(403).send({ success: false, message: 'Forbidden: No access to this workspace' });
+            }
+            targetWorkspaceIds = [workspaceId];
+        } else {
+            // Find all active workspaces accessible to the user in their organization or through direct membership
+            const accessibleWorkspaces = await prisma.workspace.findMany({
+                where: {
+                    OR: [
+                        { orgId },
+                        { users: { some: { userId } } }
+                    ],
+                    status: 'active'
+                },
+                select: { id: true }
+            });
+            targetWorkspaceIds = accessibleWorkspaces.map(w => w.id);
+        }
+
+        if (targetWorkspaceIds.length === 0) {
+            return reply.code(200).send({ success: true, data: [] });
+        }
+
+        // Check if search query is a valid full email format (for specific guest invitation lookup)
+        const isEmailFormat = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sanitized);
+
+        // Search guest users from OTHER organizations (not current user's org)
+        // Constrain partial searches strictly to guests already linked to the caller's accessible workspaces/projects,
+        // while allowing exact email lookups for specific user invitations.
         const users = await prisma.user.findMany({
             where: {
                 orgId: { not: orgId },
                 status: 'active',
-                OR: [
-                    { email: { contains: normalized, mode: 'insensitive' } },
-                    { name: { contains: normalized, mode: 'insensitive' } },
+                AND: [
+                    isEmailFormat
+                        ? { email: { equals: normalized, mode: 'insensitive' } }
+                        : {
+                            OR: [
+                                { email: { contains: normalized, mode: 'insensitive' } },
+                                { name: { contains: normalized, mode: 'insensitive' } },
+                            ]
+                        },
+                    {
+                        OR: [
+                            {
+                                workspaceUsers: {
+                                    some: {
+                                        workspaceId: { in: targetWorkspaceIds }
+                                    }
+                                }
+                            },
+                            {
+                                projectUsers: {
+                                    some: {
+                                        project: {
+                                            workspaceId: { in: targetWorkspaceIds }
+                                        }
+                                    }
+                                }
+                            },
+                            ...(isEmailFormat ? [{ id: { not: userId } }] : [])
+                        ]
+                    }
                 ]
             },
             select: {
@@ -3966,15 +4099,23 @@ module.exports.searchWorkspaceMembers = async (request, reply) => {
         const { id: workspaceId } = request.params;
         const { q = '' } = request.query;
 
-        const normalizedQuery = q.trim().toLowerCase();
-        if (!normalizedQuery) {
-            return reply.send({ success: true, users: [], groups: [] });
-        }
-
         const orgId = request.user?.orgId;
         if (!orgId) {
             return reply.code(403).send({ success: false, message: 'No org associated with user.' });
         }
+
+        const hasAccess = await assertWorkspaceAccess(prisma, request.user, workspaceId);
+        if (!hasAccess) {
+            return reply.code(403).send({ success: false, message: 'Forbidden: No access to this workspace' });
+        }
+
+        // Sanitize search query: strip SQL wildcards (% and _) and escape characters
+        const sanitized = (typeof q === 'string' ? q : '').replace(/[%_\\]/g, '').trim();
+        if (!sanitized) {
+            return reply.send({ success: true, users: [], groups: [] });
+        }
+
+        const normalizedQuery = sanitized.toLowerCase();
 
         // Fetch already-added workspace members so we can exclude them
         const existingUsers = await prisma.workspaceUser.findMany({

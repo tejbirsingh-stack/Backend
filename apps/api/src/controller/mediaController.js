@@ -1474,21 +1474,15 @@ module.exports.getThumbnail = async (request, reply) => {
       return reply.code(404).send({ error: "Invalid Asset ID" });
     }
 
-    request.isThumbnail = true;
-
-    // Validate token if provided
-    const token = request.query?.token || request.query?.streamToken;
-    if (token) {
-      try {
-        request.server.jwt.verify(token);
-      } catch (tokenErr) {
-        return reply.code(401).send({
-          success: false,
-          error: "Unauthorized",
-          message: "Stream token expired or invalid",
-        });
-      }
+    if (!request.user || !request.user.id) {
+      return reply.code(401).send({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required",
+      });
     }
+
+    request.isThumbnail = true;
 
     const asset = await request.server.prisma.asset.findUnique({
       where: { id },
@@ -1497,6 +1491,62 @@ module.exports.getThumbnail = async (request, reply) => {
 
     if (!asset) {
       return reply.code(404).send({ error: "Asset not found" });
+    }
+
+    // Authorization checks:
+    const isPlatformAdmin = Boolean(request.user.isPlatformAdmin || request.user.role === 'PLATFORM_ADMIN');
+    if (!isPlatformAdmin) {
+      // 1. Organization boundary check
+      if (asset.orgId && asset.orgId !== request.user.orgId) {
+        const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+          where: { assetId: asset.id, userId: request.user.id }
+        }) || await request.server.prisma.assetGroup.findFirst({
+          where: {
+            assetId: asset.id,
+            group: { members: { some: { userId: request.user.id } } }
+          }
+        });
+        if (!isExplicitlyShared && !asset.globalMedia) {
+          return reply.code(403).send({ success: false, error: 'Forbidden', message: 'Access denied to this asset.' });
+        }
+      }
+
+      // 2. Private asset ownership / explicit share check
+      if (asset.visibility === 'private') {
+        const isOwner = asset.uploadedByUserId === request.user.id;
+        if (!isOwner) {
+          const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+            where: { assetId: asset.id, userId: request.user.id }
+          }) || await request.server.prisma.assetGroup.findFirst({
+            where: {
+              assetId: asset.id,
+              group: { members: { some: { userId: request.user.id } } }
+            }
+          });
+          if (!isExplicitlyShared) {
+            return reply.code(403).send({ success: false, error: 'Forbidden', message: 'Access denied to this private asset.' });
+          }
+        }
+      }
+
+      // 3. Workspace access check
+      if (asset.workspaceId && asset.visibility !== 'private') {
+        const { assertWorkspaceAccess } = require('../services/workspace.service');
+        const hasAccess = await assertWorkspaceAccess(request.server.prisma, request.user, asset.workspaceId);
+        if (!hasAccess) {
+          const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+            where: { assetId: asset.id, userId: request.user.id }
+          }) || await request.server.prisma.assetGroup.findFirst({
+            where: {
+              assetId: asset.id,
+              group: { members: { some: { userId: request.user.id } } }
+            }
+          });
+          if (!isExplicitlyShared && !asset.globalMedia) {
+            return reply.code(403).send({ success: false, error: 'Forbidden', message: 'Access denied to this asset.' });
+          }
+        }
+      }
     }
 
     const originalFile = asset.files.find(f => f.fileClass === 'original') || asset.files[0];
