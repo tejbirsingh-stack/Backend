@@ -9,12 +9,123 @@ const { getAncestors } = require("../services/tagHierarchy");
 const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { resolveUserAssetPermissions, resolveUserAssetPermissionsBatch } = require("../lib/rbac-policy");
-const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset } = require("../services/workspace.service");
+const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset, assertWorkspaceAccess } = require("../services/workspace.service");
 const emailService = require('../services/email-service');
 const { resolveOrgBranding } = require('../services/branding.service');
 const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 const { generateSignedUrl, verifySignedUrl } = require('../utils/signedUrlUtils');
 const { validateUploadMetadata, validateMagicBytes } = require('../utils/fileValidator');
+const { VISIBILITY } = require('../lib/rolesPermissions');
+
+const ORG_MEMBER_PUBLIC_MEDIA_MESSAGE =
+  'Organization members already have access to this public media.';
+const WORKSPACE_MEMBER_PUBLIC_MEDIA_MESSAGE =
+  'Workspace members already have access to this public media.';
+
+function isPublicVisibility(value) {
+  return String(value || '').toLowerCase() === VISIBILITY.PUBLIC;
+}
+
+function isPrivateVisibility(value) {
+  return String(value || '').toLowerCase() === VISIBILITY.PRIVATE;
+}
+
+function orgMembersInheritPublicMediaAccess(asset) {
+  return isPublicVisibility(asset?.visibility) && isPublicVisibility(asset?.workspace?.visibility);
+}
+
+function workspaceMembersInheritPublicMediaAccess(asset) {
+  return isPublicVisibility(asset?.visibility) && isPrivateVisibility(asset?.workspace?.visibility);
+}
+
+function assetWorkspaceId(asset) {
+  return asset?.workspaceId || asset?.workspace?.id || null;
+}
+
+async function loadInheritedWorkspaceAccess(prisma, workspaceId) {
+  if (!workspaceId) {
+    return { userIds: [], groupIds: [] };
+  }
+
+  const [wsUsers, wsGroups] = await Promise.all([
+    prisma.workspaceUser.findMany({
+      where: { workspaceId },
+      select: { userId: true },
+    }),
+    prisma.workspaceGroup.findMany({
+      where: { workspaceId },
+      select: {
+        groupId: true,
+        group: { select: { members: { select: { userId: true } } } },
+      },
+    }),
+  ]);
+
+  const userIds = new Set(wsUsers.map((row) => row.userId).filter(Boolean));
+  const groupIds = [];
+  for (const row of wsGroups) {
+    if (row.groupId) groupIds.push(row.groupId);
+    for (const member of row.group?.members || []) {
+      if (member.userId) userIds.add(member.userId);
+    }
+  }
+
+  return { userIds: [...userIds], groupIds };
+}
+
+async function inheritedPublicMediaShareBlock(prisma, asset, { targetUser, groupId } = {}) {
+  if (orgMembersInheritPublicMediaAccess(asset)) {
+    if (groupId) {
+      return {
+        message: ORG_MEMBER_PUBLIC_MEDIA_MESSAGE,
+        orgMemberInPublic: true,
+      };
+    }
+    if (targetUser?.orgId && asset.orgId && targetUser.orgId === asset.orgId) {
+      return {
+        message: ORG_MEMBER_PUBLIC_MEDIA_MESSAGE,
+        orgMemberInPublic: true,
+      };
+    }
+  }
+
+  if (!workspaceMembersInheritPublicMediaAccess(asset)) {
+    return null;
+  }
+
+  const workspaceId = assetWorkspaceId(asset);
+  if (!workspaceId) return null;
+
+  if (groupId) {
+    const linked = await prisma.workspaceGroup.findFirst({
+      where: { workspaceId, groupId },
+      select: { groupId: true },
+    });
+    if (linked) {
+      return {
+        message: WORKSPACE_MEMBER_PUBLIC_MEDIA_MESSAGE,
+        workspaceMemberInPublic: true,
+      };
+    }
+    return null;
+  }
+
+  if (!targetUser?.id) return null;
+
+  const hasWorkspaceAccess = await assertWorkspaceAccess(
+    prisma,
+    { id: targetUser.id, orgId: targetUser.orgId },
+    workspaceId,
+  );
+  if (hasWorkspaceAccess) {
+    return {
+      message: WORKSPACE_MEMBER_PUBLIC_MEDIA_MESSAGE,
+      workspaceMemberInPublic: true,
+    };
+  }
+
+  return null;
+}
 
 const { Queue } = require("bullmq");
 const { createRedisClient } = require("../utils/redis");
@@ -2307,6 +2418,7 @@ module.exports.getMediaFile = async (request, reply) => {
 
         // Resolve effective permissions based on project or workspace context
         let effectivePermissions = null;
+        let assetWorkspace = null;
         if (request.user) {
           const { resolveUserAssetPermissions } = require('../lib/rbac-policy');
 
@@ -2323,12 +2435,14 @@ module.exports.getMediaFile = async (request, reply) => {
             console.log(`[getMediaFile] projectContext found:`, projectContext ? `${projectContext.id} visibility=${projectContext.visibility}` : 'null');
           }
 
+          assetWorkspace = fetchedAsset.workspaceId
+            ? await request.server.prisma.workspace.findUnique({ where: { id: fetchedAsset.workspaceId } })
+            : null;
+
           // Fetch asset with workspace for permission resolution
           const assetForPerms = {
             ...fetchedAsset,
-            workspace: fetchedAsset.workspaceId
-              ? await request.server.prisma.workspace.findUnique({ where: { id: fetchedAsset.workspaceId } })
-              : null
+            workspace: assetWorkspace
           };
 
           effectivePermissions = await resolveUserAssetPermissions(
@@ -2405,6 +2519,8 @@ module.exports.getMediaFile = async (request, reply) => {
             metadata: fetchedAsset.metadata || {},
             status: fetchedAsset.status,
             visibility: fetchedAsset.visibility,
+            workspaceId: fetchedAsset.workspaceId || null,
+            workspaceVisibility: assetWorkspace?.visibility || null,
             uploadedBy: fetchedAsset.uploadedBy || null,
             uploadedByUserId: fetchedAsset.uploadedByUserId || null,
             globalMedia: Boolean(fetchedAsset.globalMedia),
@@ -5060,6 +5176,15 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
   try {
     const { id: assetId } = request.params;
 
+    const asset = await request.server.prisma.asset.findUnique({
+      where: { id: assetId },
+      select: {
+        visibility: true,
+        workspaceId: true,
+        workspace: { select: { id: true, visibility: true } },
+      }
+    });
+
     // Fetch asset access overrides (direct access users)
     const assetUsers = await request.server.prisma.assetUser.findMany({
       where: { assetId },
@@ -5085,7 +5210,20 @@ module.exports.getAssetAccessOverrides = async (request, reply) => {
       }
     });
 
-    return reply.send({ success: true, overrides: assetUsers, groupOverrides: assetGroups });
+    let inheritedWorkspaceAccess = { userIds: [], groupIds: [] };
+    if (workspaceMembersInheritPublicMediaAccess(asset)) {
+      inheritedWorkspaceAccess = await loadInheritedWorkspaceAccess(
+        request.server.prisma,
+        assetWorkspaceId(asset),
+      );
+    }
+
+    return reply.send({
+      success: true,
+      overrides: assetUsers,
+      groupOverrides: assetGroups,
+      inheritedWorkspaceAccess,
+    });
   } catch (error) {
     console.error("Failed to fetch asset access overrides:", error);
     return reply.status(500).send({ success: false, error: error.message });
@@ -5099,7 +5237,14 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
 
     const asset = await request.server.prisma.asset.findUnique({
       where: { id: assetId },
-      select: { uploadedByUserId: true, orgId: true, title: true }
+      select: {
+        uploadedByUserId: true,
+        orgId: true,
+        title: true,
+        visibility: true,
+        workspaceId: true,
+        workspace: { select: { id: true, visibility: true } },
+      }
     });
 
     if (!asset) {
@@ -5111,6 +5256,15 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
 
     if (!isOwner && !isAdmin) {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
+    }
+
+    const targetUser = await request.server.prisma.user.findUnique({ where: { id: targetUserId } });
+    const inheritedBlock = await inheritedPublicMediaShareBlock(request.server.prisma, asset, { targetUser });
+    if (inheritedBlock) {
+      return reply.code(400).send({
+        success: false,
+        ...inheritedBlock,
+      });
     }
 
     let resolvedAccessLevel = null;
@@ -5166,7 +5320,6 @@ module.exports.updateAssetAccessOverride = async (request, reply) => {
       }
     });
 
-    const targetUser = await request.server.prisma.user.findUnique({ where: { id: targetUserId } });
     if (targetUser) {
       const inviterName = request.user.name || request.user.email;
 
@@ -5258,7 +5411,13 @@ module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
 
     const asset = await request.server.prisma.asset.findUnique({
       where: { id: assetId },
-      select: { uploadedByUserId: true, orgId: true }
+      select: {
+        uploadedByUserId: true,
+        orgId: true,
+        visibility: true,
+        workspaceId: true,
+        workspace: { select: { id: true, visibility: true } },
+      }
     });
 
     if (!asset) {
@@ -5270,6 +5429,16 @@ module.exports.updateAssetGroupAccessOverride = async (request, reply) => {
 
     if (!isOwner && !isAdmin) {
       return reply.status(403).send({ success: false, error: "Forbidden: Only the video owner or an admin can modify access." });
+    }
+
+    const inheritedGroupBlock = await inheritedPublicMediaShareBlock(request.server.prisma, asset, {
+      groupId: targetGroupId,
+    });
+    if (inheritedGroupBlock) {
+      return reply.code(400).send({
+        success: false,
+        ...inheritedGroupBlock,
+      });
     }
 
     let resolvedGroupAccessLevel = null;
