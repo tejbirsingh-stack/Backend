@@ -222,6 +222,117 @@ class StripeController {
         }
       }
 
+      // If user chose to pay with their saved card, perform direct subscription upgrade without redirecting
+      if (useSavedCard) {
+        const paymentMethods = await stripeService.listPaymentMethods(customerId).catch(() => ({ cards: [] }));
+        if (paymentMethods?.cards?.length > 0) {
+          const activeSubs = await stripeService.listActiveSubscriptions(customerId).catch(() => ({ data: [] }));
+          const activeSub = activeSubs?.data?.[0];
+
+          const targetPlan = await prisma.plan.findFirst({
+            where: {
+              OR: [
+                { monthlyPriceId: checkoutPriceId },
+                { yearlyPriceId: checkoutPriceId },
+              ],
+            },
+          });
+
+          const isYearly = targetPlan?.yearlyPriceId === checkoutPriceId;
+          const now = new Date();
+          const expiresAt = new Date(now);
+          if (isYearly) expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+          else expiresAt.setMonth(expiresAt.getMonth() + 1);
+
+          if (activeSub) {
+            const updatedSub = await stripeService.updateSubscription(activeSub.id, checkoutPriceId, false);
+
+            if (targetPlan) {
+              await prisma.organization.update({
+                where: { id: org.id },
+                data: {
+                  currentPlanId: targetPlan.id,
+                  subscriptionStatus: 'active',
+                  planExpiresAt: expiresAt,
+                  metadata: {
+                    ...(org.metadata || {}),
+                    planId: targetPlan.name.toLowerCase(),
+                    billingCycle: isYearly ? 'annual' : 'monthly',
+                    planSelectedAt: now.toISOString(),
+                    expiresAt: expiresAt.toISOString(),
+                  },
+                },
+              });
+            }
+
+            await recordPaymentEvent({
+              orgId: org.id,
+              userId: request.user?.id || null,
+              stripeCustomerId: customerId,
+              stripeSubscriptionId: updatedSub.id,
+              eventType: 'subscription_direct_upgraded',
+              status: 'SUCCESS',
+              planId: targetPlan?.id || checkoutPriceId,
+              planName: targetPlan?.name || null,
+            });
+
+            return reply.send({
+              directUpgrade: true,
+              message: `Successfully switched to ${targetPlan?.name || 'new'} plan using your saved card!`,
+              checkoutDetails: {
+                planName: targetPlan?.name,
+                billingCycle: isYearly ? 'annual' : 'monthly',
+                amountPaidCents: isYearly ? (targetPlan?.yearlyPriceCents || 0) : (targetPlan?.monthlyPriceCents || 0),
+                currency: 'usd',
+              },
+            });
+          } else {
+            const defaultPmId = paymentMethods.defaultPaymentMethodId || paymentMethods.cards[0].id;
+            const newSub = await stripeService.createSubscriptionDirectly(customerId, checkoutPriceId, defaultPmId);
+
+            if (targetPlan) {
+              await prisma.organization.update({
+                where: { id: org.id },
+                data: {
+                  currentPlanId: targetPlan.id,
+                  subscriptionStatus: 'active',
+                  planExpiresAt: expiresAt,
+                  metadata: {
+                    ...(org.metadata || {}),
+                    planId: targetPlan.name.toLowerCase(),
+                    billingCycle: isYearly ? 'annual' : 'monthly',
+                    planSelectedAt: now.toISOString(),
+                    expiresAt: expiresAt.toISOString(),
+                  },
+                },
+              });
+            }
+
+            await recordPaymentEvent({
+              orgId: org.id,
+              userId: request.user?.id || null,
+              stripeCustomerId: customerId,
+              stripeSubscriptionId: newSub.id,
+              eventType: 'subscription_direct_created',
+              status: 'SUCCESS',
+              planId: targetPlan?.id || checkoutPriceId,
+              planName: targetPlan?.name || null,
+            });
+
+            return reply.send({
+              directUpgrade: true,
+              message: `Successfully subscribed to ${targetPlan?.name || 'new'} plan using your saved card!`,
+              checkoutDetails: {
+                planName: targetPlan?.name,
+                billingCycle: isYearly ? 'annual' : 'monthly',
+                amountPaidCents: isYearly ? (targetPlan?.yearlyPriceCents || 0) : (targetPlan?.monthlyPriceCents || 0),
+                currency: 'usd',
+              },
+            });
+          }
+        }
+      }
+
       const baseUrl = getFrontendUrl(request);
       const { successUrl, cancelUrl } = request.body || {};
 

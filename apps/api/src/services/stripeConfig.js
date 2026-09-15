@@ -47,6 +47,8 @@ async function fetchFromSecretsManager() {
 
     const secretKey = stripe.secret_key || process.env.STRIPE_SECRET_KEY || process.env.TEST_STRIPE_SECRET_KEY || '';
     const publishableKey = stripe.publishable_key || process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
+    // const secretKey = (process.env.STRIPE_SECRET_KEY || stripe.secret_key || process.env.TEST_STRIPE_SECRET_KEY || '').replace(/^["']|["']$/g, '').trim();
+    // const publishableKey = (process.env.STRIPE_PUBLISHABLE_KEY || process.env.VITE_STRIPE_PUBLISHABLE_KEY || stripe.publishable_key || '').replace(/^["']|["']$/g, '').trim();
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || stripe.stripe_webhook_secret || '';
 
     return {
