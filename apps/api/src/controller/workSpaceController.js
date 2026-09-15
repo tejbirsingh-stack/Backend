@@ -407,6 +407,26 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             });
         }
 
+        const liveUser = await prisma.user.findUnique({
+            where: { id: userId },
+            include: { roleRelation: true }
+        });
+        const rawRoleName = liveUser?.roleRelation?.name || liveUser?.role || request.user?.role || 'Viewer';
+        const roleId = liveUser?.roleId || request.user?.roleId;
+        const userRole = rawRoleName.trim().toLowerCase();
+        const isSuperAdmin = userRole === 'super admin' || userRole === 'superadmin' || userRole === 'super_admin' || roleId === '996cc58f-8823-4b6f-bcb9-76b2c1f2dd15';
+        const isAdmin = isSuperAdmin || userRole === 'admin' || roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401' || isOrgWideRole(roleId) || isOrgWideRole(rawRoleName);
+
+        // Security check: Least-privileged users (Viewers, Editors, etc.) cannot view inactive workspaces
+        if (includeInactive === 'true' && !isAdmin) {
+            return reply.code(403).send({
+                success: false,
+                error: 'Forbidden',
+                message: 'Access denied: Insufficient permissions to view inactive workspaces',
+                code: 'RBAC_DENIED'
+            });
+        }
+
         // Check if this user is a cross-org guest (has WorkspaceUser records in workspaces NOT from their org)
         const guestMemberships = await prisma.workspaceUser.findMany({
             where: {
@@ -440,8 +460,10 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             ]
         };
 
-        if (includeInactive !== 'true') {
-            whereCondition.status = { notIn: ['inactive', 'Inactive'] };
+        if (includeInactive === 'true' && isAdmin) {
+            // Admins requesting includeInactive: allow inactive workspaces
+        } else {
+            whereCondition.status = { notIn: ['inactive', 'Inactive', 'deleted', 'trash'] };
         }
 
         let workspaces = await prisma.workspace.findMany({
@@ -449,23 +471,34 @@ module.exports.findAllWorkspaces = async (request, reply) => {
             orderBy: {
                 createdAt: 'desc'
             },
-            include: {
-                users: {
-                    include: {
-                        user: {
-                            select: { id: true, name: true, email: true, roleRelation: true }
+            ...(isAdmin ? {
+                include: {
+                    users: {
+                        include: {
+                            user: {
+                                select: { id: true, name: true, email: true, roleRelation: true }
+                            }
                         }
-                    }
-                },
-                groups: {
-                    include: {
-                        group: {
-                            include: { members: true }
+                    },
+                    groups: {
+                        include: {
+                            group: {
+                                include: { members: true }
+                            }
                         }
                     }
                 }
-            }
+            } : {})
         });
+
+        // Ensure non-admins receive empty users/groups arrays for type safety and avoid leaking organizational rosters
+        if (!isAdmin) {
+            workspaces = workspaces.map(w => ({
+                ...(w.toJSON ? w.toJSON() : w),
+                users: [],
+                groups: []
+            }));
+        }
 
         if (workspaces.length > 0) {
             const hasAnyDefault = workspaces.some(w => w.isDefault);

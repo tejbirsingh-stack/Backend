@@ -70,7 +70,31 @@ module.exports = function (fastify, opts, done) {
   fastify.post('/update/:id', canManageWorkspaces, updateWorkspace);
   fastify.delete('/delete/:id', canManageWorkspaces, deleteWorkspace);
   fastify.delete('/:id', canManageWorkspaces, deleteWorkspace);
-  fastify.get('/find-all', canRead, findAllWorkspaces);
+  const isSuperAdminOrAdminUser = (req) => {
+    if (isSuperAdminUser(req)) return true;
+    const role = req.user?.role || req.user?.roleRelation?.name;
+    const roleId = req.user?.roleId;
+    const userRoleName = typeof role === 'string' ? role.trim().toLowerCase() : '';
+    return userRoleName === 'admin' || roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
+  };
+
+  const findWorkspacesHandler = {
+    preHandler: [
+      authenticate,
+      async (request, reply) => {
+        if (request.query?.includeInactive === 'true' && !isSuperAdminOrAdminUser(request)) {
+          return reply.status(403).send({
+            success: false,
+            error: 'Forbidden',
+            message: 'Insufficient permissions to view inactive workspaces',
+            code: 'RBAC_DENIED',
+          });
+        }
+      },
+    ],
+  };
+
+  fastify.get('/find-all', findWorkspacesHandler, findAllWorkspaces);
   fastify.get('/find-all-data/:id', canRead, findWorkspaceMedia);
   fastify.post('/folder/add/:workspaceId', canManageFolders, createFolder);
   fastify.put('/folder/update/:id', canManageFolders, updateFolder);
