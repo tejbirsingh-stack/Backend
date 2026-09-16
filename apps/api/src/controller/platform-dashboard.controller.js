@@ -88,8 +88,6 @@ async function getDashboardSummary(_request, reply) {
         where: {
           OR: [{ status: 'suspended' }, { storageUsedBytes: { gt: 0 } }],
         },
-        orderBy: { storageUsedBytes: 'desc' },
-        take: 40,
         include: {
           currentPlan: true,
           _count: { select: { users: true, workspaces: true, assets: true } },
@@ -145,20 +143,38 @@ async function getDashboardSummary(_request, reply) {
       .map(([planType, count]) => ({ planType, count }))
       .sort((a, b) => b.count - a.count);
 
+    const DEFAULT_STORAGE_QUOTA = 314572800n; // 300MB default matches usage-meter.service.js
     const orgQuotaBytes = (org) => {
-      if (org.currentPlan?.storageQuotaBytes) return org.currentPlan.storageQuotaBytes;
-      if (fallbackFreePlan?.storageQuotaBytes) return fallbackFreePlan.storageQuotaBytes;
-      return 0n;
+      if (org.currentPlan?.storageQuotaBytes && org.currentPlan.storageQuotaBytes > 0n) {
+        return org.currentPlan.storageQuotaBytes;
+      }
+      if (fallbackFreePlan?.storageQuotaBytes && fallbackFreePlan.storageQuotaBytes > 0n) {
+        return fallbackFreePlan.storageQuotaBytes;
+      }
+      return DEFAULT_STORAGE_QUOTA;
     };
 
     const attentionOrgs = attentionCandidates
-      .filter((org) => {
-        const used = Number(org.storageUsedBytes || 0);
+      .map((org) => {
+        const used = Number(org.storageUsedBytes || 0n);
         const quota = Number(orgQuotaBytes(org));
-        const storageHot = quota > 0 && used / quota >= 0.8;
-        return org.status === 'suspended' || storageHot;
+        const utilization = quota > 0 ? used / quota : 0;
+        const storageHot = quota > 0 && utilization >= 0.8;
+        const isSuspended = org.status === 'suspended';
+        return {
+          ...org,
+          utilization,
+          isSuspended,
+          storageHot,
+        };
       })
-      .slice(0, 6);
+      .filter((org) => org.isSuspended || org.storageHot)
+      .sort((a, b) => {
+        if (a.storageHot && !b.storageHot) return -1;
+        if (!a.storageHot && b.storageHot) return 1;
+        return b.utilization - a.utilization;
+      })
+      .slice(0, 10);
 
     return {
       success: true,

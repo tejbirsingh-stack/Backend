@@ -4,7 +4,7 @@
  * sendgridConfig.js — Central SendGrid / Email credential resolver
  *
  * Fetches from AWS Secrets Manager (noah/uat/app-config-all):
- *  - apiKey: parsed.email_crm.sendgrid_key
+ *  - apiKey: parsed.app_config.sendgrid_key
  *  - fromEmail: parsed.app_config.smtp_from_email
  *  - fromName: parsed.app_config.smtp_from_name || 'Noah Platform'
  *
@@ -43,11 +43,10 @@ async function fetchFromSecretsManager() {
     }
 
     const parsed = JSON.parse(response.SecretString);
-    const emailCrm = parsed.email_crm || {};
     const appConfig = parsed.app_config || {};
 
-    const sendgridKey = emailCrm.sendgrid_key || process.env.SENDGRID_API_KEY || null;
-    const fromEmail = appConfig.smtp_from_email || process.env.SMTP_FROM_EMAIL || process.env.EMAIL_FROM || 'noreply@noah-dev.local';
+    const sendgridKey = appConfig.sendgrid_key || process.env.SENDGRID_API_KEY || null;
+    const fromEmail = appConfig.smtp_from_email || process.env.SMTP_FROM_EMAIL || 'noreply@noah-dev.local';
     const fromName = appConfig.smtp_from_name || process.env.SMTP_FROM_NAME || 'Noah Platform';
 
     return {
