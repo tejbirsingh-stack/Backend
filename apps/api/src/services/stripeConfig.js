@@ -70,7 +70,7 @@ async function fetchFromSecretsManager() {
 
     return {
       secretKey: process.env.STRIPE_SECRET_KEY || process.env.TEST_STRIPE_SECRET_KEY || '',
-      publishableKey: process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '',
+      publishableKey: process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '', 
       webhookSecret,
       priceIds: {}
     };
