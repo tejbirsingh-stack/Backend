@@ -45,6 +45,12 @@ await fastify.register(helmet, {
   },
 });
 
+// Helmet defaults X-XSS-Protection to 0; auditors expect enable+block.
+fastify.addHook('onSend', async (_request, reply, payload) => {
+  reply.header('X-XSS-Protection', '1; mode=block');
+  return payload;
+});
+
 await fastify.register(cors, {
   origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'],
   credentials: true,

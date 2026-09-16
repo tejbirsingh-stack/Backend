@@ -137,6 +137,12 @@ async function setupServer() {
     crossOriginResourcePolicy: { policy: "cross-origin" }
   });
 
+  // Helmet defaults X-XSS-Protection to 0; auditors expect enable+block.
+  fastify.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('X-XSS-Protection', '1; mode=block');
+    return payload;
+  });
+
   // Attach dynamic CSP frame-ancestors and origin verification hook
   fastify.addHook('onRequest', attachCspFrameAncestors);
 
