@@ -325,15 +325,14 @@ function requirePermission(slug) {
     }
 
 
-    //make following line uncomment -> 
-    // if (!permissions.includes(slug)) {
-    //   return reply.status(403).send({
-    //     error: "Forbidden",
-    //     message: `Missing required permission: ${slug} in this resource context`,
-    //     code: "RBAC_DENIED",
-    //     requiredPermission: slug,
-    //   });
-    // }
+    if (!permissions.includes(slug) && !permissions.includes('*')) {
+      return reply.status(403).send({
+        error: "Forbidden",
+        message: `Missing required permission: ${slug} in this resource context`,
+        code: "RBAC_DENIED",
+        requiredPermission: slug,
+      });
+    }
   };
 }
 
@@ -363,7 +362,7 @@ function requireAnyPermission(slugs = []) {
       }
     }
 
-    const hasAny = slugs.some((slug) => permissions.includes(slug));
+    const hasAny = slugs.some((slug) => permissions.includes(slug)) || permissions.includes('*');
 
     if (!hasAny) {
       return reply.status(403).send({
@@ -423,6 +422,7 @@ async function requireSuperAdminOrAdmin(request, reply) {
   const roleId = request.user.roleId;
 
   const isSuperAdmin =
+    Boolean(request.user.isPlatformAdmin) ||
     roleName === 'super admin' ||
     roleName === 'superadmin' ||
     roleName === 'super_admin' ||
@@ -433,10 +433,13 @@ async function requireSuperAdminOrAdmin(request, reply) {
     roleId === '88a6b2a1-b2f6-40d5-8b04-4abf7eb45401';
 
   if (!isSuperAdmin && !isAdmin) {
+    const isFolderDelete = (request.url || '').includes('/folder');
     return reply.status(403).send({
       error: "Forbidden",
-      message: "Only Super Admin and Admin roles are authorized to delete folders.",
-      code: "FOLDER_DELETE_RESTRICTED",
+      message: isFolderDelete
+        ? "Only Super Admin and Admin roles are authorized to delete folders."
+        : "Only Super Admin and Admin roles are authorized to perform this operation.",
+      code: isFolderDelete ? "FOLDER_DELETE_RESTRICTED" : "RBAC_DENIED",
     });
   }
 }

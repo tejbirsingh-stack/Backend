@@ -7,13 +7,54 @@ const ROLE_IDS = {
   COLLABORATOR: 'ffeec394-0e40-49e1-aed3-61962118d73e',
 };
 
-const DEFAULT_ROLE_PERMISSIONS_FALLBACK = {
-  [ROLE_IDS.SUPER_ADMIN]: ['upload_media', 'manage_root_folders', 'view_workspace', 'edit_media', 'delete_media', 'share_media', 'manage_workspace', 'manage_projects', 'manage_users', 'view_search_media', 'download_stream_media', 'manage_trash', 'edit_metadata_tags', 'timeline_annotations', 'annotation_privacy', 'create_share_links'],
-  [ROLE_IDS.ADMIN]: ['upload_media', 'manage_root_folders', 'view_workspace', 'edit_media', 'delete_media', 'share_media', 'manage_workspace', 'manage_projects', 'manage_users', 'view_search_media', 'download_stream_media', 'manage_trash', 'edit_metadata_tags', 'timeline_annotations', 'annotation_privacy', 'create_share_links'],
-  [ROLE_IDS.EDITOR]: ['upload_media', 'view_search_media', 'download_stream_media', 'manage_trash', 'edit_metadata_tags', 'timeline_annotations', 'annotation_privacy', 'create_share_links'],
-  [ROLE_IDS.COLLABORATOR]: ['view_search_media', 'download_stream_media', 'timeline_annotations', 'annotation_privacy'],
-  [ROLE_IDS.VIEWER]: ['view_search_media', 'download_stream_media']
+const PERMISSIONS = [
+  { slug: 'view_search_media', name: 'View, Search & Preview Media' },
+  { slug: 'download_stream_media', name: 'Stream & Download Media' },
+  { slug: 'upload_media', name: 'Upload Media' },
+  { slug: 'delete_media', name: 'Hard Delete Media' },
+  { slug: 'manage_trash', name: 'Trash & Restore' },
+  { slug: 'edit_metadata_tags', name: 'Edit Metadata & Tags' },
+  { slug: 'timeline_annotations', name: 'Timeline Annotations' },
+  { slug: 'annotation_privacy', name: 'Annotation Privacy Controls' },
+  { slug: 'create_share_links', name: 'Create Public Review Links' },
+  { slug: 'manage_users_permissions', name: 'Manage Users & Permissions' },
+  { slug: 'configure_sso_mfa', name: 'OAuth SSO & MFA Configuration' },
+  { slug: 'view_audit_analytics', name: 'Audit & Analytics' },
+  { slug: 'manage_root_folders', name: 'Create/Delete Root Folders' },
+  { slug: 'manage_subscription_billing', name: 'Subscription & Billing' },
+  { slug: 'provision_enterprise_org', name: 'Enterprise Account Provisioning' },
+  { slug: 'manage_infrastructure', name: 'Infrastructure / AWS Setup' },
+];
+
+const ROLE_PERMISSIONS_MAP = {
+  [ROLE_IDS.SUPER_ADMIN]: PERMISSIONS.map((p) => p.slug),
+  [ROLE_IDS.ADMIN]: PERMISSIONS.map((p) => p.slug).filter(
+    (s) =>
+      !['manage_subscription_billing', 'provision_enterprise_org', 'manage_infrastructure'].includes(s)
+  ),
+  [ROLE_IDS.EDITOR]: [
+    'view_search_media',
+    'download_stream_media',
+    'upload_media',
+    'manage_trash',
+    'edit_metadata_tags',
+    'timeline_annotations',
+    'annotation_privacy',
+    'create_share_links',
+  ],
+  [ROLE_IDS.COLLABORATOR]: [
+    'view_search_media',
+    'download_stream_media',
+    'timeline_annotations',
+    'annotation_privacy',
+  ],
+  [ROLE_IDS.VIEWER]: [
+    'view_search_media',
+    'download_stream_media',
+  ],
 };
+
+const DEFAULT_ROLE_PERMISSIONS_FALLBACK = ROLE_PERMISSIONS_MAP;
 
 /**
  * Fetches the global org-role permissions dynamically from the database.
@@ -29,9 +70,17 @@ async function getRolePermissions(prisma, roleId) {
   return DEFAULT_ROLE_PERMISSIONS_FALLBACK[roleId] || [];
 }
 
-async function roleHasPermission(prisma, roleId, permissionSlug) {
-  const allowed = await getRolePermissions(prisma, roleId);
-  return allowed.includes(permissionSlug);
+function roleHasPermission(arg1, arg2, arg3) {
+  if (arguments.length === 2 || (typeof arg1 === 'string' && typeof arg2 === 'string')) {
+    const roleId = arg1;
+    const permissionSlug = arg2;
+    const fallback = DEFAULT_ROLE_PERMISSIONS_FALLBACK[roleId] || [];
+    return fallback.includes(permissionSlug);
+  }
+  const prisma = arg1;
+  const roleId = arg2;
+  const permissionSlug = arg3;
+  return getRolePermissions(prisma, roleId).then((allowed) => allowed.includes(permissionSlug));
 }
 
 function isOrgWideRole(roleOrId) {
@@ -360,6 +409,9 @@ async function resolveUserAssetPermissionsBatch(prisma, user, assets) {
 
 module.exports = {
   ROLE_IDS,
+  PERMISSIONS,
+  ROLE_PERMISSIONS_MAP,
+  DEFAULT_ROLE_PERMISSIONS_FALLBACK,
   roleHasPermission,
   isOrgWideRole,
   resolveUserWorkspacePermissions,
