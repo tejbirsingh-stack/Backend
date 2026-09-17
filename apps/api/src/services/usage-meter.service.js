@@ -1,6 +1,7 @@
 const prisma = require('../utils/prisma');
 const B2StorageService = require('../b2-storage.cjs');
 const { getB2Storage } = require('./b2Config');
+const { resolveOrgQuotaBytes, findFallbackFreePlan } = require('./storage-quota');
 
 /** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
 async function b2() { return getB2Storage(B2StorageService); }
@@ -53,7 +54,21 @@ async function assertQuotaAvailable(orgId, additionalBytes = 0) {
     } catch {}
   }
 
-  const quota = BigInt(org.currentPlan?.storageQuotaBytes ?? 314572800n);
+  let fallbackFreePlan = null;
+  if (!org.currentPlan?.storageQuotaBytes || !(BigInt(org.currentPlan.storageQuotaBytes || 0) > 0n)) {
+    const plans = await prisma.plan.findMany({
+      where: {
+        OR: [
+          { name: { contains: 'free', mode: 'insensitive' } },
+          { monthlyPriceCents: 0 },
+        ],
+      },
+      take: 20,
+    });
+    fallbackFreePlan = findFallbackFreePlan(plans);
+  }
+
+  const quota = resolveOrgQuotaBytes(org, fallbackFreePlan);
   const used = BigInt(org.storageUsedBytes || 0);
   const add = BigInt(additionalBytes);
 
@@ -330,7 +345,21 @@ async function getUsageSummary(orgId) {
       data: { storageUsedBytes: actualTotalBytes },
     }).catch((e) => console.warn('Background storageUsedBytes sync error:', e.message));
   }
-  const storageQuotaBytes = BigInt(org.currentPlan?.storageQuotaBytes ?? 314572800n);
+
+  let usageFallbackFreePlan = null;
+  if (!org.currentPlan?.storageQuotaBytes || !(BigInt(org.currentPlan.storageQuotaBytes || 0) > 0n)) {
+    const plans = await prisma.plan.findMany({
+      where: {
+        OR: [
+          { name: { contains: 'free', mode: 'insensitive' } },
+          { monthlyPriceCents: 0 },
+        ],
+      },
+      take: 20,
+    });
+    usageFallbackFreePlan = findFallbackFreePlan(plans);
+  }
+  const storageQuotaBytes = resolveOrgQuotaBytes(org, usageFallbackFreePlan);
 
   const storagePercent = Number((storageUsedBytes * BigInt(100)) / (storageQuotaBytes > 0n ? storageQuotaBytes : 1n));
 

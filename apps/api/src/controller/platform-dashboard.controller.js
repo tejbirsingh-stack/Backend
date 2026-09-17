@@ -1,4 +1,6 @@
 const prisma = require('../utils/prisma');
+const { resolveOrgQuotaBytes, findFallbackFreePlan } = require('../services/storage-quota');
+const { reconcileOrgStorage } = require('../services/usage-meter.service');
 
 function serializeBigInt(value) {
   if (typeof value === 'bigint') return value.toString();
@@ -86,7 +88,12 @@ async function getDashboardSummary(_request, reply) {
       prisma.plan.count({ where: { isPublic: true } }),
       prisma.organization.findMany({
         where: {
-          OR: [{ status: 'suspended' }, { storageUsedBytes: { gt: 0 } }],
+          OR: [
+            { status: 'suspended' },
+            { storageUsedBytes: { gt: 0 } },
+            // Stale counter: has assets but storageUsedBytes still 0 — include for reconcile
+            { assets: { some: { deletedAt: null } } },
+          ],
         },
         include: {
           currentPlan: true,
@@ -121,7 +128,7 @@ async function getDashboardSummary(_request, reply) {
     let storageQuotaBytes = 0n;
     
     // Find the default free plan to use as a fallback for orgs without a plan (currentPlanId = null)
-    const fallbackFreePlan = allPlans.find(p => p.name.toLowerCase().includes('free') || p.monthlyPriceCents === 0);
+    const fallbackFreePlan = findFallbackFreePlan(allPlans);
 
     for (const row of planGroups) {
       const plan = row.currentPlanId ? allPlans.find((p) => p.id === row.currentPlanId) : fallbackFreePlan;
@@ -143,16 +150,26 @@ async function getDashboardSummary(_request, reply) {
       .map(([planType, count]) => ({ planType, count }))
       .sort((a, b) => b.count - a.count);
 
-    const DEFAULT_STORAGE_QUOTA = 314572800n; // 300MB default matches usage-meter.service.js
-    const orgQuotaBytes = (org) => {
-      if (org.currentPlan?.storageQuotaBytes && org.currentPlan.storageQuotaBytes > 0n) {
-        return org.currentPlan.storageQuotaBytes;
-      }
-      if (fallbackFreePlan?.storageQuotaBytes && fallbackFreePlan.storageQuotaBytes > 0n) {
-        return fallbackFreePlan.storageQuotaBytes;
-      }
-      return DEFAULT_STORAGE_QUOTA;
-    };
+    // Reconcile stale storage counters before computing attention utilization
+    const staleAttentionOrgs = attentionCandidates.filter(
+      (org) =>
+        (org._count?.assets || 0) > 0 &&
+        (org.storageUsedBytes == null || BigInt(org.storageUsedBytes || 0) === 0n),
+    );
+    if (staleAttentionOrgs.length > 0) {
+      await Promise.all(
+        staleAttentionOrgs.map(async (org) => {
+          try {
+            const result = await reconcileOrgStorage(org.id);
+            org.storageUsedBytes = BigInt(result.storageUsedBytes || 0);
+          } catch (err) {
+            console.warn(`[Dashboard] reconcileOrgStorage failed for ${org.id}:`, err.message);
+          }
+        }),
+      );
+    }
+
+    const orgQuotaBytes = (org) => resolveOrgQuotaBytes(org, fallbackFreePlan);
 
     const attentionOrgs = attentionCandidates
       .map((org) => {

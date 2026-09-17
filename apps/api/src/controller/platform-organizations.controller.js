@@ -10,14 +10,39 @@ const {
   sendUserInviteEmail,
   authService,
 } = require('../lib/platform-provision');
+const { resolveOrgQuotaBytes, findFallbackFreePlan } = require('../services/storage-quota');
+const { reconcileOrgStorage } = require('../services/usage-meter.service');
 
-function serializeOrg(org) {
+let cachedFallbackFreePlan = null;
+let cachedFallbackFreePlanAt = 0;
+
+async function getFallbackFreePlan() {
+  const now = Date.now();
+  if (cachedFallbackFreePlan && now - cachedFallbackFreePlanAt < 60_000) {
+    return cachedFallbackFreePlan;
+  }
+  const plans = await prisma.plan.findMany({
+    where: {
+      OR: [
+        { name: { contains: 'free', mode: 'insensitive' } },
+        { monthlyPriceCents: 0 },
+      ],
+    },
+    take: 20,
+  });
+  cachedFallbackFreePlan = findFallbackFreePlan(plans);
+  cachedFallbackFreePlanAt = now;
+  return cachedFallbackFreePlan;
+}
+
+function serializeOrg(org, fallbackFreePlan = null) {
   if (!org) return null;
   const currentPlan = org.currentPlan || {};
+  const quotaBytes = resolveOrgQuotaBytes(org, fallbackFreePlan);
   return {
     ...org,
     planType: currentPlan.name ? currentPlan.name.toLowerCase() : (org.metadata?.planId || 'free'),
-    storageQuotaBytes: (currentPlan.storageQuotaBytes || 0n).toString(),
+    storageQuotaBytes: quotaBytes.toString(),
     maxUsers: currentPlan.maxUsers ?? 5,
     maxWorkspaces: currentPlan.maxWorkspaces ?? 1,
     maxProjects: currentPlan.maxProjects ?? 1,
@@ -106,7 +131,7 @@ async function listOrganizations(request, reply) {
     else if (sortBy === 'storageUsedBytes') orderBy = { storageUsedBytes: sortDir };
     else if (sortBy === 'plan') orderBy = { currentPlan: { name: sortDir } };
 
-    const [items, total] = await Promise.all([
+    const [items, total, fallbackFreePlan] = await Promise.all([
       prisma.organization.findMany({
         where,
         orderBy,
@@ -118,12 +143,13 @@ async function listOrganizations(request, reply) {
         },
       }),
       prisma.organization.count({ where }),
+      getFallbackFreePlan(),
     ]);
 
     return {
       success: true,
       total,
-      organizations: items.map(serializeOrg),
+      organizations: items.map((org) => serializeOrg(org, fallbackFreePlan)),
     };
   } catch (error) {
     console.error('listOrganizations error:', error);
@@ -191,6 +217,16 @@ async function getOrganization(request, reply) {
       });
     }
 
+    // Sync storageUsedBytes from asset files so Storage card is not stale (0 B)
+    try {
+      const reconciled = await reconcileOrgStorage(orgId);
+      org.storageUsedBytes = BigInt(reconciled.storageUsedBytes || 0);
+    } catch (reconcileError) {
+      console.warn('getOrganization storage reconcile skipped:', reconcileError.message);
+    }
+
+    const fallbackFreePlan = await getFallbackFreePlan();
+
     // Load settings separately so a missing relation/table does not break the detail page.
     let settings = null;
     try {
@@ -201,7 +237,7 @@ async function getOrganization(request, reply) {
       console.warn('getOrganization settings lookup skipped:', settingsError.message);
     }
 
-    return { success: true, organization: serializeOrg({ ...org, settings }) };
+    return { success: true, organization: serializeOrg({ ...org, settings }, fallbackFreePlan) };
   } catch (error) {
     console.error('getOrganization error:', error);
     return reply.status(500).send({
