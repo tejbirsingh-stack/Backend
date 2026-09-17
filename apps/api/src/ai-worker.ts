@@ -6,7 +6,7 @@ import { PrismaClient } from '@prisma/client';
 import B2StorageService from './b2-storage.cjs';
 import { transcribeProxy } from './services/ai/assemblyai.js';
 import { indexProxyWithVideoIndexer } from './services/ai/azureVideoIndexer.js';
-import { embedTranscriptForAsset } from './services/ai/embedTranscript.js';
+import { embedTranscriptForAsset } from './services/ai/embedTranscript.js'; 
 import { embedSceneInsightsForAsset } from './services/ai/embedSceneInsights.js';
 import { highlightTranscriptForAsset } from './services/ai/highlightTranscript.js';
 // CJS entitlement helper
