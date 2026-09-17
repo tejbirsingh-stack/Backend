@@ -25,6 +25,9 @@ async function routes(fastify, options) {
   //3. Logout route
   if (authController.logout) fastify.post("/logout", authController.logout);
 
+  // Refresh Token route
+  if (authController.refresh) fastify.post("/refresh", authController.refresh);
+
   // Logout All Sessions
   if (authController.logoutAll) fastify.post("/logout-all", { preHandler: authenticate }, authController.logoutAll);
 

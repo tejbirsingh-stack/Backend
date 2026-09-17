@@ -157,7 +157,10 @@ async function authenticate(request, reply) {
         return;
       }
     } catch (jwtErr) {
-      // Fall through to database session check
+      if (jwtErr.code === 'FAST_JWT_EXPIRED' || jwtErr.name === 'TokenExpiredError' || (jwtErr.message && jwtErr.message.toLowerCase().includes('expired'))) {
+        throw new Error("Token expired");
+      }
+      // Fall through to database session check for non-JWT tokens (if any)
     }
 
     // 2. Validate session in database
@@ -252,8 +255,11 @@ async function optionalAuthenticate(request, reply) {
         }
         return;
       }
-    } catch (_jwtErr) {
-      // JWT failed — try session
+    } catch (jwtErr) {
+      if (jwtErr.code === 'FAST_JWT_EXPIRED' || jwtErr.name === 'TokenExpiredError' || (jwtErr.message && jwtErr.message.toLowerCase().includes('expired'))) {
+        throw new Error("Token expired");
+      }
+      // JWT failed — try session for non-JWT tokens
     }
 
     // Try DB session
