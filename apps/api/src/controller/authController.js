@@ -561,7 +561,7 @@ module.exports.register = async (request, reply) => {
       let planExpiresAt = null;
 
       if (isFreePlan) {
-        const trialDays = plan.trialDays ?? 3;
+        const trialDays = plan.trialDays ?? 15;
         const expires = new Date();
         expires.setDate(expires.getDate() + trialDays);
         planExpiresAt = expires;
@@ -2734,7 +2734,7 @@ module.exports.completeSignup = async (request, reply) => {
     const expiresAtDate = new Date(now);
 
     if (isFreePlan) {
-      const trialDays = dbPlan?.trialDays ?? 3;
+      const trialDays = dbPlan?.trialDays ?? 15;
       expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);
     } else if (isMonthly) {
       expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
@@ -2754,7 +2754,7 @@ module.exports.completeSignup = async (request, reply) => {
       teamSize: teamSize || null,
       primaryFocus: firstFocus || null,
       planId: isFreePlan ? 'free' : (dbPlan?.name?.toLowerCase() ?? 'free'),
-      billingCycle: isFreePlan ? `${dbPlan?.trialDays ?? 3}days` : (isMonthly ? "monthly" : "annual"),
+      billingCycle: isFreePlan ? `${dbPlan?.trialDays ?? 15}days` : (isMonthly ? "monthly" : "annual"),
       planSelectedAt: now.toISOString(),
       expiresAt: expiresAtDate.toISOString(),
       subtotalCents,
@@ -3057,7 +3057,7 @@ module.exports.upgradePlan = async (request, reply) => {
     const now = new Date();
     let expiresAtDate = new Date(now);
     if (resolvedIsFree) {
-      const trialDays = dbPlan?.trialDays ?? 3;
+      const trialDays = dbPlan?.trialDays ?? 15;
       expiresAtDate.setDate(expiresAtDate.getDate() + trialDays);
     } else if (isMonthly) {
       expiresAtDate.setMonth(expiresAtDate.getMonth() + 1);
@@ -3074,7 +3074,7 @@ module.exports.upgradePlan = async (request, reply) => {
         metadata: {
           ...(typeof user.organization?.metadata === 'object' ? user.organization.metadata : {}),
           planId: normalizedPlanId,
-          billingCycle: resolvedIsFree ? `${dbPlan?.trialDays ?? 3}days` : (isMonthly ? 'monthly' : 'annual'),
+          billingCycle: resolvedIsFree ? `${dbPlan?.trialDays ?? 15}days` : (isMonthly ? 'monthly' : 'annual'),
           planSelectedAt: now.toISOString(),
           expiresAt: expiresAtDate.toISOString(),
         },
