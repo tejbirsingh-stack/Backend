@@ -101,25 +101,73 @@ async function getViAccessToken(cfg: Awaited<ReturnType<typeof getAzureViConfig>
   return json.accessToken;
 }
 
-function secondsToMs(value: unknown): number {
-  const n = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.round(n * 1000);
+/**
+ * Convert Azure VI time values to milliseconds.
+ * Accepts numeric seconds and .NET TimeSpan strings like "0:00:06.34" / "00:01:21.067".
+ */
+export function viTimeToMs(value: unknown): number {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return 0;
+    return Math.round(value * 1000);
+  }
+  if (typeof value !== 'string') return 0;
+  const trimmed = value.trim();
+  if (!trimmed) return 0;
+
+  // Plain numeric seconds string
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const n = Number(trimmed);
+    return Number.isFinite(n) && n >= 0 ? Math.round(n * 1000) : 0;
+  }
+
+  // TimeSpan: [days.]hh:mm:ss[.fraction] or h:mm:ss[.fraction]
+  const match = trimmed.match(
+    /^(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/,
+  );
+  if (!match) return 0;
+  const days = Number(match[1] || 0);
+  const hours = Number(match[2]);
+  const minutes = Number(match[3]);
+  const seconds = Number(match[4]);
+  const fraction = match[5] ? Number(`0.${match[5]}`) : 0;
+  const totalSeconds = days * 86400 + hours * 3600 + minutes * 60 + seconds + fraction;
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return 0;
+  return Math.round(totalSeconds * 1000);
 }
 
-function mapPeople(insights: any, location: string, accountId: string, videoId: string, accessToken: string): ViPersonAppearance[] {
+function appearanceList(entity: any): any[] {
+  if (Array.isArray(entity?.instances) && entity.instances.length > 0) return entity.instances;
+  if (Array.isArray(entity?.appearances) && entity.appearances.length > 0) return entity.appearances;
+  return [];
+}
+
+function appearanceStartMs(app: any): number {
+  return viTimeToMs(app?.startSeconds ?? app?.adjustedStart ?? app?.start);
+}
+
+function appearanceEndMs(app: any): number {
+  return viTimeToMs(app?.endSeconds ?? app?.adjustedEnd ?? app?.end ?? app?.startSeconds ?? app?.adjustedStart ?? app?.start);
+}
+
+export function mapPeople(
+  insights: any,
+  location: string,
+  accountId: string,
+  videoId: string,
+  accessToken: string,
+): ViPersonAppearance[] {
   const faces = Array.isArray(insights?.faces) ? insights.faces : [];
   const people: ViPersonAppearance[] = [];
 
   faces.forEach((face: any, index: number) => {
-    const appearances = Array.isArray(face?.appearances) ? face.appearances : [];
+    const appearances = appearanceList(face);
     if (appearances.length === 0) return;
 
     let startMs = Number.POSITIVE_INFINITY;
     let endMs = 0;
     for (const app of appearances) {
-      const s = secondsToMs(app?.startSeconds ?? app?.start);
-      const e = secondsToMs(app?.endSeconds ?? app?.end ?? app?.startSeconds ?? app?.start);
+      const s = appearanceStartMs(app);
+      const e = appearanceEndMs(app);
       startMs = Math.min(startMs, s);
       endMs = Math.max(endMs, e);
     }
@@ -147,14 +195,20 @@ function mapPeople(insights: any, location: string, accountId: string, videoId: 
   return people;
 }
 
-function mapScenes(insights: any): ViSceneInsight[] {
+export function mapScenes(insights: any): ViSceneInsight[] {
   const scenes: ViSceneInsight[] = [];
   let ordinal = 0;
 
   const viScenes = Array.isArray(insights?.scenes) ? insights.scenes : [];
   for (const scene of viScenes) {
-    const startMs = secondsToMs(scene?.startSeconds ?? scene?.start);
-    const endMs = secondsToMs(scene?.endSeconds ?? scene?.end ?? scene?.startSeconds ?? scene?.start);
+    const instances = appearanceList(scene);
+    const first = instances[0];
+    const startMs = first
+      ? appearanceStartMs(first)
+      : viTimeToMs(scene?.startSeconds ?? scene?.start);
+    const endMs = first
+      ? appearanceEndMs(first)
+      : viTimeToMs(scene?.endSeconds ?? scene?.end ?? scene?.startSeconds ?? scene?.start);
     scenes.push({
       label: `Scene ${ordinal + 1}`,
       description: null,
@@ -169,21 +223,12 @@ function mapScenes(insights: any): ViSceneInsight[] {
   for (const label of labels) {
     const name = String(label?.name || '').trim();
     if (!name) continue;
-    const appearances = Array.isArray(label?.appearances) ? label.appearances : [];
-    if (appearances.length === 0) {
-      scenes.push({
-        label: name,
-        description: name,
-        startMs: 0,
-        endMs: 0,
-        confidence: typeof label?.confidence === 'number' ? label.confidence : null,
-        ordinal: ordinal++,
-      });
-      continue;
-    }
+    const appearances = appearanceList(label);
+    if (appearances.length === 0) continue;
+
     for (const app of appearances.slice(0, 3)) {
-      const startMs = secondsToMs(app?.startSeconds ?? app?.start);
-      const endMs = secondsToMs(app?.endSeconds ?? app?.end ?? app?.startSeconds ?? app?.start);
+      const startMs = appearanceStartMs(app);
+      const endMs = appearanceEndMs(app);
       const confidence =
         typeof app?.confidence === 'number'
           ? app.confidence
