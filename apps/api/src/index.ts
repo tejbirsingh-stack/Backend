@@ -11,6 +11,7 @@ import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import jwt from '@fastify/jwt';
 import websocket from '@fastify/websocket';
+import fastifyCookie from '@fastify/cookie';
 import rawBody from 'fastify-raw-body';
 
 import Redis from 'ioredis';
@@ -146,6 +147,11 @@ async function setupServer() {
   // Attach dynamic CSP frame-ancestors and origin verification hook
   fastify.addHook('onRequest', attachCspFrameAncestors);
 
+  await fastify.register(fastifyCookie, {
+    secret: config.JWT_SECRET || 'super-secret', // for cookie signature
+    hook: 'onRequest', // set to false to disable cookie autoprocessing
+  });
+
   await fastify.register(rawBody, {
     field: 'rawBody', // the raw body will be available on request.rawBody
     global: false, // Don't parse all requests globally, we'll enable it for webhooks
@@ -239,6 +245,9 @@ async function setupServer() {
         request.user = decoded;
         return;
       } catch (jwtErr) {
+        if (jwtErr.code === 'FAST_JWT_EXPIRED' || jwtErr.name === 'TokenExpiredError' || (jwtErr.message && jwtErr.message.toLowerCase().includes('expired'))) {
+          throw new Error("Token expired");
+        }
         const session = await fastify.authService.validateSession(token);
         if (!session) {
           throw new Error('Invalid or expired session');

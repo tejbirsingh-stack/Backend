@@ -258,6 +258,26 @@ async function validatePlanAndPayment(prisma, planId, opts = {}) {
 }
 
 // 1. Login Handler
+
+function setRefreshTokenCookie(reply, refreshToken) {
+  if (!refreshToken) return;
+  const isProduction = process.env.NODE_ENV === 'production';
+  const sameSiteMode = isProduction ? 'strict' : 'none';
+  console.log('[Auth] Setting refreshToken cookie, isProduction:', isProduction, 'token length:', refreshToken?.length);
+  reply.setCookie('refreshToken', refreshToken, {
+    path: '/',
+    httpOnly: true,
+    // Modern browsers reject SameSite=None unless Secure is true
+    secure: isProduction || sameSiteMode === 'none',
+    sameSite: sameSiteMode, // 'none' required for cross-port on localhost in dev
+    maxAge: 7 * 24 * 60 * 60, // 7 days (increased from 2 minutes for proper refresh testing)
+  });
+  console.log('[Auth] Cookie set successfully');
+  console.log("reply", reply);
+  console.log("reply.setCookie", reply.setCookie);
+}
+
+
 module.exports.login = async (request, reply) => {
   try {
     const { email, password, mfaCode } = request.body || {};
@@ -449,6 +469,7 @@ module.exports.login = async (request, reply) => {
 
     logSuccess(ACTIVITY_NAME.USER_LOGIN, "Login successful.", null, user);  //Log user activity
 
+    setRefreshTokenCookie(reply, session.refreshToken);
     return {
       success: true,
       accessToken: token,
@@ -2744,7 +2765,7 @@ module.exports.completeSignup = async (request, reply) => {
 
     // Derive pricing strictly from the validated DB plan record – never from client strings.
     const monthlyCents = dbPlan?.monthlyPriceCents ?? 0;
-    const yearlyCents  = dbPlan?.yearlyPriceCents  ?? 0;
+    const yearlyCents = dbPlan?.yearlyPriceCents ?? 0;
     const subtotalCents = isFreePlan ? 0 : (isMonthly ? monthlyCents : yearlyCents);
     const taxCents = Math.round(subtotalCents * 0.06);
     const totalCents = subtotalCents + taxCents;
@@ -3093,6 +3114,89 @@ module.exports.upgradePlan = async (request, reply) => {
       success: false,
       error: 'Internal Server Error',
       message: error.message || 'Failed to upgrade plan',
+    });
+  }
+};
+module.exports.refresh = async (request, reply) => {
+  try {
+    console.log("request", request);
+    console.log("request.cookies", request.cookies);
+    const refreshToken = request.cookies.refreshToken;
+    console.log("refreshToken", refreshToken);
+    if (!refreshToken) {
+      return reply.status(401).send({ success: false, error: 'Unauthorized', message: 'No refresh token provided' });
+    }
+
+    // Find session by refresh token
+    const session = await request.server.prisma.userSession.findFirst({
+      where: { refreshToken },
+      include: { user: { include: { organization: true, roleRelation: true } } }
+    });
+
+    console.log("SESSION FOUND:", !!session);
+
+    if (session) {
+      console.log("Session ID:", session.id);
+      console.log("Session expiresAt:", session.expiresAt);
+      console.log("Session revokedAt:", session.revokedAt);
+    }
+
+    const isProduction = process.env.NODE_ENV === 'production';
+    const sameSiteMode = isProduction ? 'strict' : 'none';
+    const cookieOpts = {
+      path: '/',
+      secure: isProduction || sameSiteMode === 'none',
+      sameSite: sameSiteMode
+    };
+
+    if (!session) {
+      console.log("❌ NO SESSION FOUND FOR REFRESH TOKEN");
+      reply.clearCookie('refreshToken', cookieOpts);
+      return reply.status(401).send({ success: false, error: 'Unauthorized', message: 'Invalid refresh token' });
+    }
+
+    // Check if session is expired
+    if (new Date() > session.expiresAt || session.revokedAt) {
+      reply.clearCookie('refreshToken', cookieOpts);
+      return reply.status(401).send({ success: false, error: 'Unauthorized', message: 'Refresh token expired or revoked' });
+    }
+
+    const user = session.user;
+    if (user.status && user.status.toLowerCase() !== "active") {
+      reply.clearCookie('refreshToken', cookieOpts);
+      return reply.status(403).send({ success: false, error: 'Forbidden', message: 'Account is not active' });
+    }
+
+    // Generate new access token payload
+    const authz = await require("../lib/rbac-access").loadUserAuthzContext(request.server.prisma, user.id);
+    const payload = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      orgId: user.orgId,
+      roleId: user.roleId,
+      role: user.role || (user.roleRelation ? user.roleRelation.name : null),
+      permissions: authz?.permissions || [],
+      allowedProjectIds: authz?.allowedProjectIds || [],
+      organization: user.organization,
+      timezone: user.timezone,
+      avatarUrl: user.avatarUrl,
+      shareLinkActivityEnabled: user.shareLinkActivityEnabled,
+      preferences: user.preferences
+    };
+    const newToken = await reply.jwtSign(payload);
+
+    return {
+      success: true,
+      accessToken: newToken
+    };
+  } catch (error) {
+    console.error("Refresh token error:", error);
+    return reply.status(500).send({
+      success: false,
+      error: "Internal Server Error",
+      message: "Failed to refresh token",
+      details: error.message || String(error)
     });
   }
 };

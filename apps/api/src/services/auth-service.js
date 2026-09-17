@@ -45,8 +45,8 @@ const AUTH_OPTIONS = {
 
   // JWT options
   jwt: {
-    accessTokenExpiry: config ? config.JWT_EXPIRES_IN : "15m", // dynamically linked to config
-    refreshTokenExpiry: config ? config.REFRESH_TOKEN_EXPIRES_IN : "7d", // 7 days
+    accessTokenExpiry: config.JWT_EXPIRES_IN || "5m",
+    refreshTokenExpiry: config.REFRESH_TOKEN_EXPIRES_IN || "10m",
   },
 
   // Session options
@@ -292,14 +292,17 @@ class AuthService {
     // Use real JWT customToken if provided, otherwise generate fallback random token
     const token = customToken || crypto.randomBytes(64).toString("hex");
 
-    // Calculate expiry dynamically based on centralized config
-    const expiresAt = new Date(Date.now() + getExpiryMilliseconds(AUTH_OPTIONS.jwt.accessTokenExpiry));
+    const expiresAt = new Date(
+      Date.now() + getExpiryMilliseconds(AUTH_OPTIONS.jwt.refreshTokenExpiry)
+    );
 
-    // Create session in database
+    const refreshToken = crypto.randomBytes(64).toString("hex");
+
     const session = await prisma.userSession.create({
       data: {
         userId,
         token,
+        refreshToken,
         userAgent: userAgent || "Unknown",
         ipAddress: ipAddress || "Unknown",
         expiresAt,
@@ -309,6 +312,7 @@ class AuthService {
 
     return {
       token,
+      refreshToken,
       expiresAt,
       sessionId: session.id,
     };
