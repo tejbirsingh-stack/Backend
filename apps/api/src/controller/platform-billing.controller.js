@@ -292,12 +292,27 @@ async function getUsageOverview(request, reply) {
     });
   }
 }
+/** Map UI filter labels (e.g. "Succeeded") to PaymentLog.status values (SUCCESS/PENDING/FAILED). */
+function normalizePaymentLogStatus(status) {
+  const raw = String(status || '').trim();
+  if (!raw) return '';
+  const key = raw.toLowerCase();
+  const aliases = {
+    succeeded: 'SUCCESS',
+    success: 'SUCCESS',
+    failed: 'FAILED',
+    failure: 'FAILED',
+    pending: 'PENDING',
+  };
+  return aliases[key] || raw;
+}
+
 async function getPlatformPaymentLogs(request, reply) {
   try {
     const q = String(request.query?.q || '').trim();
-    const limit = Math.min(parseInt(request.query?.limit) || 10, 100);
+    const limit = Math.min(parseInt(request.query?.limit) || 10, 10000);
     const offset = parseInt(request.query?.offset) || 0;
-    const status = request.query?.status || '';
+    const status = normalizePaymentLogStatus(request.query?.status || '');
     const orgId = request.query?.orgId || '';
     const createdFrom = request.query?.createdFrom || '';
     const createdTo = request.query?.createdTo || '';

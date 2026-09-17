@@ -3672,6 +3672,8 @@ module.exports.rejectDelete = async (request, reply) => {
 };
 
 // --- Non-Transcoded Duplicate Check Helper ---
+// Only mark duplicates when both assets have the same non-empty checksum (same file content).
+// Size is used only as a prefilter; title/dimension matching was removed (false positives).
 async function performInstantDuplicateCheck(assetId, prisma) {
   try {
     const asset = await prisma.asset.findUnique({
@@ -3680,6 +3682,12 @@ async function performInstantDuplicateCheck(assetId, prisma) {
     });
 
     if (!asset || asset.status === 'duplicate' || asset.type === 'video') return;
+
+    const checksum = asset.metadata?.checksum;
+    if (!checksum) {
+      console.log(`[Instant Check] Asset ${assetId} has no checksum, skipping duplicate check.`);
+      return;
+    }
 
     let duplicateOf = [];
     const originalFile = asset.files.find(f => f.fileClass === 'original');
@@ -3700,7 +3708,7 @@ async function performInstantDuplicateCheck(assetId, prisma) {
       type: asset.type,
     };
 
-    // Tier 1: Exact File Size Match + optional checksum comparison
+    // Same size + matching checksum only
     const exactMatches = await prisma.asset.findMany({
       where: {
         ...whereClause,
@@ -3710,48 +3718,8 @@ async function performInstantDuplicateCheck(assetId, prisma) {
     });
 
     for (const match of exactMatches) {
-      if (asset.metadata?.checksum && match.metadata?.checksum) {
-        if (asset.metadata.checksum === match.metadata.checksum) {
-          duplicateOf.push(match.id);
-        }
-      } else {
-        // No checksum available on one or both — treat same size as duplicate
+      if (match.metadata?.checksum && match.metadata.checksum === checksum) {
         duplicateOf.push(match.id);
-      }
-    }
-
-    // Tier 2: Title Match (image, audio, document) — catches re-uploads with same/similar filename
-    // Videos go through the Coconut webhook with perceptual hashing instead.
-    if (duplicateOf.length === 0 && asset.type !== 'video') {
-      if (asset.title) {
-        // Strip OS-appended suffixes like " (1)", " (2)" before comparing titles
-        const baseTitle = asset.title.replace(/\s*\(\d+\)$/, '').trim();
-        const titleMatches = await prisma.asset.findMany({
-          where: {
-            ...whereClause,
-            OR: [
-              { title: { equals: asset.title, mode: 'insensitive' } },
-              { title: { equals: baseTitle, mode: 'insensitive' } },
-            ]
-          }
-        });
-        titleMatches.forEach(m => { if (!duplicateOf.includes(m.id)) duplicateOf.push(m.id); });
-      }
-    }
-
-    // Tier 3: Dimension Match (for Images)
-    if (duplicateOf.length === 0 && asset.type === 'image') {
-      const w = asset.metadata?.technicalSpecs?.width;
-      const h = asset.metadata?.technicalSpecs?.height;
-      if (w && h) {
-        const potentialSuspects = await prisma.asset.findMany({
-          where: whereClause,
-          include: { metadata: true }
-        });
-        const match = potentialSuspects.find(s =>
-          s.metadata?.technicalSpecs?.width === w && s.metadata?.technicalSpecs?.height === h
-        );
-        if (match) duplicateOf.push(match.id);
       }
     }
 

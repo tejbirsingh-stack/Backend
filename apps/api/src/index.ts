@@ -244,7 +244,7 @@ async function setupServer() {
         const decoded = await request.jwtVerify();
         request.user = decoded;
         return;
-      } catch (jwtErr) {
+      } catch (jwtErr: any) {
         if (jwtErr.code === 'FAST_JWT_EXPIRED' || jwtErr.name === 'TokenExpiredError' || (jwtErr.message && jwtErr.message.toLowerCase().includes('expired'))) {
           throw new Error("Token expired");
         }
