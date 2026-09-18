@@ -106,10 +106,20 @@ async function assertAssetAccess(prisma, user, filenameOrId) {
 
   const isOrgWide = isOrgWideRole(user.role || user.roleId);
 
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      String(filenameOrId),
+    );
+
   const asset = await prisma.asset.findFirst({
-    where: {
-      OR: [{ id: filenameOrId }, { name: filenameOrId }],
-    },
+    where: isUuid
+      ? { id: filenameOrId }
+      : {
+          OR: [
+            { title: filenameOrId },
+            { files: { some: { fileName: filenameOrId } } },
+          ],
+        },
     select: {
       id: true,
       orgId: true,
