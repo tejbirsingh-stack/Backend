@@ -141,6 +141,7 @@ const ACTIVITY_NAME = {
     DEMO_REQUEST_SUBMITTED: 'Demo Request Submitted',
     PLATFORM_ADMIN_LOGIN: 'Platform Admin Login',
     PLATFORM_ADMIN_LOGOUT: 'Platform Admin Logout',
+    PLATFORM_ADMIN_PASSWORD_CHANGED: 'Platform Admin Password Changed',
     DEFAULT_CONTENT_UPLOADED: 'Default Content Uploaded',
     DEFAULT_CONTENT_UPDATED: 'Default Content Updated',
     DEFAULT_CONTENT_DELETED: 'Default Content Deleted',

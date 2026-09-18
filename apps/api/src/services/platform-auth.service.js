@@ -97,6 +97,24 @@ async function touchActive(adminId) {
   }).catch(() => null);
 }
 
+async function updatePassword(adminId, passwordHash) {
+  return prisma.platformAdmin.update({
+    where: { id: adminId },
+    data: { passwordHash },
+  });
+}
+
+async function revokeOtherSessions(adminId, keepToken) {
+  return prisma.platformSession.updateMany({
+    where: {
+      adminId,
+      revokedAt: null,
+      ...(keepToken ? { token: { not: keepToken } } : {}),
+    },
+    data: { revokedAt: new Date() },
+  });
+}
+
 module.exports = {
   serializeAdmin,
   hashPassword,
@@ -109,4 +127,6 @@ module.exports = {
   recordLoginSuccess,
   recordLoginFailure,
   touchActive,
+  updatePassword,
+  revokeOtherSessions,
 };

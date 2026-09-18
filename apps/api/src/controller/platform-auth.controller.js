@@ -1,4 +1,5 @@
 const platformAuthService = require('../services/platform-auth.service');
+const authService = require('../services/auth-service');
 const { writePlatformAudit, ACTIVITY_TYPE, ACTIVITY_NAME } = require('../lib/platform-audit');
 
 async function platformLogin(request, reply) {
@@ -115,8 +116,106 @@ async function platformLogout(request, reply) {
   }
 }
 
+async function platformChangePassword(request, reply) {
+  try {
+    const currentPassword = String(request.body?.currentPassword || '');
+    const newPassword = String(request.body?.newPassword || '');
+    const confirmPassword = String(request.body?.confirmPassword || '');
+
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'Current password, new password, and confirm password are required',
+        statusCode: 400,
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'New password and confirm password must match',
+        statusCode: 400,
+      });
+    }
+
+    const adminId = request.platformAdmin?.id;
+    if (!adminId) {
+      return reply.status(401).send({
+        error: 'Unauthorized',
+        message: 'Authentication required',
+        statusCode: 401,
+      });
+    }
+
+    const admin = await platformAuthService.findAdminById(adminId);
+    if (!admin || !admin.passwordHash) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'Unable to change password for this account',
+        statusCode: 400,
+      });
+    }
+
+    const currentValid = await platformAuthService.verifyPassword(
+      admin.passwordHash,
+      currentPassword,
+    );
+    if (!currentValid) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'Current password is incorrect',
+        statusCode: 400,
+      });
+    }
+
+    const passwordCheck = authService.validatePassword(newPassword);
+    if (!passwordCheck.isValid) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: passwordCheck.message,
+        statusCode: 400,
+      });
+    }
+
+    if (currentPassword === newPassword) {
+      return reply.status(400).send({
+        error: 'ValidationError',
+        message: 'New password must be different from the current password',
+        statusCode: 400,
+      });
+    }
+
+    const passwordHash = await platformAuthService.hashPassword(newPassword.trim());
+    await platformAuthService.updatePassword(admin.id, passwordHash);
+
+    const authHeader = request.headers.authorization || '';
+    const currentToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+    await platformAuthService.revokeOtherSessions(admin.id, currentToken || null);
+
+    await writePlatformAudit({
+      activityName: ACTIVITY_NAME.PLATFORM_ADMIN_PASSWORD_CHANGED,
+      description: `${admin.email} changed platform password`,
+      activityType: ACTIVITY_TYPE.INFO,
+      admin: request.platformAdmin,
+    });
+
+    return {
+      success: true,
+      message: 'Password changed successfully',
+    };
+  } catch (error) {
+    console.error('platformChangePassword error:', error);
+    return reply.status(500).send({
+      error: 'InternalServerError',
+      message: error.message || 'Failed to change password',
+      statusCode: 500,
+    });
+  }
+}
+
 module.exports = {
   platformLogin,
   platformMe,
   platformLogout,
+  platformChangePassword,
 };
