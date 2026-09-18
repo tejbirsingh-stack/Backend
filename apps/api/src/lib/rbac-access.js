@@ -56,6 +56,27 @@ async function loadUserAuthzContext(prisma, userId) {
   };
 }
 
+function hasPermission(user, slug) {
+  const permissions = Array.isArray(user?.permissions) ? user.permissions : [];
+  return permissions.includes('*') || permissions.includes(slug);
+}
+
+function denyUnlessPermission(reply, user, slug) {
+  if (hasPermission(user, slug)) return false;
+  const payload = {
+    error: 'Forbidden',
+    message: `Missing required permission: ${slug}`,
+    code: 'RBAC_DENIED',
+    requiredPermission: slug,
+  };
+  if (typeof reply.code === 'function') {
+    reply.code(403).send(payload);
+  } else if (typeof reply.status === 'function') {
+    reply.status(403).send(payload);
+  }
+  return true;
+}
+
 function projectScopeWhere(user) {
   if (!user) return { id: '__DENY_ALL__' };
 
@@ -123,4 +144,6 @@ module.exports = {
   loadUserAuthzContext,
   projectScopeWhere,
   assertAssetAccess,
+  hasPermission,
+  denyUnlessPermission,
 };

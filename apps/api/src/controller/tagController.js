@@ -1,6 +1,7 @@
 const prisma = require('../utils/prisma');
 const { logSuccess, logError, ACTIVITY_NAME } = require('../lib/audit-log');
 const { assertNoCycle, getDepth, getAncestors, MAX_TAG_DEPTH } = require('../services/tagHierarchy');
+const { denyUnlessPermission } = require('../lib/rbac-access');
 
 const VALID_SCOPES = ['personal', 'company', 'project'];
 
@@ -209,6 +210,8 @@ module.exports.getTagAncestors = async (request, reply) => {
 // ─────────────────────────────────────────────────────────────
 module.exports.updateTag = async (request, reply) => {
     try {
+        if (denyUnlessPermission(reply, request.user, 'edit_metadata_tags')) return;
+
         const { orgId } = request.user;
         const { id } = request.params;
         const { name, color, category, parentId } = request.body;

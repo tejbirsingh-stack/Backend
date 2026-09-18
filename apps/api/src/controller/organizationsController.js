@@ -5,6 +5,7 @@ const B2StorageService = require("../b2-storage.cjs");
 const { ensureDefaultOrganizationSettings } = require("../services/organization.service");
 const { logSuccess, logError, ACTIVITY_NAME } = require('../lib');
 const { getB2Storage } = require('../services/b2Config');
+const { parseCompanyWebsite, INVALID_WEBSITE_MESSAGE } = require('../utils/companyWebsite');
 
 /** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
 async function b2() { return getB2Storage(B2StorageService); }
@@ -72,22 +73,16 @@ module.exports.updateCompanyInfo = async (request, reply) => {
       return reply.code(404).send({ error: "Organization not found" });
     }
 
-    if (website !== undefined && website !== null && String(website).trim() !== "") {
-      const trimmedWebsite = String(website).trim();
-      if (trimmedWebsite.length > 255 || /\s/.test(trimmedWebsite)) {
-        return reply.code(400).send({ error: "Please enter a valid website URL without spaces (up to 255 characters)" });
-      }
-      const urlPattern = /^(https?:\/\/)?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}(:\d{1,5})?(\/.*)?$/i;
-      if (!urlPattern.test(trimmedWebsite)) {
-        return reply.code(400).send({ error: "Please enter a valid website URL (e.g. https://example.com or example.com)" });
-      }
+    const parsedWebsite = website === undefined ? null : parseCompanyWebsite(website);
+    if (website !== undefined && !parsedWebsite.ok) {
+      return reply.code(400).send({ error: parsedWebsite.error || INVALID_WEBSITE_MESSAGE });
     }
 
     // Merge existing metadata with new updates
     const existingMetadata = (typeof org.metadata === 'string' ? JSON.parse(org.metadata) : org.metadata) || {};
     const updatedMetadata = { ...existingMetadata };
 
-    if (website !== undefined) updatedMetadata.website = website;
+    if (website !== undefined) updatedMetadata.website = parsedWebsite.website;
     if (industry !== undefined) updatedMetadata.industry = industry;
     if (logoUrl !== undefined) updatedMetadata.logoUrl = logoUrl;
     if (logoKey !== undefined) updatedMetadata.logoKey = logoKey;

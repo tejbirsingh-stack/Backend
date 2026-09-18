@@ -8,6 +8,7 @@ const { resolveOrgBranding } = require('../services/branding.service');
 const { createNotification } = require('./notificationController');
 const B2StorageService = require('../b2-storage.cjs');
 const { getB2Storage } = require('../services/b2Config');
+const { denyUnlessPermission, assertAssetAccess } = require('../lib/rbac-access');
 
 /** Lazily-resolved B2 storage (creds from .env in dev, AWS Secrets Manager in all other envs) */
 async function b2() { return getB2Storage(B2StorageService); }
@@ -57,6 +58,8 @@ async function createShareLink(req, reply) {
   } = req.body || {};
 
   try {
+    if (denyUnlessPermission(reply, user, 'create_share_links')) return;
+
     // 1. Verify asset belongs to user's org
     const asset = await prisma.asset.findFirst({
       where: { id: assetId },
@@ -64,6 +67,19 @@ async function createShareLink(req, reply) {
 
     if (!asset) {
       return reply.code(404).send({ error: 'Asset not found' });
+    }
+
+    if (asset.orgId && user.orgId && asset.orgId !== user.orgId) {
+      return reply.code(404).send({ error: 'Asset not found' });
+    }
+
+    const canAccessAsset = await assertAssetAccess(prisma, user, assetId);
+    if (!canAccessAsset) {
+      return reply.code(403).send({
+        error: 'Forbidden',
+        message: 'You do not have access to this asset',
+        code: 'RBAC_DENIED',
+      });
     }
 
     const orgId = user.orgId || asset.orgId;
@@ -253,6 +269,22 @@ async function getShareLinks(req, reply) {
   const now = new Date();
 
   try {
+    if (denyUnlessPermission(reply, req.user, 'create_share_links')) return;
+
+    const asset = await prisma.asset.findFirst({ where: { id: assetId } });
+    if (!asset || (asset.orgId && req.user?.orgId && asset.orgId !== req.user.orgId)) {
+      return reply.code(404).send({ error: 'Asset not found' });
+    }
+
+    const canAccessAsset = await assertAssetAccess(prisma, req.user, assetId);
+    if (!canAccessAsset) {
+      return reply.code(403).send({
+        error: 'Forbidden',
+        message: 'You do not have access to this asset',
+        code: 'RBAC_DENIED',
+      });
+    }
+
     const shareLinks = await prisma.shareLink.findMany({
       where: {
         assetId,
@@ -312,8 +344,13 @@ async function updateShareLink(req, reply) {
   const { name, visibility, permissions } = req.body || {};
 
   try {
+    if (denyUnlessPermission(reply, req.user, 'create_share_links')) return;
+
     const existingLink = await prisma.shareLink.findUnique({ where: { id: shareLinkId } });
     if (!existingLink) return reply.code(404).send({ error: 'Share link not found' });
+    if (existingLink.orgId && req.user?.orgId && existingLink.orgId !== req.user.orgId) {
+      return reply.code(404).send({ error: 'Share link not found' });
+    }
 
     let finalPermissions = permissions;
     const updatedVisibility = visibility !== undefined ? visibility : existingLink.visibility;
@@ -392,10 +429,15 @@ async function deleteShareLink(req, reply) {
   const targetId = req.params.id;
 
   try {
+    if (denyUnlessPermission(reply, req.user, 'create_share_links')) return;
+
     // 1. Check if targetId is a ShareLink
     const shareLink = await prisma.shareLink.findUnique({
       where: { id: targetId },
     });
+    if (shareLink && shareLink.orgId && req.user?.orgId && shareLink.orgId !== req.user.orgId) {
+      return reply.code(404).send({ error: 'Share link not found' });
+    }
 
     if (shareLink) {
       try {
@@ -456,6 +498,8 @@ async function resendShareLinkInvite(req, reply) {
   const user = req.user;
 
   try {
+    if (denyUnlessPermission(reply, user, 'create_share_links')) return;
+
     const shareLink = await prisma.shareLink.findFirst({
       where: { id: shareLinkId, revokedAt: null },
       include: {
@@ -465,6 +509,9 @@ async function resendShareLinkInvite(req, reply) {
     });
 
     if (!shareLink || (shareLink.expiresAt && new Date(shareLink.expiresAt) <= new Date())) {
+      return reply.code(404).send({ error: 'Share link is expired or not found' });
+    }
+    if (shareLink.orgId && user?.orgId && shareLink.orgId !== user.orgId) {
       return reply.code(404).send({ error: 'Share link is expired or not found' });
     }
 

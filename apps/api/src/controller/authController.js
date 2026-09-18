@@ -14,6 +14,7 @@ const { resolveOrgBranding } = require('../services/branding.service');
 const { getHubspotConfig } = require('../services/hubspotConfig');
 const { getOauthConfig } = require('../services/oauthConfig');
 const { checkPasswordResetRateLimit, getClientIp } = require('../utils/passwordResetRateLimiter');
+const { parseCompanyWebsite, INVALID_WEBSITE_MESSAGE } = require('../utils/companyWebsite');
 
 function slugifyWorkspaceName(value) {
   if (!value || typeof value !== "string") return "workspace";
@@ -2698,6 +2699,15 @@ module.exports.completeSignup = async (request, reply) => {
       });
     }
 
+    const parsedWebsite = parseCompanyWebsite(companyWebsite);
+    if (!parsedWebsite.ok) {
+      return reply.status(400).send({
+        success: false,
+        error: "Bad Request",
+        message: parsedWebsite.error || INVALID_WEBSITE_MESSAGE,
+      });
+    }
+
     const normalizedEmail = email.toLowerCase().trim();
     let user = await request.server.prisma.user.findFirst({
       where: { email: normalizedEmail },
@@ -2771,7 +2781,7 @@ module.exports.completeSignup = async (request, reply) => {
     const totalCents = subtotalCents + taxCents;
 
     const orgMetadata = {
-      website: companyWebsite || null,
+      website: parsedWebsite.website,
       teamSize: teamSize || null,
       primaryFocus: firstFocus || null,
       planId: isFreePlan ? 'free' : (dbPlan?.name?.toLowerCase() ?? 'free'),
@@ -2916,7 +2926,7 @@ module.exports.completeSignup = async (request, reply) => {
       lastName: finalLastName,
       name: computedFullName,
       workspaceName: formattedWorkspaceName,
-      companyWebsite,
+      companyWebsite: parsedWebsite.website,
       mobileNumber,
       teamSize,
       firstFocus,

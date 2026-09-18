@@ -6,7 +6,7 @@ const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/audit-log');
 const { getAncestors } = require("../services/tagHierarchy");
-const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
+const { projectScopeWhere, assertAssetAccess, denyUnlessPermission } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { resolveUserAssetPermissions, resolveUserAssetPermissionsBatch } = require("../lib/rbac-policy");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset, assertWorkspaceAccess } = require("../services/workspace.service");
@@ -5755,6 +5755,8 @@ module.exports.moveMediaFile = async (request, reply) => {
 
 module.exports.renameMediaAsset = async (request, reply) => {
   try {
+    if (denyUnlessPermission(reply, request.user, 'edit_metadata_tags')) return;
+
     const assetId = request.params.id;
     const { title } = request.body;
 

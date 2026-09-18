@@ -12,14 +12,17 @@ const {
   updateShareLink,
   getPublicOrgLogo,
 } = require('../controller/shareController');
+const { authenticate, requirePermission } = require('../middleware/auth-middleware');
 
 module.exports = function (fastify, opts, done) {
-  // Owner endpoints (JWT Auth required)
-  fastify.post('/media/:id/share', { preValidation: [fastify.authenticate] }, createShareLink);
-  fastify.get('/media/:id/share-links', { preValidation: [fastify.authenticate] }, getShareLinks);
-  fastify.delete('/share-links/:id', { preValidation: [fastify.authenticate] }, deleteShareLink);
-  fastify.post('/share-links/:id/resend', { preValidation: [fastify.authenticate] }, resendShareLinkInvite);
-  fastify.patch('/share-links/:id', { preValidation: [fastify.authenticate] }, updateShareLink);
+  // Owner endpoints: sharing is an Editor+ capability, not Viewer
+  const canShare = { preValidation: [authenticate, requirePermission('create_share_links')] };
+
+  fastify.post('/media/:id/share', canShare, createShareLink);
+  fastify.get('/media/:id/share-links', canShare, getShareLinks);
+  fastify.delete('/share-links/:id', canShare, deleteShareLink);
+  fastify.post('/share-links/:id/resend', canShare, resendShareLinkInvite);
+  fastify.patch('/share-links/:id', canShare, updateShareLink);
 
   // Public Guest endpoints (No org login required)
   fastify.get('/share/:token', validateShareToken);
