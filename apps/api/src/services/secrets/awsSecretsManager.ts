@@ -2,6 +2,11 @@ import {
   GetSecretValueCommand,
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
+import * as dns from 'dns';
+import * as https from 'https';
+
+try { dns.setDefaultResultOrder('ipv4first'); } catch (_) {}
 
 const cache = new Map<string, { value: string; expiresAt: number }>();
 const TTL_MS = 5 * 60 * 1000;
@@ -15,8 +20,16 @@ function secretsManagerEnabled(): boolean {
 
 function getClient(): SecretsManagerClient {
   if (!client) {
+    // Force IPv4 — IPv6 is unreachable on this network and causes ETIMEDOUT.
+    let requestHandler: InstanceType<typeof NodeHttpHandler> | undefined;
+    try {
+      requestHandler = new NodeHttpHandler({
+        httpsAgent: new https.Agent({ family: 4 }),
+      });
+    } catch (_) {}
     client = new SecretsManagerClient({
       region: process.env.AWS_REGION || 'us-east-1',
+      ...(requestHandler ? { requestHandler } : {}),
     });
   }
   return client;

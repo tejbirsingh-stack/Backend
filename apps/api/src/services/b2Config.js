@@ -16,6 +16,10 @@
  * of B2StorageService so all controllers share one connection per process.
  */
 
+const dns = require('dns');
+try { dns.setDefaultResultOrder('ipv4first'); } catch (_) {}
+
+const https = require('https');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
@@ -31,10 +35,20 @@ let _b2StoragePromise = null;
 let _awsClient = null;
 function getAwsClient() {
   if (!_awsClient) {
+    // Force IPv4 — IPv6 is unreachable on this network and causes ETIMEDOUT.
+    let requestHandler;
+    try {
+      const { NodeHttpHandler } = require('@smithy/node-http-handler');
+      requestHandler = new NodeHttpHandler({
+        httpsAgent: new https.Agent({ family: 4 }),
+      });
+    } catch (_) {}
+
     _awsClient = new SecretsManagerClient({
       region: process.env.AWS_REGION || 'us-east-2',
       // On EC2/ECS the role provides credentials automatically.
       // Locally, AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY from .env are picked up by the SDK.
+      ...(requestHandler ? { requestHandler } : {}),
     });
   }
   return _awsClient;
@@ -61,7 +75,7 @@ async function fetchFromSecretsManager() {
       new GetSecretValueCommand({ SecretId: secretId })
     );
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('AWS Secrets Manager connection timed out')), 10000)
+      setTimeout(() => reject(new Error('AWS Secrets Manager connection timed out')), 15000)
     );
 
     const response = await Promise.race([fetchPromise, timeoutPromise]);
