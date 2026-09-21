@@ -2394,173 +2394,173 @@ module.exports.getMediaFile = async (request, reply) => {
     }
 
     if (fetchedAsset) {
-        const originalFile = fetchedAsset.files.find(f => f.fileClass === 'original');
-        const proxyFile = fetchedAsset.files.find(f => f.fileClass === 'proxy');
-        const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
+      const originalFile = fetchedAsset.files.find(f => f.fileClass === 'original');
+      const proxyFile = fetchedAsset.files.find(f => f.fileClass === 'proxy');
+      const transcodeJob = fetchedAsset.transcodeJobs.find(j => j.provider === 'coconut');
 
-        if (fetchedAsset.status === 'processing' && originalFile) {
-          if (transcodeJob?.status === 'failed' || transcodeJob?.status === 'completed' || transcodeJob?.providerMetadata?.progress === '100%') {
-            try {
-              await request.server.prisma.asset.update({
-                where: { id: fetchedAsset.id },
-                data: { status: 'active' }
-              });
-              fetchedAsset.status = 'active';
-            } catch (uErr) {
-              console.warn('[getMediaFile] Auto-healing asset status error:', uErr.message);
-            }
-          }
-        }
-
-        const fileSize = Number(originalFile?.sizeBytes || 0);
-        const proxySize = Number(proxyFile?.sizeBytes || 0);
-        const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
-        const normalizedType = determineAssetType(fetchedAsset, originalFile);
-
-        // Resolve effective permissions based on project or workspace context
-        let effectivePermissions = null;
-        let assetWorkspace = null;
-        if (request.user) {
-          const { resolveUserAssetPermissions } = require('../lib/rbac-policy');
-
-          const projectId = request.query.projectId;
-          let projectContext = null;
-
-          console.log(`[getMediaFile] userId=${request.user.id} role=${request.user.role} projectId=${projectId} assetVisibility=${fetchedAsset.visibility}`);
-
-          if (projectId) {
-            projectContext = await request.server.prisma.project.findUnique({
-              where: { id: projectId },
-              include: { workspace: true }
-            });
-            console.log(`[getMediaFile] projectContext found:`, projectContext ? `${projectContext.id} visibility=${projectContext.visibility}` : 'null');
-          }
-
-          assetWorkspace = fetchedAsset.workspaceId
-            ? await request.server.prisma.workspace.findUnique({ where: { id: fetchedAsset.workspaceId } })
-            : null;
-
-          // Fetch asset with workspace for permission resolution
-          const assetForPerms = {
-            ...fetchedAsset,
-            workspace: assetWorkspace
-          };
-
-          effectivePermissions = await resolveUserAssetPermissions(
-            request.server.prisma,
-            request.user,
-            assetForPerms,
-            projectContext
-          );
-          console.log(`[getMediaFile] effectivePermissions resolved:`, effectivePermissions);
-
-          // Internal explicit share notification logic
+      if (fetchedAsset.status === 'processing' && originalFile) {
+        if (transcodeJob?.status === 'failed' || transcodeJob?.status === 'completed' || transcodeJob?.providerMetadata?.progress === '100%') {
           try {
-            const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
-              where: { assetId: fetchedAsset.id, userId: request.user.id }
-            }) || await request.server.prisma.assetGroup.findFirst({
-              where: {
-                assetId: fetchedAsset.id,
-                group: { members: { some: { userId: request.user.id } } }
-              }
+            await request.server.prisma.asset.update({
+              where: { id: fetchedAsset.id },
+              data: { status: 'active' }
             });
-
-            if (isExplicitlyShared) {
-              const viewerDb = await request.server.prisma.user.findUnique({
-                where: { id: request.user.id },
-                select: { shareLinkActivityEnabled: true }
-              });
-
-              if (viewerDb && viewerDb.shareLinkActivityEnabled !== false) {
-                const creatorId = fetchedAsset.uploadedByUserId;
-                if (creatorId && creatorId !== request.user.id) {
-                  await createNotification(
-                    request.server,
-                    creatorId,
-                    fetchedAsset.orgId,
-                    'media_viewed',
-                    'Media Viewed',
-                    `${request.user.name || request.user.email || 'A user'} viewed your shared media: ${fetchedAsset.title}`,
-                    fetchedAsset.id
-                  );
-                }
-              }
-            }
-          } catch (notifErr) {
-            console.warn('Failed to send explicit share view notification:', notifErr.message);
+            fetchedAsset.status = 'active';
+          } catch (uErr) {
+            console.warn('[getMediaFile] Auto-healing asset status error:', uErr.message);
           }
         }
+      }
 
-        const dbTags = (fetchedAsset.assetTags && fetchedAsset.assetTags.length > 0)
-          ? fetchedAsset.assetTags.map(at => at.tag?.name).filter(Boolean)
-          : [];
-        const customProps = fetchedAsset.metadata?.customProperties
-          ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties)
-          : {};
-        const tagList = dbTags.length > 0
-          ? dbTags
-          : (Array.isArray(fetchedAsset.aiTags) && fetchedAsset.aiTags.length > 0
-            ? fetchedAsset.aiTags
-            : (Array.isArray(customProps.tags) ? customProps.tags : []));
-        const folderInfo = fetchedAsset.collectionAssets?.[0]?.collection || null;
+      const fileSize = Number(originalFile?.sizeBytes || 0);
+      const proxySize = Number(proxyFile?.sizeBytes || 0);
+      const fileUrl = `/api/media/${encodeURIComponent(fetchedAsset.id)}/stream`;
+      const normalizedType = determineAssetType(fetchedAsset, originalFile);
 
-        return reply.send({
-          success: true,
-          asset: {
-            id: fetchedAsset.id,
-            name: fetchedAsset.title,
-            type: normalizedType,
-            size: fileSize,
+      // Resolve effective permissions based on project or workspace context
+      let effectivePermissions = null;
+      let assetWorkspace = null;
+      if (request.user) {
+        const { resolveUserAssetPermissions } = require('../lib/rbac-policy');
+
+        const projectId = request.query.projectId;
+        let projectContext = null;
+
+        console.log(`[getMediaFile] userId=${request.user.id} role=${request.user.role} projectId=${projectId} assetVisibility=${fetchedAsset.visibility}`);
+
+        if (projectId) {
+          projectContext = await request.server.prisma.project.findUnique({
+            where: { id: projectId },
+            include: { workspace: true }
+          });
+          console.log(`[getMediaFile] projectContext found:`, projectContext ? `${projectContext.id} visibility=${projectContext.visibility}` : 'null');
+        }
+
+        assetWorkspace = fetchedAsset.workspaceId
+          ? await request.server.prisma.workspace.findUnique({ where: { id: fetchedAsset.workspaceId } })
+          : null;
+
+        // Fetch asset with workspace for permission resolution
+        const assetForPerms = {
+          ...fetchedAsset,
+          workspace: assetWorkspace
+        };
+
+        effectivePermissions = await resolveUserAssetPermissions(
+          request.server.prisma,
+          request.user,
+          assetForPerms,
+          projectContext
+        );
+        console.log(`[getMediaFile] effectivePermissions resolved:`, effectivePermissions);
+
+        // Internal explicit share notification logic
+        try {
+          const isExplicitlyShared = await request.server.prisma.assetUser.findFirst({
+            where: { assetId: fetchedAsset.id, userId: request.user.id }
+          }) || await request.server.prisma.assetGroup.findFirst({
+            where: {
+              assetId: fetchedAsset.id,
+              group: { members: { some: { userId: request.user.id } } }
+            }
+          });
+
+          if (isExplicitlyShared) {
+            const viewerDb = await request.server.prisma.user.findUnique({
+              where: { id: request.user.id },
+              select: { shareLinkActivityEnabled: true }
+            });
+
+            if (viewerDb && viewerDb.shareLinkActivityEnabled !== false) {
+              const creatorId = fetchedAsset.uploadedByUserId;
+              if (creatorId && creatorId !== request.user.id) {
+                await createNotification(
+                  request.server,
+                  creatorId,
+                  fetchedAsset.orgId,
+                  'media_viewed',
+                  'Media Viewed',
+                  `${request.user.name || request.user.email || 'A user'} viewed your shared media: ${fetchedAsset.title}`,
+                  fetchedAsset.id
+                );
+              }
+            }
+          }
+        } catch (notifErr) {
+          console.warn('Failed to send explicit share view notification:', notifErr.message);
+        }
+      }
+
+      const dbTags = (fetchedAsset.assetTags && fetchedAsset.assetTags.length > 0)
+        ? fetchedAsset.assetTags.map(at => at.tag?.name).filter(Boolean)
+        : [];
+      const customProps = fetchedAsset.metadata?.customProperties
+        ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties)
+        : {};
+      const tagList = dbTags.length > 0
+        ? dbTags
+        : (Array.isArray(fetchedAsset.aiTags) && fetchedAsset.aiTags.length > 0
+          ? fetchedAsset.aiTags
+          : (Array.isArray(customProps.tags) ? customProps.tags : []));
+      const folderInfo = fetchedAsset.collectionAssets?.[0]?.collection || null;
+
+      return reply.send({
+        success: true,
+        asset: {
+          id: fetchedAsset.id,
+          name: fetchedAsset.title,
+          type: normalizedType,
+          size: fileSize,
+          proxySize,
+          hasProxy: Boolean(proxyFile),
+          uploadDate: fetchedAsset.createdAt.toISOString(),
+          url: fileUrl,
+          thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
+          tags: tagList,
+          metadata: fetchedAsset.metadata || {},
+          status: fetchedAsset.status,
+          visibility: fetchedAsset.visibility,
+          workspaceId: fetchedAsset.workspaceId || null,
+          workspaceVisibility: assetWorkspace?.visibility || null,
+          uploadedBy: fetchedAsset.uploadedBy || null,
+          uploadedByUserId: fetchedAsset.uploadedByUserId || null,
+          globalMedia: Boolean(fetchedAsset.globalMedia),
+          folder: folderInfo,
+          customMetadata: {
+            ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
+            transcodingProgress: transcodeJob?.status === 'processing'
+              ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
+              : null,
             proxySize,
             hasProxy: Boolean(proxyFile),
-            uploadDate: fetchedAsset.createdAt.toISOString(),
-            url: fileUrl,
-            thumbnail: `/api/media/${encodeURIComponent(fetchedAsset.id)}/thumbnail`,
-            tags: tagList,
-            metadata: fetchedAsset.metadata || {},
-            status: fetchedAsset.status,
-            visibility: fetchedAsset.visibility,
-            workspaceId: fetchedAsset.workspaceId || null,
-            workspaceVisibility: assetWorkspace?.visibility || null,
-            uploadedBy: fetchedAsset.uploadedBy || null,
-            uploadedByUserId: fetchedAsset.uploadedByUserId || null,
-            globalMedia: Boolean(fetchedAsset.globalMedia),
-            folder: folderInfo,
-            customMetadata: {
-              ...(fetchedAsset.metadata?.customProperties ? (typeof fetchedAsset.metadata.customProperties === 'string' ? JSON.parse(fetchedAsset.metadata.customProperties) : fetchedAsset.metadata.customProperties) : {}),
-              transcodingProgress: transcodeJob?.status === 'processing'
-                ? (transcodeJob.providerMetadata?.progress ? `${transcodeJob.providerMetadata.progress}` : 'processing')
-                : null,
-              proxySize,
-              hasProxy: Boolean(proxyFile),
-            },
-            transcodingStatus: transcodeJob?.status || "completed",
-            compressionStatus: transcodeJob?.status || "completed",
-            effectivePermissions: effectivePermissions || undefined,
-            orgId: fetchedAsset.orgId || null,
-          }
-        });
-      }
-
-      const storedName = resolveMediaFilename(filename);
-      const filePath = await resolveMediaFilePath(request, filename);
-      if (!filePath || !fs.existsSync(filePath)) {
-        return reply.code(404).send({ success: false, error: "File not found" });
-      }
-
-      const stats = fs.statSync(filePath);
-      const mimeType = inferMimeType(storedName || filename);
-      const asset = toFrontendAssetShape({
-        id: storedName || filename,
-        name: (storedName || filename).replace(/^\d+-/, ""),
-        mimeType,
-        size: stats.size,
-        uploadDate: stats.mtime.toISOString(),
-        tags: [],
-        metadata: {},
-        compressionStatus: "completed",
+          },
+          transcodingStatus: transcodeJob?.status || "completed",
+          compressionStatus: transcodeJob?.status || "completed",
+          effectivePermissions: effectivePermissions || undefined,
+          orgId: fetchedAsset.orgId || null,
+        }
       });
-      return reply.send({ success: true, asset });
+    }
+
+    const storedName = resolveMediaFilename(filename);
+    const filePath = await resolveMediaFilePath(request, filename);
+    if (!filePath || !fs.existsSync(filePath)) {
+      return reply.code(404).send({ success: false, error: "File not found" });
+    }
+
+    const stats = fs.statSync(filePath);
+    const mimeType = inferMimeType(storedName || filename);
+    const asset = toFrontendAssetShape({
+      id: storedName || filename,
+      name: (storedName || filename).replace(/^\d+-/, ""),
+      mimeType,
+      size: stats.size,
+      uploadDate: stats.mtime.toISOString(),
+      tags: [],
+      metadata: {},
+      compressionStatus: "completed",
+    });
+    return reply.send({ success: true, asset });
 
     return reply.code(404).send({ success: false, error: "File not found" });
   } catch (error) {
@@ -3310,8 +3310,8 @@ module.exports.getPendingDeletions = async (request, reply) => {
     }
 
     const statusFilter = isSuperAdmin
-      ? { in: ['pending_admin_review', 'pending_super_admin', 'PENDING_ADMIN_REVIEW', 'PENDING_SUPER_ADMIN'] }
-      : { in: ['pending_admin_review', 'PENDING_ADMIN_REVIEW'] };
+      ? { in: ['pending_admin_review', 'pending_super_admin', 'PENDING_ADMIN_REVIEW', 'PENDING_SUPER_ADMIN', 'trash', 'TRASH'] }
+      : { in: ['pending_admin_review', 'PENDING_ADMIN_REVIEW', 'trash', 'TRASH'] };
 
     const [assets, projects] = await Promise.all([
       request.server.prisma.asset.findMany({
