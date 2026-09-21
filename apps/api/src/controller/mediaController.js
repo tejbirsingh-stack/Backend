@@ -6,7 +6,7 @@ const path = require("path");
 const { extractServerSideMetadata } = require("../utils/extractMediaMetadata");
 const { logSuccess, logError, ACTIVITY_NAME, buildItemPath } = require('../lib/audit-log');
 const { getAncestors } = require("../services/tagHierarchy");
-const { projectScopeWhere, assertAssetAccess } = require("../lib/rbac-access");
+const { projectScopeWhere, assertAssetAccess, denyUnlessPermission } = require("../lib/rbac-access");
 const { verifyProjectAccess } = require("../utils/projectAccessUtils");
 const { resolveUserAssetPermissions, resolveUserAssetPermissionsBatch } = require("../lib/rbac-policy");
 const { autoAssignAdminsToAsset, autoAssignProjectOwnersToAsset, assertWorkspaceAccess } = require("../services/workspace.service");
@@ -16,6 +16,7 @@ const { generateUniqueWorkspaceName } = require('../utils/uniqueNameUtils');
 const { generateSignedUrl, verifySignedUrl } = require('../utils/signedUrlUtils');
 const { validateUploadMetadata, validateMagicBytes } = require('../utils/fileValidator');
 const { VISIBILITY } = require('../lib/rolesPermissions');
+const { sha256HexFromStream } = require('../utils/fileChecksum');
 
 const ORG_MEMBER_PUBLIC_MEDIA_MESSAGE =
   'Organization members already have access to this public media.';
@@ -2690,13 +2691,16 @@ module.exports.uploadMediaFile = async (request, reply) => {
         console.log(`Streaming directly to B2: ${b2Key}`);
 
         const { Transform } = require('stream');
+        const crypto = require('crypto');
         let size = 0;
         let isFirstChunk = true;
         let magicByteError = null;
+        const contentHash = crypto.createHash('sha256');
 
         const validatorTransform = new Transform({
           transform(chunk, encoding, callback) {
             size += chunk.length;
+            contentHash.update(chunk);
             if (isFirstChunk) {
               isFirstChunk = false;
               const magicCheck = validateMagicBytes(chunk, part.filename);
@@ -2736,6 +2740,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
           console.error("Direct B2 stream failed:", err);
           throw new Error(`B2 upload failed: ${sanitizeB2ErrorMessage(err.message)}`);
         }
+
+        const fileChecksum = contentHash.digest('hex');
 
         const b2Url = b2Result?.url || null;
         const fileUrl = b2Url ? b2Url : `/api/media/${filename}/stream`;
@@ -2842,7 +2848,8 @@ module.exports.uploadMediaFile = async (request, reply) => {
             },
             metadata: {
               create: {
-                technicalSpecs: specs
+                technicalSpecs: specs,
+                checksum: fileChecksum || null,
               }
             },
             ...(request.query.linkedProjectId ? {
@@ -2899,9 +2906,10 @@ module.exports.uploadMediaFile = async (request, reply) => {
           } catch (queueErr) {
             console.error(`[Queue] Failed to add job to compression queue:`, queueErr.message);
           }
-        } else if (!isActuallyAudio) {
-          setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
         }
+
+        // Exact duplicate check for image, video, audio, and document (checksum-based)
+        setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
 
         const legacyAiFeatures = request.body?.aiFeatures;
         if (request.user?.orgId) {
@@ -3302,8 +3310,8 @@ module.exports.getPendingDeletions = async (request, reply) => {
     }
 
     const statusFilter = isSuperAdmin
-      ? { in: ['pending_admin_review', 'pending_super_admin', 'PENDING_ADMIN_REVIEW', 'PENDING_SUPER_ADMIN'] }
-      : { in: ['pending_admin_review', 'PENDING_ADMIN_REVIEW'] };
+      ? { in: ['pending_admin_review', 'pending_super_admin', 'PENDING_ADMIN_REVIEW', 'PENDING_SUPER_ADMIN', 'trash', 'TRASH'] }
+      : { in: ['pending_admin_review', 'PENDING_ADMIN_REVIEW', 'trash', 'TRASH'] };
 
     const [assets, projects] = await Promise.all([
       request.server.prisma.asset.findMany({
@@ -3672,6 +3680,8 @@ module.exports.rejectDelete = async (request, reply) => {
 };
 
 // --- Non-Transcoded Duplicate Check Helper ---
+// Only mark duplicates when both assets have the same non-empty checksum (same file content).
+// Size is used only as a prefilter; title/dimension matching was removed (false positives).
 async function performInstantDuplicateCheck(assetId, prisma) {
   try {
     const asset = await prisma.asset.findUnique({
@@ -3679,7 +3689,13 @@ async function performInstantDuplicateCheck(assetId, prisma) {
       include: { metadata: true, files: true }
     });
 
-    if (!asset || asset.status === 'duplicate' || asset.type === 'video') return;
+    if (!asset || asset.status === 'duplicate') return;
+
+    const checksum = asset.metadata?.checksum;
+    if (!checksum) {
+      console.log(`[Instant Check] Asset ${assetId} has no checksum, skipping duplicate check.`);
+      return;
+    }
 
     let duplicateOf = [];
     const originalFile = asset.files.find(f => f.fileClass === 'original');
@@ -3700,7 +3716,7 @@ async function performInstantDuplicateCheck(assetId, prisma) {
       type: asset.type,
     };
 
-    // Tier 1: Exact File Size Match + optional checksum comparison
+    // Same size + matching checksum only
     const exactMatches = await prisma.asset.findMany({
       where: {
         ...whereClause,
@@ -3710,48 +3726,8 @@ async function performInstantDuplicateCheck(assetId, prisma) {
     });
 
     for (const match of exactMatches) {
-      if (asset.metadata?.checksum && match.metadata?.checksum) {
-        if (asset.metadata.checksum === match.metadata.checksum) {
-          duplicateOf.push(match.id);
-        }
-      } else {
-        // No checksum available on one or both — treat same size as duplicate
+      if (match.metadata?.checksum && match.metadata.checksum === checksum) {
         duplicateOf.push(match.id);
-      }
-    }
-
-    // Tier 2: Title Match (image, audio, document) — catches re-uploads with same/similar filename
-    // Videos go through the Coconut webhook with perceptual hashing instead.
-    if (duplicateOf.length === 0 && asset.type !== 'video') {
-      if (asset.title) {
-        // Strip OS-appended suffixes like " (1)", " (2)" before comparing titles
-        const baseTitle = asset.title.replace(/\s*\(\d+\)$/, '').trim();
-        const titleMatches = await prisma.asset.findMany({
-          where: {
-            ...whereClause,
-            OR: [
-              { title: { equals: asset.title, mode: 'insensitive' } },
-              { title: { equals: baseTitle, mode: 'insensitive' } },
-            ]
-          }
-        });
-        titleMatches.forEach(m => { if (!duplicateOf.includes(m.id)) duplicateOf.push(m.id); });
-      }
-    }
-
-    // Tier 3: Dimension Match (for Images)
-    if (duplicateOf.length === 0 && asset.type === 'image') {
-      const w = asset.metadata?.technicalSpecs?.width;
-      const h = asset.metadata?.technicalSpecs?.height;
-      if (w && h) {
-        const potentialSuspects = await prisma.asset.findMany({
-          where: whereClause,
-          include: { metadata: true }
-        });
-        const match = potentialSuspects.find(s =>
-          s.metadata?.technicalSpecs?.width === w && s.metadata?.technicalSpecs?.height === h
-        );
-        if (match) duplicateOf.push(match.id);
       }
     }
 
@@ -4108,6 +4084,17 @@ module.exports.completeResumableUpload = async (request, reply) => {
     const isAudio = assetType === "audio";
     const shouldQueueTranscode = isVideo; // Audio files play natively in browsers — no Coconut needed
     const cdnUrl = `/api/media/${session.key}/stream`;
+
+    // SHA-256 of original bytes for exact duplicate detection (all types; soft-fail)
+    let fileChecksum = null;
+    try {
+      const objectStream = await (await b2()).downloadFile(session.key);
+      if (objectStream) {
+        fileChecksum = await sha256HexFromStream(objectStream);
+      }
+    } catch (hashErr) {
+      console.warn(`[Checksum] Failed to hash completed upload ${session.key}:`, hashErr.message);
+    }
     // Merge technical specs from request body and upload session
     const mergedTechSpecs = {
       fileSize: Number(session.fileSize),
@@ -4222,6 +4209,7 @@ module.exports.completeResumableUpload = async (request, reply) => {
         metadata: {
           create: {
             technicalSpecs: mergedTechSpecs,
+            checksum: fileChecksum || null,
             customProperties: {
               summary: assetSummary,
               originallyCreated: mergedTechSpecs.originallyCreated || null
@@ -4393,9 +4381,10 @@ module.exports.completeResumableUpload = async (request, reply) => {
       } catch (queueErr) {
         console.error(`[Queue] Failed to queue job for asset ${newAsset.id}:`, queueErr.message);
       }
-    } else {
-      setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
     }
+
+    // Exact duplicate check for all types (checksum-based), including videos awaiting transcode
+    setImmediate(() => performInstantDuplicateCheck(newAsset.id, request.server.prisma));
 
     if (request.user?.orgId) {
       await applyUploadAiFeatureRequest(request.server.prisma, {
@@ -4712,12 +4701,18 @@ module.exports.handleCoconutWebhook = async (request, reply) => {
       }
 
       // Determine final status and metadata
-      const newStatus = duplicateOf.length > 0 ? 'duplicate' : 'active';
+      // Do not downgrade an asset already marked duplicate at upload-time checksum check
+      const newStatus = duplicateOf.length > 0
+        ? 'duplicate'
+        : (asset.status === 'duplicate' ? 'duplicate' : 'active');
       const currentCustomProps = typeof asset.metadata?.customProperties === 'object' ? asset.metadata.customProperties : {};
+
+      const existingDups = Array.isArray(currentCustomProps.duplicates) ? currentCustomProps.duplicates : [];
+      const mergedDups = [...new Set([...existingDups, ...duplicateOf])];
 
       const updatedCustomProps = {
         ...currentCustomProps,
-        duplicates: duplicateOf
+        duplicates: mergedDups
       };
 
       await request.server.prisma.asset.update({
@@ -5787,6 +5782,8 @@ module.exports.moveMediaFile = async (request, reply) => {
 
 module.exports.renameMediaAsset = async (request, reply) => {
   try {
+    if (denyUnlessPermission(reply, request.user, 'edit_metadata_tags')) return;
+
     const assetId = request.params.id;
     const { title } = request.body;
 
