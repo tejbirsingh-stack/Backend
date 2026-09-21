@@ -3171,6 +3171,16 @@ module.exports.refresh = async (request, reply) => {
       return reply.status(401).send({ success: false, error: 'Unauthorized', message: 'Refresh token expired or revoked' });
     }
 
+    // Check inactivity timeout (5 mins for testing)
+    if (session.user && session.user.lastActiveAt) {
+      const inactiveMs = Date.now() - new Date(session.user.lastActiveAt).getTime();
+      const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
+      if (inactiveMs > INACTIVITY_TIMEOUT_MS) {
+        reply.clearCookie('refreshToken', cookieOpts);
+        return reply.status(401).send({ success: false, error: 'Unauthorized', message: 'Session expired due to inactivity' });
+      }
+    }
+
     const user = session.user;
     if (user.status && user.status.toLowerCase() !== "active") {
       reply.clearCookie('refreshToken', cookieOpts);
